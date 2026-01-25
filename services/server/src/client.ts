@@ -2,4 +2,8 @@
 import { treaty } from "@elysiajs/eden";
 import type { AppType } from "./server";
 
-export const apiClient = treaty<AppType>("http://localhost:3000");
+export const apiClient = treaty<AppType>("http://localhost:3000", {
+  fetch: {
+    credentials: "include", // Include cookies for authentication
+  },
+});
