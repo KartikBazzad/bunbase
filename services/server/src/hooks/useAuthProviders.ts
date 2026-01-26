@@ -43,6 +43,126 @@ export function useAuthProviders(projectId: string) {
     },
   });
 
+  // OAuth Configuration
+  const getOAuthConfig = async (provider: string) => {
+    const result = await authProvidersApi.getOAuthConfig(projectId, provider);
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+    return result.data?.data || null;
+  };
+
+  const saveOAuthConfigMutation = useMutation({
+    mutationFn: async (data: {
+      provider: string;
+      clientId: string;
+      clientSecret: string;
+      redirectUri?: string;
+      scopes?: string[];
+    }) => {
+      return handleApiCall(
+        authProvidersApi.saveOAuthConfig(projectId, data.provider, {
+          clientId: data.clientId,
+          clientSecret: data.clientSecret,
+          redirectUri: data.redirectUri,
+          scopes: data.scopes,
+        }),
+        {
+          showSuccess: true,
+          successMessage: "OAuth configuration saved successfully",
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["authProviders", projectId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["oauthConfig", projectId],
+      });
+    },
+  });
+
+  const testOAuthConnectionMutation = useMutation({
+    mutationFn: async (provider: string) => {
+      return handleApiCall(
+        authProvidersApi.testOAuthConnection(projectId, provider),
+        {
+          showSuccess: false, // We'll handle the message manually
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["oauthConfig", projectId],
+      });
+    },
+  });
+
+  const deleteOAuthConfigMutation = useMutation({
+    mutationFn: async (provider: string) => {
+      return handleApiCall(
+        authProvidersApi.deleteOAuthConfig(projectId, provider),
+        {
+          showSuccess: true,
+          successMessage: "OAuth configuration removed",
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["oauthConfig", projectId],
+      });
+    },
+  });
+
+  // Settings
+  const getAuthSettings = async () => {
+    const result = await authProvidersApi.getSettings(projectId);
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+    return result.data?.data || null;
+  };
+
+  const updateAuthSettingsMutation = useMutation({
+    mutationFn: async (settings: {
+      requireEmailVerification?: boolean;
+      rateLimitMax?: number;
+      rateLimitWindow?: number;
+      sessionExpirationDays?: number;
+      minPasswordLength?: number;
+      requireUppercase?: boolean;
+      requireLowercase?: boolean;
+      requireNumbers?: boolean;
+      requireSpecialChars?: boolean;
+      mfaEnabled?: boolean;
+      mfaRequired?: boolean;
+    }) => {
+      return handleApiCall(
+        authProvidersApi.updateSettings(projectId, settings),
+        {
+          showSuccess: true,
+          successMessage: "Auth settings updated successfully",
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["authSettings", projectId],
+      });
+    },
+  });
+
+  // Statistics
+  const getStatistics = async () => {
+    const result = await authProvidersApi.getStatistics(projectId);
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+    return result.data?.data || null;
+  };
+
   return {
     authConfig: data,
     isLoading,
@@ -51,5 +171,18 @@ export function useAuthProviders(projectId: string) {
     toggleProvider: toggleProviderMutation.mutateAsync,
     isUpdating: updateMutation.isPending,
     isToggling: toggleProviderMutation.isPending,
+    // OAuth
+    getOAuthConfig,
+    saveOAuthConfig: saveOAuthConfigMutation.mutateAsync,
+    testOAuthConnection: testOAuthConnectionMutation.mutateAsync,
+    deleteOAuthConfig: deleteOAuthConfigMutation.mutateAsync,
+    isSavingOAuth: saveOAuthConfigMutation.isPending,
+    isTestingOAuth: testOAuthConnectionMutation.isPending,
+    // Settings
+    getAuthSettings,
+    updateAuthSettings: updateAuthSettingsMutation.mutateAsync,
+    isUpdatingSettings: updateAuthSettingsMutation.isPending,
+    // Statistics
+    getStatistics,
   };
 }

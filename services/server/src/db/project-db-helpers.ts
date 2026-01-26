@@ -1,5 +1,5 @@
 import { ProjectDatabaseManager } from "./project-db-manager";
-import { type NodePgDatabase } from "drizzle-orm/pglite";
+import { type PgliteDatabase } from "drizzle-orm/pglite";
 import * as projectSchema from "./project-schema";
 import { initializeProjectDatabase } from "./project-db-init";
 
@@ -10,8 +10,8 @@ const manager = ProjectDatabaseManager.getInstance();
  * Returns the database instance if it exists, otherwise creates it
  */
 export async function getProjectDb(
-  projectId: string
-): Promise<NodePgDatabase<typeof projectSchema>> {
+  projectId: string,
+): Promise<PgliteDatabase<typeof projectSchema>> {
   return manager.getInstance(projectId);
 }
 
@@ -20,8 +20,8 @@ export async function getProjectDb(
  * Creates and initializes the database if it doesn't exist
  */
 export async function ensureProjectDb(
-  projectId: string
-): Promise<NodePgDatabase<typeof projectSchema>> {
+  projectId: string,
+): Promise<PgliteDatabase<typeof projectSchema>> {
   // Check if instance exists
   if (!manager.hasInstance(projectId)) {
     // Initialize the database (creates instance and sets up schema)

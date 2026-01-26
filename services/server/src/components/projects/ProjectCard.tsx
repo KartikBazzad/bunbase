@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
-import { MoreVertical, Trash2, Edit } from "lucide-react";
+import { MoreVertical, Trash2, Edit, FolderKanban, Clock, Layers } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +19,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "../ui/alert-dialog";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
+import { cn } from "@/lib/utils";
 
 interface ProjectCardProps {
   project: {
@@ -38,27 +39,45 @@ export function ProjectCard({
   onDelete,
   isDeleting,
 }: ProjectCardProps) {
+  const timeAgo = formatDistanceToNow(new Date(project.updatedAt), { addSuffix: true });
+
   return (
-    <Card className="hover:shadow-lg transition-shadow">
-      <CardHeader>
+    <Card className="group hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+      <CardHeader className="space-y-3">
         <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <CardTitle className="text-lg">{project.name}</CardTitle>
-            <CardDescription className="mt-1 line-clamp-2">
-              {project.description}
-            </CardDescription>
+          <div className="flex items-center gap-3">
+            <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <FolderKanban className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <CardTitle className="text-base font-semibold">{project.name}</CardTitle>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                <span>{timeAgo}</span>
+              </div>
+            </div>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
                 <MoreVertical className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="w-[160px]">
               <DropdownMenuItem asChild>
                 <Link to={`/dashboard/projects/${project.id}`}>
                   <Edit className="mr-2 h-4 w-4" />
                   View Details
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <Link to={`/dashboard/projects/${project.id}/applications`}>
+                  <Layers className="mr-2 h-4 w-4" />
+                  Applications
                 </Link>
               </DropdownMenuItem>
               <AlertDialog>
@@ -73,10 +92,9 @@ export function ProjectCard({
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                    <AlertDialogTitle>Delete project</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will permanently delete the project "{project.name}".
-                      This action cannot be undone.
+                      Are you sure you want to delete "{project.name}"? This action cannot be undone and will remove all associated applications and databases.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -95,18 +113,16 @@ export function ProjectCard({
           </DropdownMenu>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="text-xs text-muted-foreground">
-          Created {format(new Date(project.createdAt), "MMM d, yyyy")}
-        </div>
-      </CardContent>
-      <CardFooter>
-        <Button asChild className="w-full">
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground line-clamp-2">
+          {project.description}
+        </p>
+        <Button asChild className={cn("w-full", "group-hover:bg-primary group-hover:text-primary-foreground transition-colors")}>
           <Link to={`/dashboard/projects/${project.id}`}>
             Open Project
           </Link>
         </Button>
-      </CardFooter>
+      </CardContent>
     </Card>
   );
 }

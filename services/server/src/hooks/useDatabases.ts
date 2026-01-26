@@ -1,9 +1,8 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { databasesApi, handleApiCall } from "../lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { databasesApi } from "../lib/api";
 
+// Simplified hook for single database per project
 export function useDatabases(projectId: string) {
-  const queryClient = useQueryClient();
-
   const { data, isLoading, error } = useQuery({
     queryKey: ["databases", projectId],
     queryFn: async () => {
@@ -16,37 +15,9 @@ export function useDatabases(projectId: string) {
     enabled: !!projectId,
   });
 
-  const createMutation = useMutation({
-    mutationFn: async (data: { name: string }) => {
-      return handleApiCall(databasesApi.create(projectId, data), {
-        showSuccess: true,
-        successMessage: "Database created successfully",
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["databases", projectId] });
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      return handleApiCall(databasesApi.delete(id), {
-        showSuccess: true,
-        successMessage: "Database deleted successfully",
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["databases", projectId] });
-    },
-  });
-
   return {
     databases: data || [],
     isLoading,
     error,
-    createDatabase: createMutation.mutateAsync,
-    deleteDatabase: deleteMutation.mutateAsync,
-    isCreating: createMutation.isPending,
-    isDeleting: deleteMutation.isPending,
   };
 }

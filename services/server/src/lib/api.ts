@@ -50,6 +50,33 @@ export const projectsApi = {
   update: (id: string, data: { name?: string; description?: string }) =>
     apiClient.api.projects({ id }).patch(data),
   delete: (id: string) => apiClient.api.projects({ id }).delete(),
+  getLogs: (
+    id: string,
+    options?: {
+      limit?: number;
+      offset?: number;
+      level?: string;
+      type?: string;
+      startDate?: string;
+      endDate?: string;
+      search?: string;
+      full?: boolean;
+    },
+  ) =>
+    apiClient.api.projects({ id }).logs.get({
+      query: options
+        ? {
+            limit: options.limit?.toString(),
+            offset: options.offset?.toString(),
+            level: options.level,
+            type: options.type,
+            startDate: options.startDate,
+            endDate: options.endDate,
+            search: options.search,
+            full: options.full ? "true" : undefined,
+          }
+        : undefined,
+    }),
 };
 
 // Applications API
@@ -72,57 +99,143 @@ export const applicationsApi = {
   revokeKey: (id: string) => apiClient.api.applications({ id }).keys.delete(),
 };
 
-// Databases API
+// Databases API - simplified for single database per project
 export const databasesApi = {
   list: (projectId: string) =>
     apiClient.api.databases["project"]({ projectId }).get(),
-  get: (id: string) => apiClient.api.databases({ id }).get(),
-  create: (projectId: string, data: { name: string }) =>
-    apiClient.api.databases["project"]({ projectId }).post(data),
-  delete: (id: string) => apiClient.api.databases({ id }).delete(),
 };
 
 // Auth Providers API
 export const authProvidersApi = {
   get: (projectId: string) =>
-    apiClient.api.auth["project"]({ projectId }).get(),
+    apiClient.api.projects({ id: projectId }).authProviders.get(),
   update: (projectId: string, data: { providers: string[] }) =>
-    apiClient.api.auth["project"]({ projectId }).patch(data),
+    apiClient.api.projects({ id: projectId }).authProviders.patch(data),
   toggleProvider: (projectId: string, provider: string) =>
-    apiClient.api.auth["project"]({ projectId }).providers({ provider }).post(),
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders({ provider })
+      .post(),
+  // OAuth Configuration
+  getOAuthConfig: (projectId: string, provider: string) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders.oauth({ provider })
+      .get(),
+  saveOAuthConfig: (
+    projectId: string,
+    provider: string,
+    config: {
+      clientId: string;
+      clientSecret: string;
+      redirectUri?: string;
+      scopes?: string[];
+    },
+  ) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders.oauth({ provider })
+      .post(config),
+  testOAuthConnection: (projectId: string, provider: string) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders.oauth({ provider })
+      .test.post(),
+  deleteOAuthConfig: (projectId: string, provider: string) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders.oauth({ provider })
+      .delete(),
+  // Settings
+  getSettings: (projectId: string) =>
+    apiClient.api.projects({ id: projectId }).authProviders.settings.get(),
+  updateSettings: (
+    projectId: string,
+    settings: {
+      requireEmailVerification?: boolean;
+      rateLimitMax?: number;
+      rateLimitWindow?: number;
+      sessionExpirationDays?: number;
+      minPasswordLength?: number;
+      requireUppercase?: boolean;
+      requireLowercase?: boolean;
+      requireNumbers?: boolean;
+      requireSpecialChars?: boolean;
+      mfaEnabled?: boolean;
+      mfaRequired?: boolean;
+    },
+  ) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .authProviders.settings.patch(settings),
+  // Statistics
+  getStatistics: (projectId: string) =>
+    apiClient.api.projects({ id: projectId }).authProviders.statistics.get(),
+};
+
+// Users API
+export const usersApi = {
+  list: (
+    projectId: string,
+    filters?: {
+      limit?: number;
+      offset?: number;
+      search?: string;
+      emailVerified?: boolean;
+    },
+  ) =>
+    apiClient.api.projects({ id: projectId }).users.get({
+      query: filters
+        ? {
+            limit: filters.limit?.toString(),
+            offset: filters.offset?.toString(),
+            search: filters.search,
+            emailVerified: filters.emailVerified?.toString(),
+          }
+        : undefined,
+    }),
+  get: (projectId: string, userId: string) =>
+    apiClient.api.projects({ id: projectId }).users({ userId }).get(),
+  verifyEmail: (projectId: string, userId: string) =>
+    apiClient.api
+      .projects({ id: projectId })
+      .users({ userId })
+      .resendVerification.post(),
+  delete: (projectId: string, userId: string) =>
+    apiClient.api.projects({ id: projectId }).users({ userId }).delete(),
 };
 
 // Collections API
 export const collectionsApi = {
-  list: (databaseId: string, parentPath?: string) =>
-    apiClient.api.databases({ id: databaseId }).collections.get({
+  list: (projectId: string, parentPath?: string) =>
+    apiClient.api.projects({ id: projectId }).collections.get({
       query: parentPath ? { parentPath } : undefined,
     }),
-  get: (databaseId: string, collectionId: string) =>
+  get: (projectId: string, collectionId: string) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .get(),
-  getByPath: (databaseId: string, path: string) =>
-    apiClient.api.databases({ id: databaseId }).collections["by-path"].get({
+  getByPath: (projectId: string, path: string) =>
+    apiClient.api.projects({ id: projectId }).collections["by-path"].get({
       query: { path },
     }),
   create: (
-    databaseId: string,
+    projectId: string,
     data: {
       name: string;
       parentPath?: string;
       parentDocumentId?: string;
     },
-  ) => apiClient.api.databases({ id: databaseId }).collections.post(data),
-  update: (databaseId: string, collectionId: string, data: { name?: string }) =>
+  ) => apiClient.api.projects({ id: projectId }).collections.post(data),
+  update: (projectId: string, collectionId: string, data: { name?: string }) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .patch(data),
-  delete: (databaseId: string, collectionId: string) =>
+  delete: (projectId: string, collectionId: string) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .delete(),
 };
@@ -130,7 +243,7 @@ export const collectionsApi = {
 // Documents API
 export const documentsApi = {
   list: (
-    databaseId: string,
+    projectId: string,
     collectionId: string,
     query?: {
       filter?: Record<string, any>;
@@ -140,13 +253,13 @@ export const documentsApi = {
     },
   ) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents.get({
         query,
       }),
   listByPath: (
-    databaseId: string,
+    projectId: string,
     collectionPath: string,
     query?: {
       filter?: Record<string, any>;
@@ -155,66 +268,66 @@ export const documentsApi = {
       offset?: number;
     },
   ) =>
-    apiClient.api.databases({ id: databaseId }).documents.get({
+    apiClient.api.projects({ id: projectId }).documents.get({
       query: {
         collectionPath,
         ...query,
       },
     }),
-  get: (databaseId: string, collectionId: string, documentId: string) =>
+  get: (projectId: string, collectionId: string, documentId: string) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents({ documentId })
       .get(),
-  getByPath: (databaseId: string, path: string) =>
-    apiClient.api.databases({ id: databaseId }).documents["by-path"].get({
+  getByPath: (projectId: string, path: string) =>
+    apiClient.api.projects({ id: projectId }).documents["by-path"].get({
       query: { path },
     }),
   create: (
-    databaseId: string,
+    projectId: string,
     collectionId: string,
     data: { data: Record<string, any> },
   ) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents.post(data),
   update: (
-    databaseId: string,
+    projectId: string,
     collectionId: string,
     documentId: string,
     data: { data: Record<string, any> },
   ) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents({ documentId })
       .put(data),
   patch: (
-    databaseId: string,
+    projectId: string,
     collectionId: string,
     documentId: string,
     data: { data: Record<string, any> },
   ) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents({ documentId })
       .patch(data),
-  delete: (databaseId: string, collectionId: string, documentId: string) =>
+  delete: (projectId: string, collectionId: string, documentId: string) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents({ documentId })
       .delete(),
   getSubcollections: (
-    databaseId: string,
+    projectId: string,
     collectionId: string,
     documentId: string,
   ) =>
     apiClient.api
-      .databases({ id: databaseId })
+      .projects({ id: projectId })
       .collections({ collectionId })
       .documents({ documentId })
       .subcollections.get(),

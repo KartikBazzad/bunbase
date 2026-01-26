@@ -6,10 +6,12 @@ import {
   sendPasswordResetEmail,
   sendWelcomeEmail,
 } from "../lib/email-service";
+import { logger } from "../lib/logger";
 
 // Get base URL from environment or default to localhost
 const baseURL = process.env.BETTER_AUTH_URL || "http://localhost:3000";
-const secret = process.env.BETTER_AUTH_SECRET || "your-secret-key-change-in-production";
+const secret =
+  process.env.BETTER_AUTH_SECRET || "your-secret-key-change-in-production";
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -23,7 +25,7 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true, // Enable email verification
+    requireEmailVerification: false, // Allow login without email verification
     sendResetPassword: async ({ user, url, token }) => {
       await sendPasswordResetEmail({
         email: user.email,
@@ -42,9 +44,19 @@ export const auth = betterAuth({
       });
     },
     sendOnSignUp: true, // Automatically send verification email on signup
+    sendOnSignIn: false, // Don't resend verification email on sign-in
   },
   baseURL,
   secret,
+  // Trusted origins for CSRF protection
+  // Allow requests from the main app and example apps
+  trustedOrigins: [
+    baseURL, // Main app (http://localhost:3000)
+    "http://localhost:3001", // Auth example app
+    "http://localhost:5173", // Common Vite dev server port
+    "http://localhost:5174", // Alternative Vite port
+    ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",") || []), // Additional origins from env
+  ],
   // Rate limiting configuration
   rateLimit: {
     enabled: true,
@@ -68,12 +80,19 @@ export const auth = betterAuth({
     user: {
       create: {
         after: async ({ user }) => {
-          // Send welcome email after user creation
-          try {
-            await sendWelcomeEmail(user.email, user.name);
-          } catch (error) {
-            // Log error but don't fail user creation
-            console.error("Failed to send welcome email:", error);
+          // Send welcome email after user creation (non-blocking)
+          // Only send if user has email and name
+          if (user?.email && user?.name) {
+            try {
+              await sendWelcomeEmail(user.email, user.name);
+            } catch (error) {
+              // Log error but don't fail user creation
+              // Email service may not be configured, which is fine
+              logger.error("Failed to send welcome email", error, {
+                userId: user.id,
+                email: user.email,
+              });
+            }
           }
         },
       },

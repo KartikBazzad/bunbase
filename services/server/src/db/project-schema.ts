@@ -60,20 +60,46 @@ export const authSettings = pgTable("authSettings", {
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
 
-// Databases table (user-created databases within the project)
-export const projectDatabases = pgTable("database", {
-  databaseId: text("databaseId").primaryKey(),
-  name: text("name").notNull(),
+// OAuth Providers table (for project-specific OAuth configuration)
+export const oauthProviders = pgTable("oauthProvider", {
+  id: text("id").primaryKey(),
+  provider: authProviderEnum("provider").notNull(), // google, github, etc.
+  clientId: text("clientId").notNull(),
+  clientSecret: text("clientSecret").notNull(), // Encrypted
+  redirectUri: text("redirectUri"),
+  scopes: jsonb("scopes").$type<string[]>().default([]),
+  isConfigured: boolean("isConfigured").notNull().default(false),
+  lastTestedAt: timestamp("lastTestedAt"),
+  lastTestStatus: text("lastTestStatus"), // "success" | "failed" | null
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+// Detailed Auth Settings table (password requirements, MFA, etc.)
+export const detailedAuthSettings = pgTable("detailedAuthSettings", {
+  id: text("id").primaryKey().default("default"),
+  requireEmailVerification: boolean("requireEmailVerification")
+    .notNull()
+    .default(false),
+  rateLimitMax: text("rateLimitMax").notNull().default("5"), // Store as text for large numbers
+  rateLimitWindow: text("rateLimitWindow").notNull().default("15"), // Store as text for large numbers
+  sessionExpirationDays: text("sessionExpirationDays").notNull().default("30"), // Store as text for large numbers
+  minPasswordLength: text("minPasswordLength").notNull().default("8"), // Store as text for large numbers
+  requireUppercase: boolean("requireUppercase").notNull().default(false),
+  requireLowercase: boolean("requireLowercase").notNull().default(false),
+  requireNumbers: boolean("requireNumbers").notNull().default(false),
+  requireSpecialChars: boolean("requireSpecialChars").notNull().default(false),
+  mfaEnabled: boolean("mfaEnabled").notNull().default(false),
+  mfaRequired: boolean("mfaRequired").notNull().default(false),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
 
 // Collections table (Firestore-like hierarchical structure)
+// Note: databaseId column kept for backward compatibility but not used
 export const projectCollections = pgTable("collection", {
   collectionId: text("collectionId").primaryKey(),
-  databaseId: text("databaseId")
-    .notNull()
-    .references(() => projectDatabases.databaseId, { onDelete: "cascade" }),
+  databaseId: text("databaseId"), // Kept for backward compatibility, not used
   name: text("name").notNull(),
   path: text("path").notNull().unique(), // Full path like "users" or "users/{userId}/posts"
   parentDocumentId: text("parentDocumentId"), // Nullable, for subcollections
@@ -121,20 +147,9 @@ export const projectAccountsRelations = relations(
   }),
 );
 
-export const projectDatabasesRelations = relations(
-  projectDatabases,
-  ({ many }) => ({
-    collections: many(projectCollections),
-  }),
-);
-
 export const projectCollectionsRelations = relations(
   projectCollections,
   ({ one, many }) => ({
-    database: one(projectDatabases, {
-      fields: [projectCollections.databaseId],
-      references: [projectDatabases.databaseId],
-    }),
     parentDocument: one(projectDocuments, {
       fields: [projectCollections.parentDocumentId],
       references: [projectDocuments.documentId],

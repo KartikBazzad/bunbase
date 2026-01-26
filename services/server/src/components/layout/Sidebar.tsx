@@ -5,6 +5,7 @@ import {
   LogOut,
   Database,
   Shield,
+  FileText,
 } from "lucide-react";
 import {
   Sidebar,
@@ -61,14 +62,19 @@ const projectMenuItems = [
     path: "/applications",
   },
   {
-    title: "Databases",
+    title: "Database",
     icon: Database,
-    path: "/databases",
+    path: "/explore",
   },
   {
     title: "Authentication",
     icon: Shield,
     path: "/authentication",
+  },
+  {
+    title: "Logs",
+    icon: FileText,
+    path: "/logs",
   },
 ];
 

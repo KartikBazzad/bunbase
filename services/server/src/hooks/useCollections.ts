@@ -1,19 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { collectionsApi, handleApiCall } from "../lib/api";
 
-export function useCollections(databaseId: string, parentPath?: string) {
+export function useCollections(projectId: string, parentPath?: string) {
   const queryClient = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["collections", databaseId, parentPath],
+    queryKey: ["collections", projectId, parentPath],
     queryFn: async () => {
-      const result = await collectionsApi.list(databaseId, parentPath);
+      const result = await collectionsApi.list(projectId, parentPath);
       if (result.error) {
         throw new Error(result.error.message);
       }
       return result.data?.data || [];
     },
-    enabled: !!databaseId,
+    enabled: !!projectId,
   });
 
   const createMutation = useMutation({
@@ -22,13 +22,13 @@ export function useCollections(databaseId: string, parentPath?: string) {
       parentPath?: string;
       parentDocumentId?: string;
     }) => {
-      return handleApiCall(collectionsApi.create(databaseId, data), {
+      return handleApiCall(collectionsApi.create(projectId, data), {
         showSuccess: true,
         successMessage: "Collection created successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["collections", databaseId] });
+      queryClient.invalidateQueries({ queryKey: ["collections", projectId] });
     },
   });
 
@@ -40,25 +40,25 @@ export function useCollections(databaseId: string, parentPath?: string) {
       collectionId: string;
       data: { name?: string };
     }) => {
-      return handleApiCall(collectionsApi.update(databaseId, collectionId, data), {
+      return handleApiCall(collectionsApi.update(projectId, collectionId, data), {
         showSuccess: true,
         successMessage: "Collection updated successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["collections", databaseId] });
+      queryClient.invalidateQueries({ queryKey: ["collections", projectId] });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: async (collectionId: string) => {
-      return handleApiCall(collectionsApi.delete(databaseId, collectionId), {
+      return handleApiCall(collectionsApi.delete(projectId, collectionId), {
         showSuccess: true,
         successMessage: "Collection deleted successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["collections", databaseId] });
+      queryClient.invalidateQueries({ queryKey: ["collections", projectId] });
     },
   });
 
@@ -75,17 +75,17 @@ export function useCollections(databaseId: string, parentPath?: string) {
   };
 }
 
-export function useCollectionByPath(databaseId: string, path: string) {
+export function useCollectionByPath(projectId: string, path: string) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["collection", databaseId, path],
+    queryKey: ["collection", projectId, path],
     queryFn: async () => {
-      const result = await collectionsApi.getByPath(databaseId, path);
+      const result = await collectionsApi.getByPath(projectId, path);
       if (result.error) {
         throw new Error(result.error.message);
       }
       return result.data?.data;
     },
-    enabled: !!databaseId && !!path,
+    enabled: !!projectId && !!path,
   });
 
   return {

@@ -1,8 +1,9 @@
+import { logger } from "./logger";
+
 /**
  * Email service for sending authentication emails
  * Supports email verification, password reset, and welcome emails
- * 
- * Currently uses console logging as a placeholder.
+ *
  * In production, integrate with SendGrid, AWS SES, Resend, or similar service.
  */
 
@@ -133,7 +134,10 @@ export async function sendPasswordResetEmail(
 /**
  * Send welcome email
  */
-export async function sendWelcomeEmail(email: string, name: string): Promise<void> {
+export async function sendWelcomeEmail(
+  email: string,
+  name: string,
+): Promise<void> {
   const html = `
     <!DOCTYPE html>
     <html>
@@ -184,38 +188,68 @@ export async function sendWelcomeEmail(email: string, name: string): Promise<voi
  * In production, replace with actual email service integration
  */
 async function sendEmail(options: EmailOptions): Promise<void> {
-  // TODO: Integrate with email service provider (SendGrid, AWS SES, Resend, etc.)
-  // For now, log to console in development
-  if (process.env.NODE_ENV === "development") {
-    console.log("📧 Email would be sent:", {
-      to: options.to,
-      subject: options.subject,
-      // Don't log full HTML in production logs
-      preview: options.text?.substring(0, 100) + "...",
-    });
+  // Check if email service is configured
+  const emailService = process.env.EMAIL_SERVICE;
+  const emailApiKey =
+    process.env.RESEND_API_KEY ||
+    process.env.SENDGRID_API_KEY ||
+    process.env.AWS_SES_ACCESS_KEY;
 
-    // In development, you might want to actually send emails via a service
-    // For production, uncomment and configure:
-    /*
-    if (process.env.EMAIL_SERVICE === "resend") {
+  // If no email service is configured, log and return silently
+  if (!emailService && !emailApiKey) {
+    if (process.env.NODE_ENV === "development") {
+      logger.info("📧 Email service not configured. Email would be sent", {
+        to: options.to,
+        subject: options.subject,
+        preview: options.text?.substring(0, 100) + "...",
+      });
+    } else {
+      // In production, log but don't throw - allow the app to continue
+      logger.warn("📧 Email service not configured. Email not sent", {
+        to: options.to,
+        subject: options.subject,
+      });
+    }
+    return; // Silently return - don't throw error
+  }
+
+  // If email service is configured, try to send
+  try {
+    if (emailService === "resend" || process.env.RESEND_API_KEY) {
       const { Resend } = await import("resend");
       const resend = new Resend(process.env.RESEND_API_KEY);
       await resend.emails.send({
-        from: process.env.EMAIL_FROM!,
+        from: process.env.EMAIL_FROM || "noreply@bunbase.com",
         to: options.to,
         subject: options.subject,
         html: options.html,
         text: options.text,
       });
+      return;
     }
-    */
-  } else {
-    // In production, integrate with your email service
-    // Example with Resend:
-    // const { Resend } = await import("resend");
-    // const resend = new Resend(process.env.RESEND_API_KEY);
-    // await resend.emails.send({ ... });
-    
-    throw new Error("Email service not configured. Please set up an email provider.");
+
+    // Add other email service integrations here (SendGrid, AWS SES, etc.)
+    // if (emailService === "sendgrid" || process.env.SENDGRID_API_KEY) { ... }
+    // if (emailService === "ses" || process.env.AWS_SES_ACCESS_KEY) { ... }
+
+    // If service is specified but not implemented, log warning
+    if (emailService) {
+      logger.warn(
+        `Email service "${emailService}" is not yet implemented. Email not sent.`,
+      );
+    }
+  } catch (error) {
+    // Log error but don't throw - allow the app to continue
+    logger.error("Failed to send email", error, {
+      to: options.to,
+      subject: options.subject,
+    });
+    if (process.env.NODE_ENV === "development") {
+      logger.info("📧 Email would be sent (error occurred)", {
+        to: options.to,
+        subject: options.subject,
+        preview: options.text?.substring(0, 100) + "...",
+      });
+    }
   }
 }

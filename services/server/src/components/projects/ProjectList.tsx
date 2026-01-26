@@ -2,21 +2,24 @@ import { useProjects } from "../../hooks/useProjects";
 import { ProjectCard } from "./ProjectCard";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 import { Button } from "../ui/button";
-import { Plus, Loader2 } from "lucide-react";
+import { Input } from "../ui/input";
+import { Plus, Loader2, Search, Rocket } from "lucide-react";
 import { useState } from "react";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "../ui/empty";
-import { FolderKanban } from "lucide-react";
+import { Card, CardContent } from "../ui/card";
 
 export function ProjectList() {
-  const { projects, isLoading, deleteProject, isDeleting, createProject, isCreating } = useProjects();
+  const {
+    projects,
+    isLoading,
+    error,
+    deleteProject,
+    isDeleting,
+    createProject,
+    isCreating,
+    refetch,
+  } = useProjects();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const handleCreate = async (data: { name: string; description: string }) => {
     await createProject(data);
@@ -26,6 +29,12 @@ export function ProjectList() {
     await deleteProject(id);
   };
 
+  const filteredProjects = projects.filter(
+    (project) =>
+      project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.description.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -34,42 +43,89 @@ export function ProjectList() {
     );
   }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
-          <p className="text-muted-foreground">
-            Manage your projects and applications
-          </p>
-        </div>
-        <Button onClick={() => setIsCreateDialogOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          New Project
-        </Button>
-      </div>
-
-      {projects.length === 0 ? (
-        <Empty>
-          <EmptyMedia variant="icon">
-            <FolderKanban className="h-8 w-8" />
-          </EmptyMedia>
-          <EmptyHeader>
-            <EmptyTitle>No projects yet</EmptyTitle>
-            <EmptyDescription>
-              Get started by creating your first project
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button onClick={() => setIsCreateDialogOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              Create Project
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-12 px-6">
+          <div className="mb-4 flex size-16 items-center justify-center rounded-full bg-destructive/10">
+            <Rocket className="h-8 w-8 text-destructive" />
+          </div>
+          <div className="text-center">
+            <h3 className="text-lg font-semibold">Failed to load projects</h3>
+            <p className="text-sm text-muted-foreground mt-2">
+              {error instanceof Error
+                ? error.message
+                : "An error occurred while loading projects"}
+            </p>
+            <Button size="sm" className="mt-4" onClick={() => refetch()}>
+              Try Again
             </Button>
-          </EmptyContent>
-        </Empty>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {projects.length > 0 && (
+        <div className="mb-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search projects..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+        </div>
+      )}
+
+      {filteredProjects.length === 0 ? (
+        searchQuery ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-12 px-6">
+              <div className="mb-4 flex size-16 items-center justify-center rounded-full bg-muted">
+                <Search className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <div className="text-center">
+                <h3 className="text-lg font-semibold">No results found</h3>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Try adjusting your search terms
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-dashed">
+            <CardContent className="flex flex-col items-center justify-center py-12 px-6">
+              <div className="mb-4 flex size-16 items-center justify-center rounded-full bg-primary/10">
+                <Rocket className="h-8 w-8 text-primary" />
+              </div>
+              <div className="text-center">
+                <h3 className="text-xl font-semibold">No projects yet</h3>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Create your first project to start building with BunBase.
+                  Projects help you organize your applications, databases, and
+                  resources.
+                </p>
+              </div>
+              <Button
+                size="lg"
+                className="mt-6"
+                onClick={() => setIsCreateDialogOpen(true)}
+              >
+                <Plus className="mr-2 h-5 w-5" />
+                Create Your First Project
+              </Button>
+            </CardContent>
+          </Card>
+        )
       ) : (
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {projects.map((project) => (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
+          {filteredProjects.map((project) => (
             <ProjectCard
               key={project.id}
               project={project}
@@ -86,6 +142,6 @@ export function ProjectList() {
         onCreate={handleCreate}
         isCreating={isCreating}
       />
-    </div>
+    </>
   );
 }

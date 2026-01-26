@@ -216,10 +216,6 @@ export const CollectionModels = {
     ),
   }),
   params: t.Object({
-    databaseId: t.String({
-      minLength: 1,
-      error: "Database ID is required",
-    }),
     collectionId: t.String({
       minLength: 1,
       error: "Collection ID is required",
@@ -227,7 +223,6 @@ export const CollectionModels = {
   }),
   response: t.Object({
     collectionId: t.String(),
-    databaseId: t.String(),
     name: t.String(),
     path: t.String(),
     parentDocumentId: t.Nullable(t.String()),
@@ -238,7 +233,6 @@ export const CollectionModels = {
   listResponse: t.Array(
     t.Object({
       collectionId: t.String(),
-      databaseId: t.String(),
       name: t.String(),
       path: t.String(),
       parentDocumentId: t.Nullable(t.String()),
@@ -403,6 +397,72 @@ export const ApplicationKeyModels = {
     keyPrefix: t.String(),
     keySuffix: t.String(),
     createdAt: t.Date(),
+  }),
+};
+
+// Function Models
+export const FunctionModels = {
+  create: t.Object({
+    name: t.String({ minLength: 1, maxLength: 255 }),
+    runtime: t.String({ default: "bun" }),
+    handler: t.String({ minLength: 1 }),
+    code: t.Optional(t.String()),
+    memory: t.Optional(t.Number({ minimum: 128, maximum: 4096 })),
+    timeout: t.Optional(t.Number({ minimum: 1, maximum: 900 })),
+  }),
+  update: t.Object({
+    name: t.Optional(t.String({ minLength: 1, maxLength: 255 })),
+    runtime: t.Optional(t.String()),
+    handler: t.Optional(t.String({ minLength: 1 })),
+    code: t.Optional(t.String()),
+    memory: t.Optional(t.Number({ minimum: 128, maximum: 4096 })),
+    timeout: t.Optional(t.Number({ minimum: 1, maximum: 900 })),
+  }),
+  params: t.Object({
+    id: t.String({ minLength: 1 }),
+  }),
+  response: t.Object({
+    id: t.String(),
+    name: t.String(),
+    runtime: t.String(),
+    handler: t.String(),
+    status: t.String(),
+    memory: t.Optional(t.Number()),
+    timeout: t.Optional(t.Number()),
+    createdAt: t.Date(),
+    updatedAt: t.Date(),
+  }),
+  listResponse: t.Array(
+    t.Object({
+      id: t.String(),
+      name: t.String(),
+      runtime: t.String(),
+      handler: t.String(),
+      status: t.String(),
+      memory: t.Optional(t.Number()),
+      timeout: t.Optional(t.Number()),
+      createdAt: t.Date(),
+      updatedAt: t.Date(),
+    }),
+  ),
+  invoke: t.Object({
+    body: t.Optional(t.Any()),
+    headers: t.Optional(t.Record(t.String(), t.String())),
+  }),
+  env: t.Object({
+    key: t.String({ minLength: 1 }),
+    value: t.String(),
+  }),
+  deployResponse: t.Object({
+    message: t.String(),
+    version: t.String(),
+    deploymentId: t.String(),
+  }),
+  metricsResponse: t.Object({
+    invocations: t.Number(),
+    errors: t.Number(),
+    averageDuration: t.Number(),
+    lastInvoked: t.Nullable(t.Date()),
   }),
 };
 

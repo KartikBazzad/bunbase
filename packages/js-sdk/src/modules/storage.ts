@@ -41,11 +41,14 @@ export class StorageModule {
     }
 
     // Use fetch directly for file uploads
+    const baseURL = this.config.baseURL || "http://localhost:3000";
     const url = new URL(
       `/storage/buckets/${bucketId}/upload`,
-      this.config.baseURL,
+      baseURL,
     );
-    url.searchParams.append("projectId", this.config.projectId);
+    if (this.config.projectId) {
+      url.searchParams.append("projectId", this.config.projectId);
+    }
 
     const response = await fetch(url.toString(), {
       method: "POST",
@@ -69,11 +72,14 @@ export class StorageModule {
    * Download a file
    */
   async download(bucketId: string, path: string): Promise<Blob> {
+    const baseURL = this.config.baseURL || "http://localhost:3000";
     const url = new URL(
       `/storage/buckets/${bucketId}/files/${path}`,
-      this.config.baseURL,
+      baseURL,
     );
-    url.searchParams.append("projectId", this.config.projectId);
+    if (this.config.projectId) {
+      url.searchParams.append("projectId", this.config.projectId);
+    }
 
     const response = await fetch(url.toString(), {
       headers: {
@@ -96,7 +102,7 @@ export class StorageModule {
       "DELETE",
       `/storage/buckets/${bucketId}/files/${path}`,
       {
-        query: { projectId: this.config.projectId },
+        query: this.config.projectId ? { projectId: this.config.projectId } : undefined,
       },
     );
   }
@@ -122,7 +128,7 @@ export class StorageModule {
       `/storage/buckets/${bucketId}/files`,
       {
         query: {
-          projectId: this.config.projectId,
+          ...(this.config.projectId ? { projectId: this.config.projectId } : {}),
           ...options,
         },
       },

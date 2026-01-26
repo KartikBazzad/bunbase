@@ -8,39 +8,9 @@ import { nanoid } from "nanoid";
 import { CollectionModels, CommonModels } from "./models";
 import { getProjectDb } from "../db/project-db-helpers";
 import {
-  projectDatabases,
   projectCollections,
   projectDocuments,
 } from "../db/project-schema";
-
-// Helper function to verify database access
-async function verifyDatabaseAccess(
-  databaseId: string,
-  projectId: string,
-  userId: string,
-): Promise<{
-  database: typeof projectDatabases.$inferSelect;
-  project: typeof projects.$inferSelect;
-}> {
-  // First verify project ownership
-  const project = await verifyProjectOwnership(projectId, userId);
-
-  // Get project database
-  const projectDb = await getProjectDb(projectId);
-
-  // Find database in project database
-  const [database] = await projectDb
-    .select()
-    .from(projectDatabases)
-    .where(eq(projectDatabases.databaseId, databaseId))
-    .limit(1);
-
-  if (!database) {
-    throw new NotFoundError("Database", databaseId);
-  }
-
-  return { database, project };
-}
 
 // Helper function to verify project ownership
 async function verifyProjectOwnership(
@@ -79,7 +49,7 @@ function generateCollectionPath(
 }
 
 export const collectionsRoutes = new Elysia({
-  prefix: "/databases/:id/collections",
+  prefix: "/projects/:id/collections",
 })
   .resolve(authResolver)
   .model({
@@ -132,27 +102,15 @@ export const collectionsRoutes = new Elysia({
       app
         .get(
           "/:collectionId",
-          async ({ user, params, query }) => {
+          async ({ user, params }) => {
             requireAuth(user);
-            if (!query.projectId) {
-              throw new Error("projectId query parameter is required");
-            }
-            await verifyDatabaseAccess(
-              params.id,
-              query.projectId as string,
-              user.id,
-            );
+            await verifyProjectOwnership(params.id, user.id);
 
-            const projectDb = await getProjectDb(projectId);
+            const projectDb = await getProjectDb(params.id);
             const [collection] = await projectDb
               .select()
               .from(projectCollections)
-              .where(
-                and(
-                  eq(projectCollections.collectionId, params.collectionId),
-                  eq(projectCollections.databaseId, params.id),
-                ),
-              )
+              .where(eq(projectCollections.collectionId, params.collectionId))
               .limit(1);
 
             if (!collection) {
@@ -162,7 +120,6 @@ export const collectionsRoutes = new Elysia({
             return {
               data: {
                 collectionId: collection.collectionId,
-                databaseId: collection.databaseId,
                 name: collection.name,
                 path: collection.path,
                 parentDocumentId: collection.parentDocumentId,
@@ -173,9 +130,6 @@ export const collectionsRoutes = new Elysia({
             };
           },
           {
-            query: t.Object({
-              projectId: t.String({ minLength: 1 }),
-            }),
             response: {
               200: t.Object({
                 data: CollectionModels.response,
@@ -185,27 +139,15 @@ export const collectionsRoutes = new Elysia({
         )
         .patch(
           "/:collectionId",
-          async ({ user, params, body, query }) => {
+          async ({ user, params, body }) => {
             requireAuth(user);
-            if (!query.projectId) {
-              throw new Error("projectId query parameter is required");
-            }
-            await verifyDatabaseAccess(
-              params.id,
-              query.projectId as string,
-              user.id,
-            );
+            await verifyProjectOwnership(params.id, user.id);
 
-            const projectDb = await getProjectDb(query.projectId as string);
+            const projectDb = await getProjectDb(params.id);
             const [collection] = await projectDb
               .select()
               .from(projectCollections)
-              .where(
-                and(
-                  eq(projectCollections.collectionId, params.collectionId),
-                  eq(projectCollections.databaseId, params.id),
-                ),
-              )
+              .where(eq(projectCollections.collectionId, params.collectionId))
               .limit(1);
 
             if (!collection) {
@@ -238,7 +180,6 @@ export const collectionsRoutes = new Elysia({
               return {
                 data: {
                   collectionId: updated.collectionId,
-                  databaseId: updated.databaseId,
                   name: updated.name,
                   path: updated.path,
                   parentDocumentId: updated.parentDocumentId,
@@ -252,7 +193,6 @@ export const collectionsRoutes = new Elysia({
             return {
               data: {
                 collectionId: collection.collectionId,
-                databaseId: collection.databaseId,
                 name: collection.name,
                 path: collection.path,
                 parentDocumentId: collection.parentDocumentId,
@@ -263,9 +203,6 @@ export const collectionsRoutes = new Elysia({
             };
           },
           {
-            query: t.Object({
-              projectId: t.String({ minLength: 1 }),
-            }),
             body: CollectionModels.update,
             response: {
               200: t.Object({
@@ -276,27 +213,15 @@ export const collectionsRoutes = new Elysia({
         )
         .delete(
           "/:collectionId",
-          async ({ user, params, query }) => {
+          async ({ user, params }) => {
             requireAuth(user);
-            if (!query.projectId) {
-              throw new Error("projectId query parameter is required");
-            }
-            await verifyDatabaseAccess(
-              params.id,
-              query.projectId as string,
-              user.id,
-            );
+            await verifyProjectOwnership(params.id, user.id);
 
-            const projectDb = await getProjectDb(query.projectId as string);
+            const projectDb = await getProjectDb(params.id);
             const [collection] = await projectDb
               .select()
               .from(projectCollections)
-              .where(
-                and(
-                  eq(projectCollections.collectionId, params.collectionId),
-                  eq(projectCollections.databaseId, params.id),
-                ),
-              )
+              .where(eq(projectCollections.collectionId, params.collectionId))
               .limit(1);
 
             if (!collection) {
@@ -313,9 +238,6 @@ export const collectionsRoutes = new Elysia({
             };
           },
           {
-            query: t.Object({
-              projectId: t.String({ minLength: 1 }),
-            }),
             response: {
               200: CommonModels.success,
             },
@@ -326,25 +248,17 @@ export const collectionsRoutes = new Elysia({
     "/by-path",
     async ({ user, params, query }) => {
       requireAuth(user);
-      if (!query.projectId) {
-        throw new Error("projectId query parameter is required");
-      }
-      await verifyDatabaseAccess(params.id, query.projectId as string, user.id);
+      await verifyProjectOwnership(params.id, user.id);
 
       if (!query.path) {
         throw new NotFoundError("Collection", "path not provided");
       }
 
-      const projectDb = await getProjectDb(query.projectId as string);
+      const projectDb = await getProjectDb(params.id);
       const [collection] = await projectDb
         .select()
         .from(projectCollections)
-        .where(
-          and(
-            eq(projectCollections.path, query.path),
-            eq(projectCollections.databaseId, params.id),
-          ),
-        )
+        .where(eq(projectCollections.path, query.path))
         .limit(1);
 
       if (!collection) {
@@ -354,7 +268,6 @@ export const collectionsRoutes = new Elysia({
       return {
         data: {
           collectionId: collection.collectionId,
-          databaseId: collection.databaseId,
           name: collection.name,
           path: collection.path,
           parentDocumentId: collection.parentDocumentId,
@@ -369,7 +282,6 @@ export const collectionsRoutes = new Elysia({
         id: t.String({ minLength: 1 }),
       }),
       query: t.Object({
-        projectId: t.String({ minLength: 1 }),
         path: t.String({ minLength: 1 }),
       }),
       response: {
@@ -383,29 +295,20 @@ export const collectionsRoutes = new Elysia({
     "/",
     async ({ user, params, query }) => {
       requireAuth(user);
-      if (!query.projectId) {
-        throw new Error("projectId query parameter is required");
-      }
-      await verifyDatabaseAccess(params.id, query.projectId as string, user.id);
+      await verifyProjectOwnership(params.id, user.id);
 
-      const projectDb = await getProjectDb(query.projectId as string);
+      const projectDb = await getProjectDb(params.id);
 
       // If parentPath is provided, get subcollections
       if (query.parentPath) {
         const subcollections = await projectDb
           .select()
           .from(projectCollections)
-          .where(
-            and(
-              eq(projectCollections.databaseId, params.id),
-              eq(projectCollections.parentPath, query.parentPath),
-            ),
-          );
+          .where(eq(projectCollections.parentPath, query.parentPath));
 
         return {
           data: subcollections.map((col) => ({
             collectionId: col.collectionId,
-            databaseId: col.databaseId,
             name: col.name,
             path: col.path,
             parentDocumentId: col.parentDocumentId,
@@ -420,17 +323,11 @@ export const collectionsRoutes = new Elysia({
       const rootCollections = await projectDb
         .select()
         .from(projectCollections)
-        .where(
-          and(
-            eq(projectCollections.databaseId, params.id),
-            isNull(projectCollections.parentPath),
-          ),
-        );
+        .where(isNull(projectCollections.parentPath));
 
       return {
         data: rootCollections.map((col) => ({
           collectionId: col.collectionId,
-          databaseId: col.databaseId,
           name: col.name,
           path: col.path,
           parentDocumentId: col.parentDocumentId,
@@ -445,7 +342,6 @@ export const collectionsRoutes = new Elysia({
         id: t.String({ minLength: 1 }),
       }),
       query: t.Object({
-        projectId: t.String({ minLength: 1 }),
         parentPath: t.Optional(t.String()),
       }),
       response: {
@@ -457,14 +353,11 @@ export const collectionsRoutes = new Elysia({
   )
   .post(
     "/",
-    async ({ user, params, body, query }) => {
+    async ({ user, params, body }) => {
       requireAuth(user);
-      if (!query.projectId) {
-        throw new Error("projectId query parameter is required");
-      }
-      await verifyDatabaseAccess(params.id, query.projectId as string, user.id);
+      await verifyProjectOwnership(params.id, user.id);
 
-      const projectDb = await getProjectDb(query.projectId as string);
+      const projectDb = await getProjectDb(params.id);
 
       const collectionId = nanoid();
       const path = generateCollectionPath(
@@ -477,12 +370,7 @@ export const collectionsRoutes = new Elysia({
       const [existing] = await projectDb
         .select()
         .from(projectCollections)
-        .where(
-          and(
-            eq(projectCollections.path, path),
-            eq(projectCollections.databaseId, params.id),
-          ),
-        )
+        .where(eq(projectCollections.path, path))
         .limit(1);
 
       if (existing) {
@@ -506,7 +394,6 @@ export const collectionsRoutes = new Elysia({
         .insert(projectCollections)
         .values({
           collectionId: collectionId,
-          databaseId: params.id,
           name: body.name,
           path: path,
           parentDocumentId: body.parentDocumentId || null,
@@ -521,7 +408,6 @@ export const collectionsRoutes = new Elysia({
       return {
         data: {
           collectionId: collection.collectionId,
-          databaseId: collection.databaseId,
           name: collection.name,
           path: collection.path,
           parentDocumentId: collection.parentDocumentId,
@@ -534,9 +420,6 @@ export const collectionsRoutes = new Elysia({
     {
       params: t.Object({
         id: t.String({ minLength: 1 }),
-      }),
-      query: t.Object({
-        projectId: t.String({ minLength: 1 }),
       }),
       body: CollectionModels.create,
       response: {

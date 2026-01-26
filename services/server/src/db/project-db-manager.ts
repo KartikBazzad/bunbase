@@ -92,7 +92,7 @@ export class ProjectDatabaseManager {
       SELECT table_name 
       FROM information_schema.tables 
       WHERE table_schema = 'public' 
-      AND table_name IN ('user', 'account', 'authSettings', 'database', 'collection', 'document')
+      AND table_name IN ('user', 'account', 'authSettings', 'oauthProvider', 'detailedAuthSettings', 'collection', 'document')
     `);
 
     // If tables already exist, skip initialization
@@ -154,28 +154,55 @@ export class ProjectDatabaseManager {
       )
     `);
 
-    // Create databases table (user-created databases within the project)
+    // Create oauthProvider table
     await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "database" (
-        "databaseId" text PRIMARY KEY NOT NULL,
-        "name" text NOT NULL,
+      CREATE TABLE IF NOT EXISTS "oauthProvider" (
+        "id" text PRIMARY KEY NOT NULL,
+        "provider" auth_provider NOT NULL,
+        "clientId" text NOT NULL,
+        "clientSecret" text NOT NULL,
+        "redirectUri" text,
+        "scopes" jsonb DEFAULT '[]'::jsonb,
+        "isConfigured" boolean DEFAULT false NOT NULL,
+        "lastTestedAt" timestamp,
+        "lastTestStatus" text,
+        "createdAt" timestamp DEFAULT now() NOT NULL,
+        "updatedAt" timestamp DEFAULT now() NOT NULL
+      )
+    `);
+
+    // Create detailedAuthSettings table
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS "detailedAuthSettings" (
+        "id" text PRIMARY KEY DEFAULT 'default' NOT NULL,
+        "requireEmailVerification" boolean DEFAULT false NOT NULL,
+        "rateLimitMax" text DEFAULT '5' NOT NULL,
+        "rateLimitWindow" text DEFAULT '15' NOT NULL,
+        "sessionExpirationDays" text DEFAULT '30' NOT NULL,
+        "minPasswordLength" text DEFAULT '8' NOT NULL,
+        "requireUppercase" boolean DEFAULT false NOT NULL,
+        "requireLowercase" boolean DEFAULT false NOT NULL,
+        "requireNumbers" boolean DEFAULT false NOT NULL,
+        "requireSpecialChars" boolean DEFAULT false NOT NULL,
+        "mfaEnabled" boolean DEFAULT false NOT NULL,
+        "mfaRequired" boolean DEFAULT false NOT NULL,
         "createdAt" timestamp DEFAULT now() NOT NULL,
         "updatedAt" timestamp DEFAULT now() NOT NULL
       )
     `);
 
     // Create collections table
+    // Note: databaseId column kept for backward compatibility but foreign key removed
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS "collection" (
         "collectionId" text PRIMARY KEY NOT NULL,
-        "databaseId" text NOT NULL,
+        "databaseId" text,
         "name" text NOT NULL,
         "path" text NOT NULL UNIQUE,
         "parentDocumentId" text,
         "parentPath" text,
         "createdAt" timestamp DEFAULT now() NOT NULL,
-        "updatedAt" timestamp DEFAULT now() NOT NULL,
-        CONSTRAINT "collection_databaseId_database_databaseId_fk" FOREIGN KEY ("databaseId") REFERENCES "database"("databaseId") ON DELETE cascade
+        "updatedAt" timestamp DEFAULT now() NOT NULL
       )
     `);
 
@@ -197,9 +224,6 @@ export class ProjectDatabaseManager {
       CREATE INDEX IF NOT EXISTS "account_userId_idx" ON "account"("userId")
     `);
     await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS "collection_databaseId_idx" ON "collection"("databaseId")
-    `);
-    await db.execute(sql`
       CREATE INDEX IF NOT EXISTS "document_collectionId_idx" ON "document"("collectionId")
     `);
     await db.execute(sql`
@@ -210,6 +234,13 @@ export class ProjectDatabaseManager {
     await db.execute(sql`
       INSERT INTO "authSettings" ("id", "providers", "emailAndPassword")
       VALUES ('default', '["email"]'::jsonb, '{"enabled": true, "requireEmailVerification": false}'::jsonb)
+      ON CONFLICT ("id") DO NOTHING
+    `);
+
+    // Insert default detailed auth settings
+    await db.execute(sql`
+      INSERT INTO "detailedAuthSettings" ("id")
+      VALUES ('default')
       ON CONFLICT ("id") DO NOTHING
     `);
   }

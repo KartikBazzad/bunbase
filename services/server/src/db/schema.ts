@@ -5,8 +5,11 @@ import {
   boolean,
   jsonb,
   pgEnum,
+  integer,
+  unique,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
+import { nanoid } from "nanoid";
 
 // Auth provider enum
 export const authProviderEnum = pgEnum("auth_provider", [
@@ -24,6 +27,8 @@ export const users = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("emailVerified").notNull().default(false),
   image: text("image"),
+  isBanned: boolean("isBanned").notNull().default(false),
+  banReason: text("banReason"),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
@@ -117,6 +122,7 @@ export const databases = pgTable("database", {
   projectId: text("projectId")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
+  isDefault: boolean("isDefault").notNull().default(false), // Default database for the project
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
@@ -127,6 +133,48 @@ export const projectAuth = pgTable("projectAuth", {
     .primaryKey()
     .references(() => projects.id, { onDelete: "cascade" }),
   providers: jsonb("providers").$type<string[]>().notNull().default(["email"]),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+// Project auth settings table
+export const projectAuthSettings = pgTable("projectAuthSettings", {
+  projectId: text("projectId")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  requireEmailVerification: boolean("requireEmailVerification")
+    .notNull()
+    .default(false),
+  rateLimitMax: integer("rateLimitMax").notNull().default(5),
+  rateLimitWindow: integer("rateLimitWindow").notNull().default(15),
+  sessionExpirationDays: integer("sessionExpirationDays").notNull().default(30),
+  minPasswordLength: integer("minPasswordLength").notNull().default(8),
+  requireUppercase: boolean("requireUppercase").notNull().default(false),
+  requireLowercase: boolean("requireLowercase").notNull().default(false),
+  requireNumbers: boolean("requireNumbers").notNull().default(false),
+  requireSpecialChars: boolean("requireSpecialChars").notNull().default(false),
+  mfaEnabled: boolean("mfaEnabled").notNull().default(false),
+  mfaRequired: boolean("mfaRequired").notNull().default(false),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+// OAuth provider credentials table
+export const projectOAuthProviders = pgTable("projectOAuthProvider", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => nanoid()),
+  projectId: text("projectId")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  provider: authProviderEnum("provider").notNull(), // google, github, etc.
+  clientId: text("clientId").notNull(),
+  clientSecret: text("clientSecret").notNull(), // Encrypted
+  redirectUri: text("redirectUri"),
+  scopes: jsonb("scopes").$type<string[]>().default([]),
+  isConfigured: boolean("isConfigured").notNull().default(false),
+  lastTestedAt: timestamp("lastTestedAt"),
+  lastTestStatus: text("lastTestStatus"), // "success" | "failed" | null
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
@@ -152,18 +200,6 @@ export const collections = pgTable("collection", {
   path: text("path").notNull().unique(), // Full path like "users" or "users/{userId}/posts"
   parentDocumentId: text("parentDocumentId"), // Nullable, for subcollections
   parentPath: text("parentPath"), // Nullable, path of parent collection
-  createdAt: timestamp("createdAt").notNull().defaultNow(),
-  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
-});
-
-// Documents table (Firestore-like document storage)
-export const documents = pgTable("document", {
-  documentId: text("documentId").primaryKey(),
-  collectionId: text("collectionId")
-    .notNull()
-    .references(() => collections.collectionId, { onDelete: "cascade" }),
-  path: text("path").notNull().unique(), // Full document path like "users/{userId}" or "users/{userId}/posts/{postId}"
-  data: jsonb("data").notNull().$type<Record<string, any>>(), // Document data as JSONB
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
@@ -197,10 +233,16 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   applications: many(applications),
   databases: many(databases),
   storage: many(storage),
+  functions: many(functions),
   auth: one(projectAuth, {
     fields: [projects.id],
     references: [projectAuth.projectId],
   }),
+  authSettings: one(projectAuthSettings, {
+    fields: [projects.id],
+    references: [projectAuthSettings.projectId],
+  }),
+  oauthProviders: many(projectOAuthProviders),
 }));
 
 export const applicationsRelations = relations(
@@ -239,6 +281,26 @@ export const projectAuthRelations = relations(projectAuth, ({ one }) => ({
   }),
 }));
 
+export const projectAuthSettingsRelations = relations(
+  projectAuthSettings,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [projectAuthSettings.projectId],
+      references: [projects.id],
+    }),
+  }),
+);
+
+export const projectOAuthProvidersRelations = relations(
+  projectOAuthProviders,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [projectOAuthProviders.projectId],
+      references: [projects.id],
+    }),
+  }),
+);
+
 export const storageRelations = relations(storage, ({ one }) => ({
   project: one(projects, {
     fields: [storage.projectId],
@@ -246,22 +308,211 @@ export const storageRelations = relations(storage, ({ one }) => ({
   }),
 }));
 
-export const collectionsRelations = relations(collections, ({ one, many }) => ({
-  database: one(databases, {
-    fields: [collections.databaseId],
-    references: [databases.databaseId],
+// Function status enum
+export const functionStatusEnum = pgEnum("function_status", [
+  "draft",
+  "deployed",
+  "paused",
+]);
+
+// Functions table
+export const functions = pgTable(
+  "function",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    runtime: text("runtime").notNull().default("bun"),
+    handler: text("handler").notNull(),
+    status: functionStatusEnum("status").notNull().default("draft"),
+    memory: integer("memory").default(512), // MB
+    timeout: integer("timeout").default(30), // seconds
+    maxConcurrentExecutions: integer("maxConcurrentExecutions").default(10),
+    runtimeType: text("runtimeType").default("worker"), // worker | process
+    activeVersionId: text("activeVersionId").references(
+      () => functionVersions.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+    updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectNameUnique: unique().on(table.projectId, table.name),
   }),
-  parentDocument: one(documents, {
-    fields: [collections.parentDocumentId],
-    references: [documents.documentId],
+);
+
+// Function versions table
+export const functionVersions = pgTable(
+  "functionVersion",
+  {
+    id: text("id").primaryKey(),
+    functionId: text("functionId")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    version: text("version").notNull(),
+    codeHash: text("codeHash").notNull(),
+    codePath: text("codePath").notNull(),
+    deployedAt: timestamp("deployedAt"),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    functionVersionUnique: unique().on(table.functionId, table.version),
   }),
-  documents: many(documents),
+);
+
+// Function deployments table
+export const functionDeployments = pgTable("functionDeployment", {
+  id: text("id").primaryKey(),
+  functionId: text("functionId")
+    .notNull()
+    .references(() => functions.id, { onDelete: "cascade" }),
+  versionId: text("versionId")
+    .notNull()
+    .references(() => functionVersions.id, { onDelete: "cascade" }),
+  environment: text("environment").notNull().default("production"),
+  status: text("status").notNull().default("active"),
+  deployedAt: timestamp("deployedAt").notNull().defaultNow(),
+});
+
+// Function environment variables table (encrypted)
+export const functionEnvironments = pgTable(
+  "functionEnvironment",
+  {
+    id: text("id").primaryKey(),
+    functionId: text("functionId")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: text("value").notNull(), // encrypted
+    isSecret: boolean("isSecret").notNull().default(false),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    functionKeyUnique: unique().on(table.functionId, table.key),
+  }),
+);
+
+// Function logs table
+export const functionLogs = pgTable("functionLog", {
+  id: text("id").primaryKey(),
+  functionId: text("functionId")
+    .notNull()
+    .references(() => functions.id, { onDelete: "cascade" }),
+  executionId: text("executionId").notNull(),
+  level: text("level").notNull(), // debug, info, warn, error
+  message: text("message").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+});
+
+// Function metrics table (aggregated daily)
+export const functionMetrics = pgTable(
+  "functionMetric",
+  {
+    id: text("id").primaryKey(),
+    functionId: text("functionId")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    date: timestamp("date").notNull(),
+    invocations: integer("invocations").notNull().default(0),
+    errors: integer("errors").notNull().default(0),
+    totalDuration: integer("totalDuration").notNull().default(0), // milliseconds
+    coldStarts: integer("coldStarts").notNull().default(0),
+  },
+  (table) => ({
+    functionDateUnique: unique().on(table.functionId, table.date),
+  }),
+);
+
+// Function metrics table (minute-level, for real-time analysis)
+export const functionMetricsMinute = pgTable(
+  "functionMetricMinute",
+  {
+    id: text("id").primaryKey(),
+    functionId: text("functionId")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    timestamp: timestamp("timestamp").notNull(), // Rounded to minute
+    invocations: integer("invocations").notNull().default(0),
+    errors: integer("errors").notNull().default(0),
+    totalDuration: integer("totalDuration").notNull().default(0), // milliseconds
+    coldStarts: integer("coldStarts").notNull().default(0),
+  },
+  (table) => ({
+    functionTimestampUnique: unique().on(table.functionId, table.timestamp),
+  }),
+);
+
+// Function relations
+export const functionsRelations = relations(functions, ({ one, many }) => ({
+  project: one(projects, {
+    fields: [functions.projectId],
+    references: [projects.id],
+  }),
+  versions: many(functionVersions),
+  deployments: many(functionDeployments),
+  environments: many(functionEnvironments),
+  logs: many(functionLogs),
+  metrics: many(functionMetrics),
 }));
 
-export const documentsRelations = relations(documents, ({ one, many }) => ({
-  collection: one(collections, {
-    fields: [documents.collectionId],
-    references: [collections.collectionId],
+export const functionVersionsRelations = relations(
+  functionVersions,
+  ({ one, many }) => ({
+    function: one(functions, {
+      fields: [functionVersions.functionId],
+      references: [functions.id],
+    }),
+    deployments: many(functionDeployments),
   }),
-  subcollections: many(collections),
+);
+
+export const functionDeploymentsRelations = relations(
+  functionDeployments,
+  ({ one }) => ({
+    function: one(functions, {
+      fields: [functionDeployments.functionId],
+      references: [functions.id],
+    }),
+    version: one(functionVersions, {
+      fields: [functionDeployments.versionId],
+      references: [functionVersions.id],
+    }),
+  }),
+);
+
+export const functionEnvironmentsRelations = relations(
+  functionEnvironments,
+  ({ one }) => ({
+    function: one(functions, {
+      fields: [functionEnvironments.functionId],
+      references: [functions.id],
+    }),
+  }),
+);
+
+export const functionLogsRelations = relations(functionLogs, ({ one }) => ({
+  function: one(functions, {
+    fields: [functionLogs.functionId],
+    references: [functions.id],
+  }),
 }));
+
+export const functionMetricsRelations = relations(functionMetrics, ({ one }) => ({
+  function: one(functions, {
+    fields: [functionMetrics.functionId],
+    references: [functions.id],
+  }),
+}));
+
+export const functionMetricsMinuteRelations = relations(
+  functionMetricsMinute,
+  ({ one }) => ({
+    function: one(functions, {
+      fields: [functionMetricsMinute.functionId],
+      references: [functions.id],
+    }),
+  }),
+);

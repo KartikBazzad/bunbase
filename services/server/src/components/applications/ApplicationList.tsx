@@ -2,16 +2,9 @@ import { useApplications } from "../../hooks/useApplications";
 import { CreateApplicationDialog } from "./CreateApplicationDialog";
 import { ApplicationConfigDialog } from "./ApplicationConfigDialog";
 import { Button } from "../ui/button";
-import { Plus, Loader2, Trash2, Key } from "lucide-react";
+import { Plus, Loader2, Trash2, Key, Rocket } from "lucide-react";
 import { useState } from "react";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "../ui/empty";
+import { Card, CardContent } from "../ui/card";
 import {
   Table,
   TableBody,
@@ -73,7 +66,7 @@ export function ApplicationList({ projectId }: ApplicationListProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Applications</h2>
@@ -88,25 +81,28 @@ export function ApplicationList({ projectId }: ApplicationListProps) {
       </div>
 
       {applications.length === 0 ? (
-        <Empty>
-          <EmptyMedia variant="icon">
-            <Plus className="h-8 w-8" />
-          </EmptyMedia>
-          <EmptyHeader>
-            <EmptyTitle>No applications yet</EmptyTitle>
-            <EmptyDescription>
-              Create your first application for this project
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button onClick={() => setIsCreateDialogOpen(true)}>
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12 px-6">
+            <div className="mb-4 flex size-16 items-center justify-center rounded-full bg-primary/10">
+              <Rocket className="h-8 w-8 text-primary" />
+            </div>
+            <div className="text-center">
+              <h3 className="text-xl font-semibold">No applications yet</h3>
+              <p className="text-sm text-muted-foreground mt-2">
+                Create your first application to start deploying your project
+              </p>
+            </div>
+            <Button
+              className="mt-6"
+              onClick={() => setIsCreateDialogOpen(true)}
+            >
               <Plus className="mr-2 h-4 w-4" />
               Create Application
             </Button>
-          </EmptyContent>
-        </Empty>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="rounded-md border">
+        <Card className="overflow-hidden">
           <Table>
             <TableHeader>
               <TableRow>
@@ -118,19 +114,20 @@ export function ApplicationList({ projectId }: ApplicationListProps) {
             </TableHeader>
             <TableBody>
               {applications.map((app) => (
-                <TableRow key={app.id}>
+                <TableRow key={app.id} className="group hover:bg-muted/50 transition-colors">
                   <TableCell className="font-medium">{app.name}</TableCell>
-                  <TableCell>{app.description}</TableCell>
+                  <TableCell className="text-muted-foreground">{app.description}</TableCell>
                   <TableCell>
-                    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                    <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                       {app.type}
                     </span>
                   </TableCell>
                   <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex items-center justify-end gap-1">
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() =>
                           setConfigDialogState({
                             open: true,
@@ -144,16 +141,19 @@ export function ApplicationList({ projectId }: ApplicationListProps) {
                       </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <Trash2 className="h-4 w-4 text-destructive" />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                            <AlertDialogTitle>Delete application</AlertDialogTitle>
                             <AlertDialogDescription>
-                              This will permanently delete the application "
-                              {app.name}". This action cannot be undone.
+                              Are you sure you want to delete "{app.name}"? This action cannot be undone.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -174,7 +174,7 @@ export function ApplicationList({ projectId }: ApplicationListProps) {
               ))}
             </TableBody>
           </Table>
-        </div>
+        </Card>
       )}
 
       <CreateApplicationDialog

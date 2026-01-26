@@ -1,6 +1,12 @@
 import { serve } from "bun";
 import index from "./index.html";
 import app from "./server";
+import { logger } from "./lib/logger";
+import { initializeLogBuffer } from "./lib/function-log-buffer";
+import { flushLogsToStorage } from "./lib/function-log-storage";
+
+// Initialize function log buffer
+initializeLogBuffer(flushLogsToStorage);
 
 export const server = serve({
   routes: {
@@ -20,4 +26,4 @@ export const server = serve({
   },
 });
 
-console.log(`🚀 Server running at ${server.url}`);
+logger.info(`🚀 Server running at ${server.url}`);

@@ -22,36 +22,58 @@ export class DatabaseModule {
 
   /**
    * Create a document
+   * @param collectionId - Collection name or path
+   * @param data - Document data
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async create(
-    databaseId: string,
     collectionId: string,
     data: Record<string, any>,
+    databaseId?: string,
   ): Promise<DatabaseDocument> {
-    const response = await this.client.request<{ data: DatabaseDocument }>(
-      "POST",
-      `/databases/${databaseId}/collections/${collectionId}/documents`,
-      {
-        body: { data },
-        query: { projectId: this.config.projectId },
-      },
-    );
-    return response.data;
+    // Database ID is resolved automatically from API key on the server
+    // Only use provided databaseId if explicitly passed (for multi-database scenarios)
+    // Use the new Firebase-style API: /api/db/collections/:name/documents
+    // Collections are auto-created if they don't exist (Firebase behavior)
+    const response = await this.client.request<
+      DatabaseDocument | { data: DatabaseDocument }
+    >("POST", `/db/${collectionId}`, {
+      body: { data },
+      // Optionally include databaseId in query if provided
+      query: databaseId ? { databaseId } : undefined,
+    });
+    // Response format: { data: { documentId, collectionId, path, data, createdAt, updatedAt } }
+    // Handle both wrapped and unwrapped formats for backward compatibility
+    if (
+      "data" in response &&
+      response.data &&
+      typeof response.data === "object" &&
+      "documentId" in response.data
+    ) {
+      return response.data as DatabaseDocument;
+    }
+    return response as DatabaseDocument;
   }
 
   /**
    * Get a document by ID
+   * @param collectionId - Collection name or path
+   * @param documentId - Document ID
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async get(
-    databaseId: string,
     collectionId: string,
     documentId: string,
+    databaseId?: string,
   ): Promise<DatabaseDocument> {
+    // Database ID is resolved automatically from API key on the server
+    // Only use provided databaseId if explicitly passed (for multi-database scenarios)
+    // Use the new Firebase-style API: /api/db/:collection/:id
     const response = await this.client.request<{ data: DatabaseDocument }>(
       "GET",
-      `/databases/${databaseId}/collections/${collectionId}/documents/${documentId}`,
+      `/db/${collectionId}/${documentId}`,
       {
-        query: { projectId: this.config.projectId },
+        query: databaseId ? { databaseId } : undefined,
       },
     );
     return response.data;
@@ -59,44 +81,67 @@ export class DatabaseModule {
 
   /**
    * Query documents
+   * @param collectionId - Collection name or path
+   * @param query - Query options (filter, sort, limit, offset)
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async query(
-    databaseId: string,
     collectionId: string,
     query: DatabaseQuery = {},
+    databaseId?: string,
   ): Promise<{
     data: DatabaseDocument[];
     total: number;
     limit: number;
     offset: number;
   }> {
-    return this.client.request(
-      "GET",
-      `/databases/${databaseId}/collections/${collectionId}/documents`,
-      {
-        query: {
-          projectId: this.config.projectId,
-          ...query,
-        },
-      },
-    );
+    // Database ID is resolved automatically from API key on the server
+    // Only use provided databaseId if explicitly passed (for multi-database scenarios)
+    const queryParams: Record<string, string | number | boolean> = {};
+
+    if (databaseId) {
+      queryParams.databaseId = databaseId;
+    }
+    if (query.filter) {
+      queryParams.filter = JSON.stringify(query.filter);
+    }
+    if (query.sort) {
+      queryParams.sort = JSON.stringify(query.sort);
+    }
+    if (query.limit !== undefined) {
+      queryParams.limit = query.limit;
+    }
+    if (query.offset !== undefined) {
+      queryParams.offset = query.offset;
+    }
+
+    // Use the new Firebase-style API: /api/db/:collection
+    return this.client.request("GET", `/db/${collectionId}`, {
+      query: Object.keys(queryParams).length > 0 ? queryParams : undefined,
+    });
   }
 
   /**
    * Update a document (full replacement)
+   * @param collectionId - Collection name or path
+   * @param documentId - Document ID
+   * @param data - Document data
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async update(
-    databaseId: string,
     collectionId: string,
     documentId: string,
     data: Record<string, any>,
+    databaseId?: string,
   ): Promise<DatabaseDocument> {
+    // Database ID is resolved automatically from API key on the server
+    // Use the new Firebase-style API: /api/db/:collection/:id
     const response = await this.client.request<{ data: DatabaseDocument }>(
       "PUT",
-      `/databases/${databaseId}/collections/${collectionId}/documents/${documentId}`,
+      `/db/${collectionId}/${documentId}`,
       {
         body: { data },
-        query: { projectId: this.config.projectId },
+        query: databaseId ? { databaseId } : undefined,
       },
     );
     return response.data;
@@ -104,19 +149,25 @@ export class DatabaseModule {
 
   /**
    * Patch a document (partial update)
+   * @param collectionId - Collection name or path
+   * @param documentId - Document ID
+   * @param data - Partial document data
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async patch(
-    databaseId: string,
     collectionId: string,
     documentId: string,
     data: Record<string, any>,
+    databaseId?: string,
   ): Promise<DatabaseDocument> {
+    // Database ID is resolved automatically from API key on the server
+    // Use the new Firebase-style API: /api/db/:collection/:id
     const response = await this.client.request<{ data: DatabaseDocument }>(
       "PATCH",
-      `/databases/${databaseId}/collections/${collectionId}/documents/${documentId}`,
+      `/db/${collectionId}/${documentId}`,
       {
         body: { data },
-        query: { projectId: this.config.projectId },
+        query: databaseId ? { databaseId } : undefined,
       },
     );
     return response.data;
@@ -124,36 +175,44 @@ export class DatabaseModule {
 
   /**
    * Delete a document
+   * @param collectionId - Collection name or path
+   * @param documentId - Document ID
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async delete(
-    databaseId: string,
     collectionId: string,
     documentId: string,
+    databaseId?: string,
   ): Promise<void> {
-    await this.client.request(
-      "DELETE",
-      `/databases/${databaseId}/collections/${collectionId}/documents/${documentId}`,
-      {
-        query: { projectId: this.config.projectId },
-      },
-    );
+    // Database ID is resolved automatically from API key on the server
+    // Use the new Firebase-style API: /api/db/:collection/:id
+    await this.client.request("DELETE", `/db/${collectionId}/${documentId}`, {
+      query: databaseId ? { databaseId } : undefined,
+    });
   }
 
   /**
    * Upsert a document (create if not exists, update if exists)
+   * @param collectionId - Collection name or path
+   * @param documentId - Document ID
+   * @param data - Document data
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async upsert(
-    databaseId: string,
     collectionId: string,
     documentId: string,
     data: Record<string, any>,
+    databaseId?: string,
   ): Promise<DatabaseDocument> {
+    // Database ID is resolved automatically from API key on the server
+    // Use the new Firebase-style API: /api/db/:collection/:id
+    // Upsert can be done with PUT (create or update)
     const response = await this.client.request<{ data: DatabaseDocument }>(
       "PUT",
-      `/databases/${databaseId}/collections/${collectionId}/documents/${documentId}/upsert`,
+      `/db/${collectionId}/${documentId}`,
       {
         body: { data },
-        query: { projectId: this.config.projectId },
+        query: databaseId ? { databaseId } : undefined,
       },
     );
     return response.data;
@@ -161,15 +220,18 @@ export class DatabaseModule {
 
   /**
    * Batch operations
+   * @param collectionId - Collection name or path
+   * @param operations - Array of batch operations
+   * @param databaseId - Optional database ID (uses config default if not provided)
    */
   async batch(
-    databaseId: string,
     collectionId: string,
     operations: Array<{
       type: "create" | "update" | "upsert" | "delete";
       documentId?: string;
       data?: Record<string, any>;
     }>,
+    databaseId?: string,
   ): Promise<{
     results: Array<{
       success: boolean;
@@ -180,13 +242,11 @@ export class DatabaseModule {
     successCount: number;
     errorCount: number;
   }> {
-    return this.client.request(
-      "POST",
-      `/databases/${databaseId}/collections/${collectionId}/documents/batch`,
-      {
-        body: { operations },
-        query: { projectId: this.config.projectId },
-      },
-    );
+    // Database ID is resolved automatically from API key on the server
+    // Use the new Firebase-style API: /api/db/:collection/batch
+    return this.client.request("POST", `/db/${collectionId}/batch`, {
+      body: { operations },
+      query: databaseId ? { databaseId } : undefined,
+    });
   }
 }

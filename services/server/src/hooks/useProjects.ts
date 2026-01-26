@@ -8,12 +8,25 @@ export function useProjects() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["projects"],
     queryFn: async () => {
-      const result = await projectsApi.list();
-      if (result.error) {
-        throw new Error(result.error.message);
+      try {
+        const result = await projectsApi.list();
+        if (result.error) {
+          const errorMessage =
+            result.error.message || "Failed to fetch projects";
+          toast.error(errorMessage);
+          throw new Error(errorMessage);
+        }
+        return result.data?.data || [];
+      } catch (err) {
+        // Log the full error for debugging
+        console.error("Error fetching projects:", err);
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to fetch projects";
+        toast.error(errorMessage);
+        throw err;
       }
-      return result.data?.data || [];
     },
+    retry: 1,
   });
 
   const createMutation = useMutation({

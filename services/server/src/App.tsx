@@ -14,6 +14,7 @@ import { ProjectOverview } from "./pages/dashboard/projects/ProjectOverview";
 import { ProjectApplications } from "./pages/dashboard/projects/ProjectApplications";
 import { ProjectDatabases } from "./pages/dashboard/projects/ProjectDatabases";
 import { ProjectAuthentication } from "./pages/dashboard/projects/ProjectAuthentication";
+import { ProjectLogs } from "./pages/dashboard/projects/ProjectLogs";
 import { DatabaseExplorer } from "./pages/dashboard/databases/DatabaseExplorer";
 import { NotFound } from "./pages/NotFound";
 import { useAuth } from "./hooks/useAuth";
@@ -56,19 +57,24 @@ function AppRoutes() {
       <Route
         path="/auth/forgot-password"
         element={
-          isAuthenticated ? <Navigate to="/dashboard" replace /> : <ForgotPassword />
+          isAuthenticated ? (
+            <Navigate to="/dashboard" replace />
+          ) : (
+            <ForgotPassword />
+          )
         }
       />
       <Route
         path="/auth/reset-password"
         element={
-          isAuthenticated ? <Navigate to="/dashboard" replace /> : <ResetPassword />
+          isAuthenticated ? (
+            <Navigate to="/dashboard" replace />
+          ) : (
+            <ResetPassword />
+          )
         }
       />
-      <Route
-        path="/auth/verify-email"
-        element={<VerifyEmail />}
-      />
+      <Route path="/auth/verify-email" element={<VerifyEmail />} />
       <Route
         path="/dashboard"
         element={
@@ -100,17 +106,27 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/dashboard/projects/:id/databases"
+        path="/dashboard/projects/:id/explore"
         element={
           <ProtectedRoute>
             <DashboardLayout>
-              <ProjectDatabases />
+              <DatabaseExplorer />
             </DashboardLayout>
           </ProtectedRoute>
         }
       />
       <Route
-        path="/dashboard/projects/:id/databases/:databaseId/explore"
+        path="/dashboard/projects/:id/explore/collections/:collectionId"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <DatabaseExplorer />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/projects/:id/explore/collections/:collectionId/documents/:documentId"
         element={
           <ProtectedRoute>
             <DashboardLayout>
@@ -125,6 +141,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <DashboardLayout>
               <ProjectAuthentication />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/projects/:id/logs"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <ProjectLogs />
             </DashboardLayout>
           </ProtectedRoute>
         }

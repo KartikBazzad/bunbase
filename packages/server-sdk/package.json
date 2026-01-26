@@ -1,0 +1,38 @@
+{
+  "name": "@bunbase/server-sdk",
+  "version": "0.1.0",
+  "description": "BunBase Server SDK for server-side operations and admin access",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test"
+  },
+  "keywords": [
+    "bunbase",
+    "baas",
+    "backend-as-a-service",
+    "sdk",
+    "server",
+    "admin",
+    "functions"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

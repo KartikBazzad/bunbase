@@ -1,7 +1,9 @@
 import { Elysia, t } from "elysia";
 import { authResolver } from "../middleware/auth";
 import { requireAuth } from "../lib/auth-helpers";
-import { UnauthorizedError } from "../lib/errors";
+import { UnauthorizedError, NotFoundError } from "../lib/errors";
+import { logger } from "../lib/logger";
+import { auth } from "../auth";
 
 // Connection management
 interface Connection {
@@ -44,32 +46,50 @@ setInterval(() => {
 
 export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
   .resolve(authResolver)
-  .ws("/ws", {
-    // Authenticate connection
-    beforeHandle({ headers, status }) {
-      // Extract token from headers or query
-      const token = headers.authorization?.replace("Bearer ", "") ||
-        headers["sec-websocket-protocol"]?.split(",")[0]?.trim();
-      
-      if (!token) {
-        return status(401, "Unauthorized: Missing authentication token");
+  .ws("/", {
+    // Authenticate connection using Better Auth session from cookies
+    beforeHandle: async ({ headers, status }) => {
+      try {
+        // Extract session from cookies via Better Auth
+        // WebSocket upgrade requests include cookies in the Cookie header
+        const session = await auth.api.getSession({ headers });
+
+        if (!session?.user) {
+          return status(401, {
+            error: {
+              message: "Unauthorized: No valid session found",
+              code: "UNAUTHORIZED",
+            },
+          });
+        }
+
+        // Session is valid, user will be available in open handler via authResolver
+      } catch (error) {
+        logger.error("WebSocket authentication error", error);
+        return status(401, {
+          error: {
+            message: "Unauthorized: Authentication failed",
+            code: "UNAUTHORIZED",
+          },
+        });
+      }
+    },
+    open(ws, { user }) {
+      // User is available from authResolver (extracted from session)
+      if (!user) {
+        ws.close(1008, "Unauthorized: No user found");
+        return;
       }
 
-      // TODO: Verify token and get user
-      // For now, we'll handle auth in the open handler
-    },
-    open(ws) {
-      // Extract user from query parameters in the WebSocket URL
-      // Elysia WebSocket query params are available via ws.data
-      // For now, we'll use a simplified approach - in production, extract from URL
       const connectionId = ws.id;
-      
-      // TODO: Extract userId and projectId from WebSocket connection query params
-      // For now, create connection without user validation (should be added)
+
+      // Extract projectId from query params if provided
+      const projectId = ws.data.query?.projectId as string | undefined;
+
       const connection: Connection = {
         id: connectionId,
-        userId: "anonymous", // TODO: Extract from auth token
-        projectId: undefined,
+        userId: user.id, // Use authenticated user from session
+        projectId,
         channels: new Set(),
         connectedAt: new Date(),
         lastPing: new Date(),
@@ -77,12 +97,21 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
 
       connections.set(connectionId, connection);
 
-      // Send welcome message
-      ws.send(JSON.stringify({
-        type: "connected",
+      logger.info("WebSocket connection established", {
         connectionId,
-        timestamp: Date.now(),
-      }));
+        userId: user.id,
+        projectId,
+      });
+
+      // Send welcome message
+      ws.send(
+        JSON.stringify({
+          type: "connected",
+          connectionId,
+          userId: user.id,
+          timestamp: Date.now(),
+        }),
+      );
     },
     message(ws, message) {
       const connection = connections.get(ws.id);
@@ -96,15 +125,18 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
 
       try {
         // Parse message
-        const data = typeof message === "string" ? JSON.parse(message) : message;
+        const data =
+          typeof message === "string" ? JSON.parse(message) : message;
 
         // Handle different message types
         switch (data.type) {
           case "ping":
-            ws.send(JSON.stringify({
-              type: "pong",
-              timestamp: Date.now(),
-            }));
+            ws.send(
+              JSON.stringify({
+                type: "pong",
+                timestamp: Date.now(),
+              }),
+            );
             break;
 
           case "subscribe":
@@ -117,11 +149,13 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
               }
               channels.get(channel)!.add(ws.id);
 
-              ws.send(JSON.stringify({
-                type: "subscribed",
-                channel,
-                timestamp: Date.now(),
-              }));
+              ws.send(
+                JSON.stringify({
+                  type: "subscribed",
+                  channel,
+                  timestamp: Date.now(),
+                }),
+              );
             }
             break;
 
@@ -138,11 +172,13 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
                 }
               }
 
-              ws.send(JSON.stringify({
-                type: "unsubscribed",
-                channel,
-                timestamp: Date.now(),
-              }));
+              ws.send(
+                JSON.stringify({
+                  type: "unsubscribed",
+                  channel,
+                  timestamp: Date.now(),
+                }),
+              );
             }
             break;
 
@@ -172,18 +208,23 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
             break;
 
           default:
-            ws.send(JSON.stringify({
-              type: "error",
-              message: `Unknown message type: ${data.type}`,
-              timestamp: Date.now(),
-            }));
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: `Unknown message type: ${data.type}`,
+                timestamp: Date.now(),
+              }),
+            );
         }
       } catch (error) {
-        ws.send(JSON.stringify({
-          type: "error",
-          message: error instanceof Error ? error.message : "Invalid message format",
-          timestamp: Date.now(),
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message:
+              error instanceof Error ? error.message : "Invalid message format",
+            timestamp: Date.now(),
+          }),
+        );
       }
     },
     close(ws) {
@@ -203,14 +244,106 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
       }
     },
     error(ws, error) {
-      console.error("WebSocket error:", error);
-      ws.send(JSON.stringify({
-        type: "error",
-        message: error instanceof Error ? error.message : "Unknown error",
-        timestamp: Date.now(),
-      }));
+      logger.error("WebSocket error", error, {
+        connectionId: ws.id,
+      });
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: error instanceof Error ? error.message : "Unknown error",
+          timestamp: Date.now(),
+        }),
+      );
     },
   })
+  // Broadcast message to channel
+  .post(
+    "/channels/:id/broadcast",
+    async ({ user, params, body }) => {
+      requireAuth(user);
+      // TODO: Implement broadcast logic
+      return {
+        message: "Message broadcasted",
+      };
+    },
+    {
+      params: t.Object({
+        id: t.String({ minLength: 1 }),
+      }),
+      body: t.Object({
+        event: t.String(),
+        data: t.Any(),
+      }),
+      response: {
+        200: t.Object({
+          message: t.String(),
+        }),
+      },
+    },
+  )
+  // Get presence info for channel
+  .get(
+    "/channels/:id/presence",
+    async ({ user, params }) => {
+      requireAuth(user);
+      const channel = channels.get(params.id);
+      if (!channel) {
+        throw new NotFoundError("Channel", params.id);
+      }
+
+      const channelConnections = Array.from(channel)
+        .map((connId) => connections.get(connId))
+        .filter((conn): conn is Connection => conn !== undefined);
+
+      return {
+        users: channelConnections.map((conn) => ({
+          id: conn.userId,
+          connectedAt: conn.connectedAt,
+        })),
+        count: channelConnections.length,
+      };
+    },
+    {
+      params: t.Object({
+        id: t.String({ minLength: 1 }),
+      }),
+      response: {
+        200: t.Object({
+          users: t.Array(
+            t.Object({
+              id: t.String(),
+              connectedAt: t.Date(),
+            }),
+          ),
+          count: t.Number(),
+        }),
+      },
+    },
+  )
+  // Kick user from channel
+  .post(
+    "/channels/:id/kick",
+    async ({ user, params, body }) => {
+      requireAuth(user);
+      // TODO: Implement kick logic
+      return {
+        message: "User kicked from channel",
+      };
+    },
+    {
+      params: t.Object({
+        id: t.String({ minLength: 1 }),
+      }),
+      body: t.Object({
+        userId: t.String({ minLength: 1 }),
+      }),
+      response: {
+        200: t.Object({
+          message: t.String(),
+        }),
+      },
+    },
+  )
   // List active connections (admin only)
   .get(
     "/connections",

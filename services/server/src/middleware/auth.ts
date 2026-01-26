@@ -18,9 +18,14 @@ export type AuthenticatedUser = {
  * Runs at beforeHandle lifecycle (after validation)
  * Returns early with 401 status if authentication fails
  */
-export const authResolver = async ({ request, status }: Context) => {
+export const authResolver = async ({ request, headers, status }: Context) => {
   try {
-    const session = await auth.api.getSession({ headers: request.headers });
+    // Better Auth getSession accepts headers directly
+    // Use headers from context (available in resolve) or fallback to request.headers
+    const sessionHeaders = headers || request.headers;
+    const session = await auth.api.getSession({
+      headers: sessionHeaders,
+    });
 
     if (!session?.user) {
       return status(401, {
@@ -41,6 +46,10 @@ export const authResolver = async ({ request, status }: Context) => {
       } satisfies AuthenticatedUser,
     };
   } catch (error) {
+    // Log error for debugging (only in development)
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Auth resolver error:", error);
+    }
     return status(401, {
       error: {
         message: "Authentication required",
@@ -66,9 +75,10 @@ export const authMiddleware = new Elysia({ name: "auth" }).resolve(
  */
 export const optionalAuthMiddleware = new Elysia({
   name: "optionalAuth",
-}).resolve(async ({ request }) => {
+}).resolve(async ({ request, headers }) => {
   try {
-    const session = await auth.api.getSession({ headers: request.headers });
+    const sessionHeaders = headers || request.headers;
+    const session = await auth.api.getSession({ headers: sessionHeaders });
     return {
       user: session?.user
         ? ({

@@ -1,8 +1,9 @@
 import { Elysia } from "elysia";
+import { logger } from "./logger";
 
 export class AppError extends Error {
   constructor(
-    public message: string,
+    public override message: string,
     public statusCode: number = 500,
     public code?: string,
   ) {
@@ -95,6 +96,10 @@ export function formatErrorResponse(error: unknown) {
 export const errorHandler = new Elysia().onError(({ code, error, set }) => {
   const response = formatErrorResponse(error);
   set.status = response.error.statusCode;
-  console.error(error);
+  logger.error("Request error", error, {
+    code,
+    statusCode: response.error.statusCode,
+    errorCode: response.error.code,
+  });
   return response;
 });

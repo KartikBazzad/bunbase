@@ -9,33 +9,33 @@ interface QueryOptions {
 }
 
 export function useDocuments(
-  databaseId: string,
+  projectId: string,
   collectionId: string,
   queryOptions?: QueryOptions
 ) {
   const queryClient = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["documents", databaseId, collectionId, queryOptions],
+    queryKey: ["documents", projectId, collectionId, queryOptions],
     queryFn: async () => {
-      const result = await documentsApi.list(databaseId, collectionId, queryOptions);
+      const result = await documentsApi.list(projectId, collectionId, queryOptions);
       if (result.error) {
         throw new Error(result.error.message);
       }
       return result.data || { data: [], total: 0, limit: 50, offset: 0 };
     },
-    enabled: !!databaseId && !!collectionId,
+    enabled: !!projectId && !!collectionId,
   });
 
   const createMutation = useMutation({
     mutationFn: async (data: { data: Record<string, any> }) => {
-      return handleApiCall(documentsApi.create(databaseId, collectionId, data), {
+      return handleApiCall(documentsApi.create(projectId, collectionId, data), {
         showSuccess: true,
         successMessage: "Document created successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents", databaseId, collectionId] });
+      queryClient.invalidateQueries({ queryKey: ["documents", projectId, collectionId] });
     },
   });
 
@@ -48,7 +48,7 @@ export function useDocuments(
       data: { data: Record<string, any> };
     }) => {
       return handleApiCall(
-        documentsApi.update(databaseId, collectionId, documentId, data),
+        documentsApi.update(projectId, collectionId, documentId, data),
         {
           showSuccess: true,
           successMessage: "Document updated successfully",
@@ -56,7 +56,7 @@ export function useDocuments(
       );
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents", databaseId, collectionId] });
+      queryClient.invalidateQueries({ queryKey: ["documents", projectId, collectionId] });
     },
   });
 
@@ -68,25 +68,25 @@ export function useDocuments(
       documentId: string;
       data: { data: Record<string, any> };
     }) => {
-      return handleApiCall(documentsApi.patch(databaseId, collectionId, documentId, data), {
+      return handleApiCall(documentsApi.patch(projectId, collectionId, documentId, data), {
         showSuccess: true,
         successMessage: "Document updated successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents", databaseId, collectionId] });
+      queryClient.invalidateQueries({ queryKey: ["documents", projectId, collectionId] });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: async (documentId: string) => {
-      return handleApiCall(documentsApi.delete(databaseId, collectionId, documentId), {
+      return handleApiCall(documentsApi.delete(projectId, collectionId, documentId), {
         showSuccess: true,
         successMessage: "Document deleted successfully",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents", databaseId, collectionId] });
+      queryClient.invalidateQueries({ queryKey: ["documents", projectId, collectionId] });
     },
   });
 
@@ -108,17 +108,17 @@ export function useDocuments(
   };
 }
 
-export function useDocumentByPath(databaseId: string, path: string) {
+export function useDocumentByPath(projectId: string, path: string) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["document", databaseId, path],
+    queryKey: ["document", projectId, path],
     queryFn: async () => {
-      const result = await documentsApi.getByPath(databaseId, path);
+      const result = await documentsApi.getByPath(projectId, path);
       if (result.error) {
         throw new Error(result.error.message);
       }
       return result.data?.data;
     },
-    enabled: !!databaseId && !!path,
+    enabled: !!projectId && !!path,
   });
 
   return {
@@ -129,20 +129,20 @@ export function useDocumentByPath(databaseId: string, path: string) {
 }
 
 export function useSubcollections(
-  databaseId: string,
+  projectId: string,
   collectionId: string,
   documentId: string
 ) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["subcollections", databaseId, collectionId, documentId],
+    queryKey: ["subcollections", projectId, collectionId, documentId],
     queryFn: async () => {
-      const result = await documentsApi.getSubcollections(databaseId, collectionId, documentId);
+      const result = await documentsApi.getSubcollections(projectId, collectionId, documentId);
       if (result.error) {
         throw new Error(result.error.message);
       }
       return result.data?.data || [];
     },
-    enabled: !!databaseId && !!collectionId && !!documentId,
+    enabled: !!projectId && !!collectionId && !!documentId,
   });
 
   return {
