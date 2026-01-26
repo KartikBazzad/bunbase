@@ -3,8 +3,7 @@
  * Runs in isolated process to execute function code
  */
 
-import { readFile } from "fs/promises";
-import { existsSync } from "fs";
+// Using Bun native APIs
 
 const codePath = process.env.FUNCTION_CODE_PATH!;
 const requestJson = process.env.FUNCTION_REQUEST!;
@@ -26,8 +25,9 @@ async function main() {
   const logs: Array<{ level: string; message: string; timestamp: Date }> = [];
 
   try {
-    // Read function code
-    if (!existsSync(codePath)) {
+    // Read function code using Bun.file
+    const codeFile = Bun.file(codePath);
+    if (!(await codeFile.exists())) {
       throw new Error(`Function code not found: ${codePath}`);
     }
 

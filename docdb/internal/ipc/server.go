@@ -1,0 +1,144 @@
+package ipc
+
+import (
+	"net"
+	"os"
+	"sync"
+
+	"github.com/kartikbazzad/docdb/internal/config"
+	"github.com/kartikbazzad/docdb/internal/logger"
+	"github.com/kartikbazzad/docdb/internal/pool"
+)
+
+type Server struct {
+	cfg      *config.Config
+	logger   *logger.Logger
+	pool     *pool.Pool
+	handler  *Handler
+	listener net.Listener
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	running  bool
+}
+
+func NewServer(cfg *config.Config, log *logger.Logger) (*Server, error) {
+	p := pool.NewPool(cfg, log)
+	h := NewHandler(p)
+
+	return &Server{
+		cfg:     cfg,
+		logger:  log,
+		pool:    p,
+		handler: h,
+		running: false,
+	}, nil
+}
+
+func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running {
+		return nil
+	}
+
+	if err := s.pool.Start(); err != nil {
+		return err
+	}
+
+	if err := os.RemoveAll(s.cfg.IPC.SocketPath); err != nil {
+		s.logger.Warn("Failed to remove old socket: %v", err)
+	}
+
+	listener, err := net.Listen("unix", s.cfg.IPC.SocketPath)
+	if err != nil {
+		return err
+	}
+
+	s.listener = listener
+	s.running = true
+
+	s.logger.Info("IPC server listening on %s", s.cfg.IPC.SocketPath)
+
+	s.wg.Add(1)
+	go s.acceptLoop()
+
+	return nil
+}
+
+func (s *Server) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return nil
+	}
+
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	s.pool.Stop()
+	s.running = false
+
+	s.wg.Wait()
+
+	s.logger.Info("IPC server stopped")
+	return nil
+}
+
+func (s *Server) acceptLoop() {
+	defer s.wg.Done()
+
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			s.mu.Lock()
+			if !s.running {
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Unlock()
+			s.logger.Error("Accept error: %v", err)
+			continue
+		}
+
+		s.wg.Add(1)
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *Server) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+
+	s.logger.Debug("New connection from %s", conn.RemoteAddr())
+
+	for {
+		data, err := readFrame(conn)
+		if err != nil {
+			if err != net.ErrClosed {
+				s.logger.Debug("Connection closed: %v", err)
+			}
+			return
+		}
+
+		frame, err := DecodeRequest(data)
+		if err != nil {
+			s.logger.Error("Failed to decode request: %v", err)
+			continue
+		}
+
+		response := s.handler.Handle(frame)
+		responseData, err := EncodeResponse(response)
+		if err != nil {
+			s.logger.Error("Failed to encode response: %v", err)
+			continue
+		}
+
+		if err := writeFrame(conn, responseData); err != nil {
+			s.logger.Error("Failed to write response: %v", err)
+			return
+		}
+	}
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tanstack": {
+      "type": "remote",
+      "url": "https://tanstack.com/api/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer ts_cd290ebee15247fe07a42115a6d19676501463a631d1b3ff8f4a55cb4c785aa2"
+      }
+    },
+    "MCP_DOCKER": {
+      "type": "local",
+      "enabled": true,
+      "command": ["docker", "mcp", "gateway", "run"]
+    },
+    "Better Auth": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://mcp.chonkie.ai/better-auth/better-auth-builder/mcp",
+      "headers": {}
+    },
+    "Bun": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://bun.com/docs/mcp",
+      "headers": {}
+    }
+  }
+}

@@ -8,9 +8,7 @@ import { eq, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { StorageBucketModels, StorageFileModels } from "./storage-models";
 import { CommonModels } from "./models";
-import { writeFile, readFile, mkdir, stat, unlink } from "fs/promises";
 import { join } from "path";
-import { existsSync } from "fs";
 import { logProjectStorageOperation } from "../lib/project-logger-utils";
 
 // Storage directory (can be configured via env)
@@ -69,8 +67,10 @@ async function verifyBucketAccess(
 // Ensure storage directory exists
 async function ensureStorageDir(bucketId: string): Promise<string> {
   const bucketDir = join(STORAGE_DIR, bucketId);
-  if (!existsSync(bucketDir)) {
-    await mkdir(bucketDir, { recursive: true });
+  const dirFile = Bun.file(bucketDir);
+  if (!(await dirFile.exists())) {
+    // Create directory by writing a keep file
+    await Bun.write(join(bucketDir, ".keep"), "");
   }
   return bucketDir;
 }
@@ -393,24 +393,28 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
 
       // Ensure parent directory exists
       const parentDir = join(fullPath, "..");
-      if (!existsSync(parentDir)) {
-        await mkdir(parentDir, { recursive: true });
+      const parentDirFile = Bun.file(parentDir);
+      if (!(await parentDirFile.exists())) {
+        // Create directory by writing a keep file
+        await Bun.write(join(parentDir, ".keep"), "");
       }
 
-      // Write file to disk
+      // Write file to disk using Bun.write
       const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      await writeFile(fullPath, buffer);
+      await Bun.write(fullPath, arrayBuffer);
 
-      // Get file stats
-      const stats = await stat(fullPath);
+      // Get file size using Bun.file
+      const fileHandle = Bun.file(fullPath);
+      // Read the file to get size (Bun.file.size is only valid after reading)
+      await fileHandle.arrayBuffer();
+      const fileSize = fileHandle.size;
 
       logProjectStorageOperation(apiKey.projectId, "upload", fileId, {
         fileId,
         bucketId: bucket.storageId,
         bucketName: params.bucket,
         path: sanitizedPath,
-        size: stats.size,
+        size: fileSize,
         mimeType: file.type || "application/octet-stream",
       });
 
@@ -418,7 +422,7 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
         fileId,
         bucketId: bucket.storageId,
         path: sanitizedPath,
-        size: stats.size,
+        size: fileSize,
         mimeType: file.type || "application/octet-stream",
         metadata: body.metadata || {},
         createdAt: new Date(),
@@ -463,25 +467,27 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
 
       const bucketDir = await ensureStorageDir(bucket.storageId);
       const fullPath = join(bucketDir, params.path);
+      const fileHandle = Bun.file(fullPath);
 
-      if (!existsSync(fullPath)) {
+      if (!(await fileHandle.exists())) {
         throw new NotFoundError("File", params.path);
       }
 
-      // Read file
-      const fileBuffer = await readFile(fullPath);
-      const stats = await stat(fullPath);
+      // Read file using Bun.file
+      const fileBuffer = await fileHandle.arrayBuffer();
+      // Get file size (size is available after reading)
+      const fileSize = fileHandle.size;
 
       logProjectStorageOperation(apiKey.projectId, "download", undefined, {
         bucketId: bucket.storageId,
         bucketName: params.bucket,
         path: params.path,
-        size: stats.size,
+        size: fileSize,
       });
 
       // Set appropriate headers
       set.headers["Content-Type"] = "application/octet-stream";
-      set.headers["Content-Length"] = stats.size.toString();
+      set.headers["Content-Length"] = fileSize.toString();
       set.headers["Content-Disposition"] =
         `attachment; filename="${params.path.split("/").pop()}"`;
 
@@ -562,11 +568,14 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
 
       const bucketDir = await ensureStorageDir(bucket.storageId);
       const fullPath = join(bucketDir, params.path);
+      const fileHandle = Bun.file(fullPath);
 
-      if (!existsSync(fullPath)) {
+      if (!(await fileHandle.exists())) {
         throw new NotFoundError("File", params.path);
       }
 
+      // Delete file - Bun doesn't have direct unlink, use fs/promises as fallback
+      const { unlink } = await import("fs/promises");
       await unlink(fullPath);
 
       logProjectStorageOperation(apiKey.projectId, "delete", undefined, {
@@ -612,14 +621,14 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
       const bucketDir = await ensureStorageDir(bucket.storageId);
       const sourcePath = join(bucketDir, params.path);
       const destPath = join(bucketDir, body.destination);
+      const sourceFile = Bun.file(sourcePath);
 
-      if (!existsSync(sourcePath)) {
+      if (!(await sourceFile.exists())) {
         throw new NotFoundError("File", params.path);
       }
 
-      // Copy file
-      const fileBuffer = await readFile(sourcePath);
-      await writeFile(destPath, fileBuffer);
+      // Copy file using Bun.write
+      await Bun.write(destPath, sourceFile);
 
       logProjectStorageOperation(apiKey.projectId, "copy", undefined, {
         bucketId: bucket.storageId,
@@ -672,14 +681,15 @@ export const storageApiRoutes = new Elysia({ prefix: "/storage" })
       const bucketDir = await ensureStorageDir(bucket.storageId);
       const sourcePath = join(bucketDir, params.path);
       const destPath = join(bucketDir, body.destination);
+      const sourceFile = Bun.file(sourcePath);
 
-      if (!existsSync(sourcePath)) {
+      if (!(await sourceFile.exists())) {
         throw new NotFoundError("File", params.path);
       }
 
-      // Move file (copy then delete)
-      const fileBuffer = await readFile(sourcePath);
-      await writeFile(destPath, fileBuffer);
+      // Move file (copy then delete) using Bun APIs
+      await Bun.write(destPath, sourceFile);
+      const { unlink } = await import("fs/promises");
       await unlink(sourcePath);
 
       logProjectStorageOperation(apiKey.projectId, "move", undefined, {

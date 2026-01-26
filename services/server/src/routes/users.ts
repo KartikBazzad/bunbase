@@ -84,7 +84,9 @@ export const usersRoutes = new Elysia({
       const limit = query.limit ? parseInt(query.limit) : 20;
       const offset = query.offset ? parseInt(query.offset) : 0;
       const search = query.search || "";
-      const isEmailVerified = query.emailVerified ? query.emailVerified === "true" : undefined;
+      const isEmailVerified = query.emailVerified
+        ? query.emailVerified === "true"
+        : undefined;
 
       const conditions = [];
 
@@ -92,8 +94,8 @@ export const usersRoutes = new Elysia({
         conditions.push(
           or(
             like(projectUsers.name, `%${search}%`),
-            like(projectUsers.email, `%${search}%`)
-          )
+            like(projectUsers.email, `%${search}%`),
+          ),
         );
       }
 
@@ -117,12 +119,13 @@ export const usersRoutes = new Elysia({
 
       // Get provider info from accounts for all users
       const userIds = userList.map((u) => u.id);
-      const accounts = userIds.length > 0
-        ? await projectDb
-            .select()
-            .from(projectAccounts)
-            .where(inArray(projectAccounts.userId, userIds))
-        : [];
+      const accounts =
+        userIds.length > 0
+          ? await projectDb
+              .select()
+              .from(projectAccounts)
+              .where(inArray(projectAccounts.userId, userIds))
+          : [];
 
       // Create a map of userId -> provider (use first account for each user)
       const providerMap = new Map<string, string>();
@@ -157,46 +160,43 @@ export const usersRoutes = new Elysia({
       }),
     },
   )
-  .get(
-    "/:userId",
-    async ({ user, params }) => {
-      requireAuth(user);
-      await verifyProjectOwnership(params.id, user.id);
+  .get("/:userId", async ({ user, params }) => {
+    requireAuth(user);
+    await verifyProjectOwnership(params.id, user.id);
 
-      // Get project-specific database
-      const projectDb = await getProjectDb(params.id);
+    // Get project-specific database
+    const projectDb = await getProjectDb(params.id);
 
-      const [userRecord] = await projectDb
-        .select()
-        .from(projectUsers)
-        .where(eq(projectUsers.id, params.userId))
-        .limit(1);
+    const [userRecord] = await projectDb
+      .select()
+      .from(projectUsers)
+      .where(eq(projectUsers.id, params.userId))
+      .limit(1);
 
-      if (!userRecord) {
-        throw new NotFoundError("User", params.userId);
-      }
+    if (!userRecord) {
+      throw new NotFoundError("User", params.userId);
+    }
 
-      // Get provider from accounts
-      const [account] = await projectDb
-        .select()
-        .from(projectAccounts)
-        .where(eq(projectAccounts.userId, params.userId))
-        .limit(1);
+    // Get provider from accounts
+    const [account] = await projectDb
+      .select()
+      .from(projectAccounts)
+      .where(eq(projectAccounts.userId, params.userId))
+      .limit(1);
 
-      return {
-        data: {
-          id: userRecord.id,
-          name: userRecord.name,
-          email: userRecord.email,
-          emailVerified: userRecord.emailVerified,
-          provider: account?.providerId || "email",
-          image: userRecord.image,
-          createdAt: userRecord.createdAt,
-          updatedAt: userRecord.updatedAt,
-        },
-      };
-    },
-  )
+    return {
+      data: {
+        id: userRecord.id,
+        name: userRecord.name,
+        email: userRecord.email,
+        emailVerified: userRecord.emailVerified,
+        provider: account?.providerId || "email",
+        image: userRecord.image,
+        createdAt: userRecord.createdAt,
+        updatedAt: userRecord.updatedAt,
+      },
+    };
+  })
   .post(
     "/",
     async ({ user, params, body }) => {
@@ -217,7 +217,7 @@ export const usersRoutes = new Elysia({
       }
 
       const userId = nanoid();
-      const hashedPassword = await auth.api.hashPassword({ password: body.password });
+      const hashedPassword = await Bun.password.hash(body.password);
 
       await projectDb.transaction(async (tx) => {
         const [newUser] = await tx
@@ -250,7 +250,11 @@ export const usersRoutes = new Elysia({
         .where(eq(projectUsers.id, userId))
         .limit(1);
 
-      logger.info("User created", { userId, email: body.email, projectId: params.id });
+      logger.info("User created", {
+        userId,
+        email: body.email,
+        projectId: params.id,
+      });
 
       return {
         data: {
@@ -305,7 +309,7 @@ export const usersRoutes = new Elysia({
           .where(eq(projectUsers.email, body.email))
           .limit(1);
 
-        if (emailCheck.length > 0 && emailCheck[0].id !== params.userId) {
+        if (emailCheck.length > 0 && emailCheck?.[0]?.id !== params.userId) {
           throw new Error("User with this email already exists");
         }
         updateData.email = body.email;
@@ -324,7 +328,14 @@ export const usersRoutes = new Elysia({
         .where(eq(projectUsers.id, params.userId))
         .returning();
 
-      logger.info("User updated", { userId: params.userId, projectId: params.id });
+      logger.info("User updated", {
+        userId: params.userId,
+        projectId: params.id,
+      });
+
+      if (!updatedUser) {
+        throw new NotFoundError("User", params.userId);
+      }
 
       return {
         data: {
@@ -345,88 +356,92 @@ export const usersRoutes = new Elysia({
       }),
     },
   )
-  .delete(
-    "/:userId",
-    async ({ user, params }) => {
-      requireAuth(user);
-      await verifyProjectOwnership(params.id, user.id);
+  .delete("/:userId", async ({ user, params }) => {
+    requireAuth(user);
+    await verifyProjectOwnership(params.id, user.id);
 
-      // Get project-specific database
-      const projectDb = await getProjectDb(params.id);
+    // Get project-specific database
+    const projectDb = await getProjectDb(params.id);
 
-      const [existingUser] = await projectDb
-        .select()
-        .from(projectUsers)
-        .where(eq(projectUsers.id, params.userId))
-        .limit(1);
+    const [existingUser] = await projectDb
+      .select()
+      .from(projectUsers)
+      .where(eq(projectUsers.id, params.userId))
+      .limit(1);
 
-      if (!existingUser) {
-        throw new NotFoundError("User", params.userId);
-      }
+    if (!existingUser) {
+      throw new NotFoundError("User", params.userId);
+    }
 
-      // Delete user accounts (cascade will handle user deletion)
-      await projectDb.delete(projectAccounts).where(eq(projectAccounts.userId, params.userId));
-      // Delete user (accounts are already deleted above, but this ensures user is deleted)
-      await projectDb.delete(projectUsers).where(eq(projectUsers.id, params.userId));
+    // Delete user accounts (cascade will handle user deletion)
+    await projectDb
+      .delete(projectAccounts)
+      .where(eq(projectAccounts.userId, params.userId));
+    // Delete user (accounts are already deleted above, but this ensures user is deleted)
+    await projectDb
+      .delete(projectUsers)
+      .where(eq(projectUsers.id, params.userId));
 
-      logger.info("User deleted", { userId: params.userId, projectId: params.id });
+    logger.info("User deleted", {
+      userId: params.userId,
+      projectId: params.id,
+    });
 
-      return {
-        message: "User deleted successfully",
-      };
-    },
-  )
-  .post(
-    "/:userId/resend-verification",
-    async ({ user, params }) => {
-      requireAuth(user);
-      await verifyProjectOwnership(params.id, user.id);
+    return {
+      message: "User deleted successfully",
+    };
+  })
+  .post("/:userId/resend-verification", async ({ user, params }) => {
+    requireAuth(user);
+    await verifyProjectOwnership(params.id, user.id);
 
-      // Get project-specific database
-      const projectDb = await getProjectDb(params.id);
+    // Get project-specific database
+    const projectDb = await getProjectDb(params.id);
 
-      const [existingUser] = await projectDb
-        .select()
-        .from(projectUsers)
-        .where(eq(projectUsers.id, params.userId))
-        .limit(1);
+    const [existingUser] = await projectDb
+      .select()
+      .from(projectUsers)
+      .where(eq(projectUsers.id, params.userId))
+      .limit(1);
 
-      if (!existingUser) {
-        throw new NotFoundError("User", params.userId);
-      }
+    if (!existingUser) {
+      throw new NotFoundError("User", params.userId);
+    }
 
-      if (existingUser.emailVerified) {
-        throw new Error("User is already verified");
-      }
+    if (existingUser.emailVerified) {
+      throw new Error("User is already verified");
+    }
 
-      // Note: Verifications table might be in the main db for Better Auth
-      // For project-specific verification, you might need to create a project verifications table
-      // For now, we'll use the main db for verifications
-      const { verifications } = await import("../db");
+    // Note: Verifications table might be in the main db for Better Auth
+    // For project-specific verification, you might need to create a project verifications table
+    // For now, we'll use the main db for verifications
+    const { verifications } = await import("../db");
 
-      const verificationToken = nanoid(32);
-      const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const verificationToken = nanoid(32);
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
-      await db.insert(verifications).values({
-        id: nanoid(),
-        identifier: existingUser.email,
-        value: verificationToken,
-        expiresAt: verificationExpiresAt,
-      });
+    await db.insert(verifications).values({
+      id: nanoid(),
+      identifier: existingUser.email,
+      value: verificationToken,
+      expiresAt: verificationExpiresAt,
+    });
 
-      const { sendVerificationEmail } = await import("../lib/email-service");
-      const verificationUrl = `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/auth/verify-email?token=${verificationToken}`;
+    const { sendVerificationEmail } = await import("../lib/email-service");
+    const verificationUrl = `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/auth/verify-email?token=${verificationToken}`;
 
-      await sendVerificationEmail({
-        email: existingUser.email,
-        verificationUrl,
-        token: verificationToken,
-      });
+    await sendVerificationEmail({
+      email: existingUser.email,
+      verificationUrl,
+      token: verificationToken,
+    });
 
-      logger.info("Verification email resent", { userId: params.userId, projectId: params.id });
+    logger.info("Verification email resent", {
+      userId: params.userId,
+      projectId: params.id,
+    });
 
-      return {
-        message: "Verification email sent successfully",
-      };
-    },
-  );
+    return {
+      message: "Verification email sent successfully",
+    };
+  });

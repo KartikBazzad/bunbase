@@ -29,6 +29,7 @@ export class RealtimeModule {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectOptions: {
     projectId?: string;
+    apiKey?: string;
     onMessage?: (message: RealtimeMessage) => void;
     onError?: (error: Error) => void;
     onClose?: () => void;
@@ -65,12 +66,13 @@ export class RealtimeModule {
 
   /**
    * Connect to realtime WebSocket
-   * Authentication is handled via cookies (Better Auth session)
+   * Supports both session-based auth (cookies) and API key auth (headers)
    * userId is optional and deprecated - user is extracted from session on server
    */
   async connect(options?: {
     userId?: string; // Deprecated: kept for backward compatibility, not used
     projectId?: string;
+    apiKey?: string; // API key for authentication (alternative to session)
     onMessage?: (message: RealtimeMessage) => void;
     onError?: (error: Error) => void;
     onClose?: () => void;
@@ -80,17 +82,20 @@ export class RealtimeModule {
       return this.ws;
     }
 
-    // Check if user is authenticated (session exists)
-    const isAuthenticated = await this.checkAuthentication();
-    if (!isAuthenticated) {
+    // Check authentication: either session or API key
+    const hasApiKey = !!options?.apiKey || !!this.config.apiKey;
+    const hasSession = await this.checkAuthentication();
+
+    if (!hasSession && !hasApiKey) {
       throw new Error(
-        "Not authenticated. Please sign in before connecting to realtime.",
+        "Not authenticated. Please sign in or provide an API key before connecting to realtime.",
       );
     }
 
     // Store options for reconnection
     this.connectOptions = {
       projectId: options?.projectId,
+      apiKey: options?.apiKey || this.config.apiKey,
       onMessage: options?.onMessage,
       onError: options?.onError,
       onClose: options?.onClose,
@@ -125,9 +130,9 @@ export class RealtimeModule {
     // Convert http/https to ws/wss and construct WebSocket URL
     // The realtime route is mounted at /api/realtime (server prefix /api + route prefix /realtime)
     const wsBaseURL = baseURL.replace(/^http/, "ws").replace(/^https/, "wss");
-    // Ensure baseURL ends with / to properly append path
-    const wsBase = wsBaseURL.endsWith("/") ? wsBaseURL : `${wsBaseURL}/`;
-    const wsUrl = new URL("realtime", wsBase);
+    // Remove trailing slash if present, then append /realtime
+    const cleanBase = wsBaseURL.replace(/\/$/, "");
+    const wsUrl = new URL(`${cleanBase}/realtime`);
 
     // Add projectId to query if provided
     const projectId = this.connectOptions?.projectId || this.config.projectId;
@@ -135,8 +140,39 @@ export class RealtimeModule {
       wsUrl.searchParams.append("projectId", projectId);
     }
 
-    const ws = new WebSocket(wsUrl.toString());
+    // Prepare WebSocket connection with API key in headers if available
+    const apiKey = this.connectOptions?.apiKey || this.config.apiKey;
+    const wsOptions: any = {};
+
+    // In Node.js/Bun environments, we can set headers
+    // In browsers, headers are not supported, so API key must be sent after connection
+    if (typeof process !== "undefined" && apiKey) {
+      // Node.js/Bun environment - can set headers
+      wsOptions.headers = {
+        "X-API-Key": apiKey,
+        Authorization: `Bearer ${apiKey}`,
+      };
+    }
+
+    const ws = new WebSocket(wsUrl.toString(), wsOptions);
     ws.binaryType = "arraybuffer";
+
+    // In browser environments, send API key as first message if needed
+    if (
+      typeof window !== "undefined" &&
+      apiKey &&
+      !this.connectOptions?.apiKey
+    ) {
+      ws.onopen = () => {
+        // Send API key as first message (server will handle it)
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            apiKey: apiKey,
+          }),
+        );
+      };
+    }
 
     ws.onopen = () => {
       const wasReconnecting = this.reconnectAttempts > 0;

@@ -3,6 +3,27 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "start": "bun run index.ts",
+    "test": "bun run index.ts",
+    "load-test": "bun run load-test.ts",
+    "load-test:crud": "bun run load-test.ts --scenario=crud",
+    "load-test:realtime": "bun run load-test.ts --scenario=realtime",
+    "load-test:stress": "bun run load-test.ts --scenario=stress",
+    "load-test:spike": "bun run load-test.ts --scenario=spike",
+    "load-test:list": "bun run load-test.ts --list",
+    "load-test:100": "bun run load-test.ts --scenario=users100",
+    "load-test:200": "bun run load-test.ts --scenario=users200",
+    "load-test:300": "bun run load-test.ts --scenario=users300",
+    "load-test:400": "bun run load-test.ts --scenario=users400",
+    "load-test:500": "bun run load-test.ts --scenario=users500",
+    "load-test:600": "bun run load-test.ts --scenario=users600",
+    "load-test:700": "bun run load-test.ts --scenario=users700",
+    "load-test:800": "bun run load-test.ts --scenario=users800",
+    "load-test:900": "bun run load-test.ts --scenario=users900",
+    "load-test:1000": "bun run load-test.ts --scenario=users1000",
+    "load-test:scale": "bun run load-test-scale.ts"
+  },
   "dependencies": {
     "@bunbase/js-sdk": "workspace:*"
   },

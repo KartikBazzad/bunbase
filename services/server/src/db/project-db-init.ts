@@ -1,18 +1,34 @@
+import { existsSync, rmSync } from "fs";
 import { ProjectDatabaseManager } from "./project-db-manager";
-import { rm } from "fs/promises";
-import { existsSync } from "fs";
 import { join } from "path";
 
 const manager = ProjectDatabaseManager.getInstance();
 
 /**
  * Initialize a new project database
- * Creates the database directory, PGLite instance, and sets up the schema
+ * Creates the database directory, Bun.SQLite instance, and sets up the schema
  */
-export async function initializeProjectDatabase(projectId: string): Promise<void> {
-  // Create instance and initialize schema
-  await manager.createInstance(projectId);
-  await manager.initializeDatabase(projectId);
+export async function initializeProjectDatabase(
+  projectId: string,
+): Promise<void> {
+  try {
+    await manager.createInstance(projectId);
+
+    await manager.initializeDatabase(projectId);
+  } catch (error) {
+    console.error("Failed to initialize project database", error);
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Unknown error";
+    const errorDetails =
+      error instanceof Error && error.stack ? `\nStack: ${error.stack}` : "";
+    throw new Error(
+      `Failed to initialize project database: ${errorMessage}${errorDetails}`,
+    );
+  }
 }
 
 /**
@@ -25,19 +41,32 @@ export async function deleteProjectDatabase(projectId: string): Promise<void> {
     await manager.closeInstance(projectId);
   }
 
-  // Delete the database directory
+  // Delete the database file and project directory
   const dbPath = manager.getDatabasePath(projectId);
   const projectDir = join(dbPath, "..");
 
+  // Delete the database file if it exists
+  if (existsSync(dbPath)) {
+    rmSync(dbPath, { force: true });
+  }
+
+  // Delete the project directory if it's empty or contains only the database file
   if (existsSync(projectDir)) {
-    await rm(projectDir, { recursive: true, force: true });
+    try {
+      rmSync(projectDir, { recursive: true, force: true });
+    } catch (error) {
+      // Ignore errors if directory is not empty or already deleted
+    }
   }
 }
 
 /**
  * Check if a project database exists
  */
-export function projectDatabaseExists(projectId: string): boolean {
+export async function projectDatabaseExists(
+  projectId: string,
+): Promise<boolean> {
   const dbPath = manager.getDatabasePath(projectId);
-  return existsSync(dbPath);
+  const dbFile = Bun.file(dbPath);
+  return await dbFile.exists();
 }

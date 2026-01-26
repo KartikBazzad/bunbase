@@ -5,7 +5,6 @@
 
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { existsSync, mkdir } from "fs/promises";
 import { LogEntry } from "./function-log-buffer";
 
 const FUNCTIONS_BASE_DIR = join(import.meta.dir, "../../functions");
@@ -25,9 +24,11 @@ async function getProjectLogDb(projectId: string): Promise<Database> {
   const dbPath = getProjectLogDbPath(projectId);
   const dbDir = join(dbPath, "..");
 
-  // Ensure directory exists
-  if (!existsSync(dbDir)) {
-    await mkdir(dbDir, { recursive: true });
+  // Ensure directory exists using Bun
+  const dirFile = Bun.file(dbDir);
+  if (!(await dirFile.exists())) {
+    // Create directory by writing a keep file
+    await Bun.write(join(dbDir, ".keep"), "");
   }
 
   // Create or open database

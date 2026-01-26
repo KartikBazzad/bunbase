@@ -3,7 +3,6 @@
  * Executes functions in isolated processes (stronger isolation than workers)
  */
 
-import { spawn } from "child_process";
 import { join } from "path";
 import type { WorkerResult } from "./function-worker";
 
@@ -34,10 +33,12 @@ export async function executeInProcess(
   const startTime = Date.now();
   const processScript = join(import.meta.dir, "function-process-script.ts");
 
-  return new Promise((resolve) => {
-    // Spawn Bun process with resource limits
-    const child = spawn("bun", [processScript], {
-      stdio: ["pipe", "pipe", "pipe"],
+  return new Promise(async (resolve) => {
+    // Spawn Bun process with resource limits using Bun.spawn
+    const proc = Bun.spawn(["bun", processScript], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
       env: {
         ...process.env,
         ...task.env,
@@ -53,7 +54,7 @@ export async function executeInProcess(
 
     // Set timeout
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      proc.kill();
       resolve({
         success: false,
         error: "Function execution timeout",
@@ -63,55 +64,69 @@ export async function executeInProcess(
     }, task.timeout * 1000);
 
     // Collect stdout
-    child.stdout?.on("data", (data) => {
-      stdout += data.toString();
-    });
+    const stdoutReader = proc.stdout.getReader();
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await stdoutReader.read();
+          if (done) break;
+          stdout += new TextDecoder().decode(value);
+        }
+      } catch (error) {
+        // Stream closed
+      }
+    })();
 
     // Collect stderr
-    child.stderr?.on("data", (data) => {
-      stderr += data.toString();
-      logs.push({
-        level: "error",
-        message: data.toString(),
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle process exit
-    child.on("exit", (code, signal) => {
-      clearTimeout(timeout);
-
-      if (code !== 0 || signal) {
-        resolve({
-          success: false,
-          error: stderr || `Process exited with code ${code}`,
-          logs,
-          executionTime: Date.now() - startTime,
-        });
-        return;
-      }
-
+    const stderrReader = proc.stderr.getReader();
+    (async () => {
       try {
-        const result = JSON.parse(stdout);
-        resolve({
-          success: result.success,
-          response: result.response,
-          error: result.error,
-          logs: [...logs, ...(result.logs || [])],
-          executionTime: Date.now() - startTime,
-        });
-      } catch (error: any) {
-        resolve({
-          success: false,
-          error: `Failed to parse process output: ${error.message}`,
-          logs,
-          executionTime: Date.now() - startTime,
-        });
+        while (true) {
+          const { done, value } = await stderrReader.read();
+          if (done) break;
+          const text = new TextDecoder().decode(value);
+          stderr += text;
+          logs.push({
+            level: "error",
+            message: text,
+            timestamp: new Date(),
+          });
+        }
+      } catch (error) {
+        // Stream closed
       }
-    });
+    })();
 
-    // Send task data to process
-    child.stdin?.write(JSON.stringify(task));
-    child.stdin?.end();
+    // Wait for process to exit
+    const exitCode = await proc.exited;
+    clearTimeout(timeout);
+
+    if (exitCode !== 0) {
+      resolve({
+        success: false,
+        error: stderr || `Process exited with code ${exitCode}`,
+        logs,
+        executionTime: Date.now() - startTime,
+      });
+      return;
+    }
+
+    try {
+      const result = JSON.parse(stdout);
+      resolve({
+        success: result.success,
+        response: result.response,
+        error: result.error,
+        logs: [...logs, ...(result.logs || [])],
+        executionTime: Date.now() - startTime,
+      });
+    } catch (error: any) {
+      resolve({
+        success: false,
+        error: `Failed to parse process output: ${error.message}`,
+        logs,
+        executionTime: Date.now() - startTime,
+      });
+    }
   });
 }

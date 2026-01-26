@@ -1,22 +1,51 @@
-import { Elysia, t } from "elysia";
-import { authResolver } from "../middleware/auth";
+import { Elysia, t, type Context } from "elysia";
+import { authResolver, type AuthenticatedUser } from "../middleware/auth";
 import { requireAuth } from "../lib/auth-helpers";
 import { UnauthorizedError, NotFoundError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { auth } from "../auth";
+import {
+  bunstoreEvents,
+  type DocumentEventPayload,
+} from "../lib/bunstore-events";
+import { apiKeyResolver, type ApiKeyContext } from "../middleware/api-key";
+import type { ServerWebSocket } from "bun";
+
+// WebSocket data type
+interface WebSocketData {
+  query?: {
+    projectId?: string;
+  };
+  headers?: Record<string, string | undefined>;
+}
 
 // Connection management
 interface Connection {
   id: string;
-  userId: string;
+  userId?: string; // Optional for API key auth
+  apiKey?: ApiKeyContext; // API key context if authenticated via API key
   projectId?: string;
   channels: Set<string>;
   connectedAt: Date;
   lastPing: Date;
+  ws?: ServerWebSocket<WebSocketData>;
+  authType: "session" | "apiKey"; // Track authentication type
 }
 
 const connections = new Map<string, Connection>();
 const channels = new Map<string, Set<string>>(); // channel -> connection IDs
+const wsInstances = new Map<string, ServerWebSocket<WebSocketData>>(); // connection ID -> WebSocket instance
+const pendingApiKeyAuth = new Map<string, ApiKeyContext>(); // Temporary storage for API key auth
+const pendingSessionAuth = new Map<string, AuthenticatedUser>(); // Temporary storage for session auth
+
+// Helper to convert Headers to Record
+function headersToRecord(headers: Headers): Record<string, string | undefined> {
+  const record: Record<string, string | undefined> = {};
+  headers.forEach((value, key) => {
+    record[key] = value;
+  });
+  return record;
+}
 
 // Heartbeat interval (30 seconds)
 const HEARTBEAT_INTERVAL = 30000;
@@ -30,6 +59,7 @@ setInterval(() => {
     if (timeSinceLastPing > HEARTBEAT_TIMEOUT) {
       // Connection is dead, remove it
       connections.delete(connectionId);
+      wsInstances.delete(connectionId);
       // Remove from all channels
       for (const channel of connection.channels) {
         const channelConnections = channels.get(channel);
@@ -44,26 +74,150 @@ setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL);
 
-export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
-  .resolve(authResolver)
-  .ws("/", {
-    // Authenticate connection using Better Auth session from cookies
-    beforeHandle: async ({ headers, status }) => {
-      try {
-        // Extract session from cookies via Better Auth
-        // WebSocket upgrade requests include cookies in the Cookie header
-        const session = await auth.api.getSession({ headers });
+// Listen to BunStore document events and broadcast to WebSocket clients
+bunstoreEvents.onCreated((payload: DocumentEventPayload) => {
+  broadcastDocumentEvent("INSERT", payload);
+});
 
-        if (!session?.user) {
-          return status(401, {
-            error: {
-              message: "Unauthorized: No valid session found",
-              code: "UNAUTHORIZED",
-            },
+bunstoreEvents.onUpdated((payload: DocumentEventPayload) => {
+  broadcastDocumentEvent("UPDATE", payload);
+});
+
+bunstoreEvents.onDeleted((payload: DocumentEventPayload) => {
+  broadcastDocumentEvent("DELETE", payload);
+});
+
+/**
+ * Broadcast document event to subscribed WebSocket clients
+ */
+function broadcastDocumentEvent(
+  type: "INSERT" | "UPDATE" | "DELETE",
+  payload: DocumentEventPayload,
+): void {
+  const collectionChannel = `db:${payload.collectionPath}`;
+  const documentChannel = `db:${payload.path}`;
+
+  const message = {
+    type,
+    channel: collectionChannel,
+    message: {
+      documentId: payload.documentId,
+      path: payload.path,
+      collectionPath: payload.collectionPath,
+      data: payload.data,
+      oldData: payload.oldData,
+      createdAt: payload.createdAt?.toISOString(),
+      updatedAt: payload.updatedAt?.toISOString(),
+    },
+    timestamp: Date.now(),
+  };
+
+  // Broadcast to collection channel subscribers
+  const collectionSubscribers = channels.get(collectionChannel);
+  if (collectionSubscribers) {
+    for (const connId of collectionSubscribers) {
+      const ws = wsInstances.get(connId);
+      if (ws && ws.readyState === 1) {
+        // WebSocket.OPEN = 1
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          logger.error("Failed to send message to WebSocket client", error, {
+            connectionId: connId,
           });
         }
+      }
+    }
+  }
 
-        // Session is valid, user will be available in open handler via authResolver
+  // Broadcast to document-specific channel subscribers
+  const documentSubscribers = channels.get(documentChannel);
+  if (documentSubscribers) {
+    for (const connId of documentSubscribers) {
+      const ws = wsInstances.get(connId);
+      if (ws && ws.readyState === 1) {
+        // WebSocket.OPEN = 1
+        try {
+          ws.send(JSON.stringify({ ...message, channel: documentChannel }));
+        } catch (error) {
+          logger.error("Failed to send message to WebSocket client", error, {
+            connectionId: connId,
+          });
+        }
+      }
+    }
+  }
+}
+
+export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
+  .ws("/", {
+    // Authenticate connection using either session or API key
+    beforeHandle: async ({ status, request }) => {
+      const headers = request.headers;
+      try {
+        // First, try session-based auth (for dashboard)
+        try {
+          const session = await auth.api.getSession({ headers });
+          if (session?.user) {
+            // Session auth successful, store for open handler
+            const connectionId =
+              headers.get("sec-websocket-key") ||
+              headers.get("x-connection-id") ||
+              `conn-${Date.now()}-${Math.random()}`;
+            const authenticatedUser: AuthenticatedUser = {
+              id: session.user.id,
+              email: session.user.email,
+              name: session.user.name,
+              emailVerified: session.user.emailVerified,
+              image: session.user.image,
+            };
+            pendingSessionAuth.set(connectionId, authenticatedUser);
+            return;
+          }
+        } catch {
+          // Session auth failed, try API key
+        }
+
+        // Try API key authentication
+        // Create a minimal context-like object for apiKeyResolver
+        const headersRecord = headersToRecord(headers);
+        const apiKeyContext: Partial<Context> = {
+          request,
+          headers: headersRecord,
+          status,
+        };
+        const apiKeyResult = await apiKeyResolver(apiKeyContext as Context);
+
+        if (
+          apiKeyResult &&
+          typeof apiKeyResult === "object" &&
+          "apiKey" in apiKeyResult
+        ) {
+          // API key auth successful
+          // Store in temporary map (will be retrieved in open handler)
+          // Use a unique identifier from the request
+          const connectionId =
+            headers.get("sec-websocket-key") ||
+            headers.get("x-connection-id") ||
+            `conn-${Date.now()}-${Math.random()}`;
+          // Store API key context with proper structure
+          const apiKeyContext: ApiKeyContext = {
+            apiKeyId: apiKeyResult.apiKey.id,
+            applicationId: apiKeyResult.apiKey.applicationId,
+            projectId: apiKeyResult.apiKey.projectId,
+          };
+          pendingApiKeyAuth.set(connectionId, apiKeyContext);
+          return;
+        }
+
+        // Both auth methods failed
+        return status(401, {
+          error: {
+            message:
+              "Unauthorized: No valid session or API key found. Provide API key in X-API-Key header or Authorization: Bearer <key>",
+            code: "UNAUTHORIZED",
+          },
+        });
       } catch (error) {
         logger.error("WebSocket authentication error", error);
         return status(401, {
@@ -74,44 +228,105 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
         });
       }
     },
-    open(ws, { user }) {
-      // User is available from authResolver (extracted from session)
-      if (!user) {
-        ws.close(1008, "Unauthorized: No user found");
+    open(ws) {
+      const connectionId = ws.id;
+      
+      // Extract projectId from query params if provided
+      const projectId = ws.data.query?.projectId;
+
+      // Check authentication from beforeHandle
+      // Get sec-websocket-key from headers to retrieve pending auth
+      const secWebSocketKey = ws.data.headers?.["sec-websocket-key"];
+      
+      // Try API key auth first
+      const apiKeyContext = secWebSocketKey
+        ? pendingApiKeyAuth.get(secWebSocketKey)
+        : undefined;
+
+      if (apiKeyContext) {
+        // API key was validated in beforeHandle
+        const connection: Connection = {
+          id: connectionId,
+          apiKey: apiKeyContext,
+          projectId: apiKeyContext.projectId,
+          channels: new Set(),
+          connectedAt: new Date(),
+          lastPing: new Date(),
+          ws: ws.raw as ServerWebSocket<WebSocketData>,
+          authType: "apiKey",
+        };
+
+        // Clean up pending auth
+        if (secWebSocketKey) {
+          pendingApiKeyAuth.delete(secWebSocketKey);
+        }
+
+        logger.info("WebSocket connection established (API key)", {
+          connectionId,
+          apiKeyId: apiKeyContext.apiKeyId,
+          projectId: connection.projectId,
+        });
+
+        ws.send(
+          JSON.stringify({
+            type: "connected",
+            connectionId,
+            projectId: connection.projectId,
+            authType: "apiKey",
+            timestamp: Date.now(),
+          }),
+        );
+
+        connections.set(connectionId, connection);
+        wsInstances.set(connectionId, ws.raw as ServerWebSocket<WebSocketData>);
         return;
       }
 
-      const connectionId = ws.id;
+      // Try session auth
+      const user = secWebSocketKey
+        ? pendingSessionAuth.get(secWebSocketKey)
+        : undefined;
 
-      // Extract projectId from query params if provided
-      const projectId = ws.data.query?.projectId as string | undefined;
+      if (user) {
+        const connection: Connection = {
+          id: connectionId,
+          userId: user.id,
+          projectId: projectId,
+          channels: new Set(),
+          connectedAt: new Date(),
+          lastPing: new Date(),
+          ws: ws.raw as ServerWebSocket<WebSocketData>,
+          authType: "session",
+        };
 
-      const connection: Connection = {
-        id: connectionId,
-        userId: user.id, // Use authenticated user from session
-        projectId,
-        channels: new Set(),
-        connectedAt: new Date(),
-        lastPing: new Date(),
-      };
+        // Clean up pending auth
+        if (secWebSocketKey) {
+          pendingSessionAuth.delete(secWebSocketKey);
+        }
 
-      connections.set(connectionId, connection);
-
-      logger.info("WebSocket connection established", {
-        connectionId,
-        userId: user.id,
-        projectId,
-      });
-
-      // Send welcome message
-      ws.send(
-        JSON.stringify({
-          type: "connected",
+        logger.info("WebSocket connection established (session)", {
           connectionId,
           userId: user.id,
-          timestamp: Date.now(),
-        }),
-      );
+          projectId: connection.projectId,
+        });
+
+        ws.send(
+          JSON.stringify({
+            type: "connected",
+            connectionId,
+            userId: user.id,
+            projectId: connection.projectId,
+            authType: "session",
+            timestamp: Date.now(),
+          }),
+        );
+
+        connections.set(connectionId, connection);
+        wsInstances.set(connectionId, ws.raw as ServerWebSocket<WebSocketData>);
+      } else {
+        // No valid auth found, close connection
+        ws.close(1008, "Unauthorized: No valid authentication");
+      }
     },
     message(ws, message) {
       const connection = connections.get(ws.id);
@@ -241,22 +456,32 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
           }
         }
         connections.delete(ws.id);
+        wsInstances.delete(ws.id); // Remove WebSocket instance
       }
     },
-    error(ws, error) {
+    // Error handler for WebSocket
+    // @ts-expect-error - Elysia WebSocket error handler type signature mismatch
+    // The runtime signature is correct (ws, error) but TypeScript expects a different type
+    error(ws: { id: string; send: (data: string) => void }, error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
       logger.error("WebSocket error", error, {
         connectionId: ws.id,
       });
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: error instanceof Error ? error.message : "Unknown error",
-          timestamp: Date.now(),
-        }),
-      );
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: errorMessage,
+            timestamp: Date.now(),
+          }),
+        );
+      } catch {
+        // Ignore send errors if connection is already closed
+      }
     },
   })
   // Broadcast message to channel
+  .resolve(authResolver)
   .post(
     "/channels/:id/broadcast",
     async ({ user, params, body }) => {
@@ -296,10 +521,12 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
         .filter((conn): conn is Connection => conn !== undefined);
 
       return {
-        users: channelConnections.map((conn) => ({
-          id: conn.userId,
-          connectedAt: conn.connectedAt,
-        })),
+        users: channelConnections
+          .filter((conn) => conn.userId) // Only include connections with userId
+          .map((conn) => ({
+            id: conn.userId!,
+            connectedAt: conn.connectedAt,
+          })),
         count: channelConnections.length,
       };
     },
@@ -356,8 +583,8 @@ export const realtimeRoutes = new Elysia({ prefix: "/realtime" })
         .filter((conn) => !projectId || conn.projectId === projectId)
         .map((conn) => ({
           id: conn.id,
-          userId: conn.userId,
-          projectId: conn.projectId,
+          userId: conn.userId ?? "",
+          projectId: conn.projectId ?? undefined,
           channels: Array.from(conn.channels),
           connectedAt: conn.connectedAt,
           lastPing: conn.lastPing,

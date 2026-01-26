@@ -1,7 +1,5 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { mkdir } from "fs/promises";
-import { existsSync } from "fs";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -89,9 +87,11 @@ export class ProjectLogger {
           this.projectId,
         );
 
-        // Ensure directory exists
-        if (!existsSync(projectLogsDir)) {
-          await mkdir(projectLogsDir, { recursive: true });
+        // Ensure directory exists using Bun
+        const dirFile = Bun.file(projectLogsDir);
+        if (!(await dirFile.exists())) {
+          // Create directory by writing a keep file
+          await Bun.write(join(projectLogsDir, ".keep"), "");
         }
 
         const dbPath = join(projectLogsDir, "logs.db");

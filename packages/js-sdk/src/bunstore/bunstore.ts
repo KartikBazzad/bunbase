@@ -13,6 +13,7 @@ import type {
   QuerySnapshot,
 } from "./types";
 import type { Query } from "./query";
+import { BunStoreEventManager } from "./bunstore-events";
 
 export class BunStore {
   private _subscriptions: Map<
@@ -26,6 +27,7 @@ export class BunStore {
       };
     }
   > = new Map();
+  private _eventManager = new BunStoreEventManager();
 
   constructor(
     private _client: BunBaseClient,
@@ -86,45 +88,49 @@ export class BunStore {
   ): () => void {
     const subscriptionKey = `doc:${docRef.path}`;
 
-    // Connect to realtime if not already connected
-    if (!this._client.realtime) {
-      // Realtime module should already be initialized
-    }
-
-    // Subscribe to the document channel
-    const channel = `db:${docRef.path}`;
+    // Subscribe to both collection and document channels
+    const collectionChannel = `db:${docRef.parent.path}`;
+    const documentChannel = `db:${docRef.path}`;
 
     // Set up WebSocket subscription
     let wsConnected = false;
     let unsubscribeFn: (() => void) | null = null;
+    let realtimeUnsubscribe: (() => void) | null = null;
 
-    const connectRealtime = () => {
+    const connectRealtime = async () => {
       try {
-        // Note: RealtimeModule.connect() requires userId, but for document subscriptions
-        // we may not have a user. This is a limitation that should be addressed.
-        // For now, we'll try to connect without userId if possible.
-        const ws = this._client.realtime.connect({
-          userId: "system", // Placeholder - should be actual user ID
+        // Try to connect to realtime (may require authentication)
+        // For API key-based auth, we'll need to handle this differently
+        const ws = await this._client.realtime.connect({
           projectId: this._config.projectId,
           onMessage: (message) => {
-            if (message.channel === channel) {
-              // Handle document change events
-              if (message.type === "INSERT" || message.type === "UPDATE") {
-                const snapshot = new DocumentSnapshot(
-                  docRef.id,
-                  docRef,
-                  message.message?.data,
-                  true,
-                );
-                observer.next?.(snapshot);
-              } else if (message.type === "DELETE") {
-                const snapshot = new DocumentSnapshot(
-                  docRef.id,
-                  docRef,
-                  undefined,
-                  false,
-                );
-                observer.next?.(snapshot);
+            // Handle document change events from both channels
+            if (
+              message.channel === collectionChannel ||
+              message.channel === documentChannel
+            ) {
+              const eventData = message.message as any;
+              if (
+                eventData?.documentId === docRef.id ||
+                eventData?.path === docRef.path
+              ) {
+                if (message.type === "INSERT" || message.type === "UPDATE") {
+                  const snapshot = new DocumentSnapshot(
+                    docRef.id,
+                    docRef,
+                    eventData.data,
+                    true,
+                  );
+                  observer.next?.(snapshot);
+                } else if (message.type === "DELETE") {
+                  const snapshot = new DocumentSnapshot(
+                    docRef.id,
+                    docRef,
+                    undefined,
+                    false,
+                  );
+                  observer.next?.(snapshot);
+                }
               }
             }
           },
@@ -138,8 +144,17 @@ export class BunStore {
         });
 
         wsConnected = true;
-        this._client.realtime.subscribe(channel);
+        // Subscribe to both channels
+        this._client.realtime.subscribe(collectionChannel);
+        this._client.realtime.subscribe(documentChannel);
+
+        realtimeUnsubscribe = () => {
+          this._client.realtime.unsubscribe(collectionChannel);
+          this._client.realtime.unsubscribe(documentChannel);
+        };
       } catch (error) {
+        // If connection fails (e.g., no auth), still allow initial fetch
+        console.warn("Realtime connection failed, using polling mode:", error);
         observer.error?.(
           error instanceof Error ? error : new Error(String(error)),
         );
@@ -159,8 +174,8 @@ export class BunStore {
 
     // Return unsubscribe function
     unsubscribeFn = () => {
-      if (wsConnected) {
-        this._client.realtime.unsubscribe(channel);
+      if (wsConnected && realtimeUnsubscribe) {
+        realtimeUnsubscribe();
         wsConnected = false;
       }
       this._subscriptions.delete(subscriptionKey);
@@ -187,17 +202,17 @@ export class BunStore {
   ): () => void {
     const subscriptionKey = `query:${query.collectionPath}`;
 
-    // Connect to realtime if not already connected
+    // Subscribe to collection channel
     const channel = `db:${query.collectionPath}`;
 
     // Set up WebSocket subscription
     let wsConnected = false;
     let unsubscribeFn: (() => void) | null = null;
+    let realtimeUnsubscribe: (() => void) | null = null;
 
-    const connectRealtime = () => {
+    const connectRealtime = async () => {
       try {
-        const ws = this._client.realtime.connect({
-          userId: "system", // Placeholder - should be actual user ID
+        const ws = await this._client.realtime.connect({
           projectId: this._config.projectId,
           onMessage: (message) => {
             if (message.channel === channel) {
@@ -223,7 +238,13 @@ export class BunStore {
 
         wsConnected = true;
         this._client.realtime.subscribe(channel);
+
+        realtimeUnsubscribe = () => {
+          this._client.realtime.unsubscribe(channel);
+        };
       } catch (error) {
+        // If connection fails, still allow initial fetch
+        console.warn("Realtime connection failed, using polling mode:", error);
         observer.error?.(
           error instanceof Error ? error : new Error(String(error)),
         );
@@ -243,8 +264,8 @@ export class BunStore {
 
     // Return unsubscribe function
     unsubscribeFn = () => {
-      if (wsConnected) {
-        this._client.realtime.unsubscribe(channel);
+      if (wsConnected && realtimeUnsubscribe) {
+        realtimeUnsubscribe();
         wsConnected = false;
       }
       this._subscriptions.delete(subscriptionKey);

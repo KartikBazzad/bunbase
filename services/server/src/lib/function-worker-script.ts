@@ -3,8 +3,7 @@
  * Runs in a worker thread to execute function code
  */
 
-import { readFile } from "fs/promises";
-import { existsSync } from "fs";
+// Using Bun native APIs
 
 interface WorkerMessage {
   functionId: string;
@@ -63,12 +62,13 @@ self.addEventListener("message", async (event: MessageEvent<WorkerMessage>) => {
       process.env[key] = value;
     }
 
-    // Read function code
-    if (!existsSync(task.codePath)) {
+    // Read function code using Bun.file
+    const codeFile = Bun.file(task.codePath);
+    if (!(await codeFile.exists())) {
       throw new Error(`Function code not found: ${task.codePath}`);
     }
 
-    const code = await readFile(task.codePath, "utf-8");
+    const code = await codeFile.text();
 
     // Create a Request object
     const request = new Request(task.request.url, {

@@ -4,20 +4,21 @@ import { NotFoundError } from "../lib/errors";
 import {
   getProjectFunctions,
   getFunctionById,
+  getFunctionByName,
   createFunction,
   updateFunction,
   deleteFunction,
   getFunctionVersions,
 } from "../lib/function-helpers";
+import { NotFoundError } from "../lib/errors";
 import { executeFunction } from "../lib/function-executor";
 import { FunctionModels, CommonModels } from "./models";
+import { db, functionEnvironments, functionLogs, functionMetrics } from "../db";
 import {
-  db,
-  functionEnvironments,
-  functionLogs,
-  functionMetrics,
-} from "../db";
-import { functions } from "../db/schema";
+  functionDeployments,
+  functionMetricsMinute,
+  functions,
+} from "../db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { encrypt, decrypt } from "../lib/encryption";
 import { nanoid } from "nanoid";
@@ -95,18 +96,37 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       },
     },
   )
-  // Create function
+  // Create or update function (upsert behavior)
   .post(
     "/",
     async ({ apiKey, body }) => {
-      const func = await createFunction(apiKey.projectId, {
-        name: body.name,
-        runtime: body.runtime || "bun",
-        handler: body.handler,
-        code: body.code,
-        memory: body.memory,
-        timeout: body.timeout,
-      });
+      // Check if function already exists
+      let func;
+      try {
+        const existing = await getFunctionByName(apiKey.projectId, body.name);
+        // If it exists, update it
+        func = await updateFunction(existing.id, apiKey.projectId, {
+          runtime: body.runtime,
+          handler: body.handler,
+          code: body.code,
+          memory: body.memory,
+          timeout: body.timeout,
+        });
+      } catch (error) {
+        // If not found, create it
+        if (error instanceof NotFoundError) {
+          func = await createFunction(apiKey.projectId, {
+            name: body.name,
+            runtime: body.runtime || "bun",
+            handler: body.handler,
+            code: body.code,
+            memory: body.memory,
+            timeout: body.timeout,
+          });
+        } else {
+          throw error;
+        }
+      }
 
       return {
         id: func.id,
@@ -215,7 +235,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       }
 
       const latestVersion = versions[0];
-      
+
       // If function already has an active version, verify it exists
       if (func.activeVersionId) {
         const [activeVersion] = await db
@@ -223,10 +243,10 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
           .from(functionVersions)
           .where(eq(functionVersions.id, func.activeVersionId))
           .limit(1);
-        
+
         if (!activeVersion) {
           // Active version was deleted, use latest
-        } else if (activeVersion.id !== latestVersion.id) {
+        } else if (activeVersion.id !== latestVersion?.id) {
           // Different version, will update below
         }
       }
@@ -235,7 +255,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       const code = await readFunctionCode(
         apiKey.projectId,
         params.id,
-        latestVersion.version,
+        latestVersion?.version,
       );
       const validation = await validateFunctionCode(code, func.runtime);
       if (!validation.valid) {
@@ -255,7 +275,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       await db.insert(functionDeployments).values({
         id: deploymentId,
         functionId: params.id,
-        versionId: latestVersion.id,
+        versionId: latestVersion?.id,
         environment: "production",
         status: "active",
       });
@@ -266,7 +286,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
         .update(functionsTable)
         .set({
           status: "deployed",
-          activeVersionId: latestVersion.id,
+          activeVersionId: latestVersion?.id,
           updatedAt: new Date(),
         })
         .where(eq(functionsTable.id, params.id));
@@ -277,13 +297,13 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       logProjectOperation(apiKey.projectId, "function_deploy", {
         functionId: params.id,
         functionName: func.name,
-        version: latestVersion.version,
+        version: latestVersion?.version,
         deploymentId,
       });
 
       return {
         message: "Function deployed successfully",
-        version: latestVersion.version,
+        version: latestVersion?.version,
         deploymentId,
       };
     },
@@ -320,7 +340,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       await db.insert(functionDeployments).values({
         id: deploymentId,
         functionId: params.id,
-        versionId: previousVersion.id,
+        versionId: previousVersion?.id,
         environment: "production",
         status: "active",
       });
@@ -330,14 +350,14 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       await db
         .update(functionsTable)
         .set({
-          activeVersionId: previousVersion.id,
+          activeVersionId: previousVersion?.id,
           updatedAt: new Date(),
         })
         .where(eq(functionsTable.id, params.id));
 
       return {
         message: "Function rolled back successfully",
-        version: previousVersion.version,
+        version: previousVersion?.version,
         deploymentId,
       };
     },
@@ -348,27 +368,39 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       },
     },
   )
-  // Invoke function
+  // Invoke function (supports both ID and name)
   .post(
     "/:id/invoke",
     async ({ apiKey, params, body, request }) => {
-      const func = await getFunctionById(params.id, apiKey.projectId);
+      // Try to get function by ID first, then by name if not found
+      let func;
+      try {
+        func = await getFunctionById(params.id, apiKey.projectId);
+      } catch (error) {
+        // If NotFoundError, try looking up by name
+        if (error instanceof NotFoundError) {
+          try {
+            func = await getFunctionByName(apiKey.projectId, params.id);
+          } catch (nameError) {
+            // Re-throw the original error if name lookup also fails
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
 
       if (func.status !== "deployed") {
         throw new Error("Function is not deployed");
       }
 
-      // Execute function
-      const result = await executeFunction(
-        params.id,
-        apiKey.projectId,
-        {
-          method: body.method || request.method || "POST",
-          url: body.url || request.url || "/",
-          headers: body.headers || {},
-          body: body.body,
-        },
-      );
+      // Execute function using the actual function ID
+      const result = await executeFunction(func.id, apiKey.projectId, {
+        method: body.method || request.method || "POST",
+        url: body.url || request.url || "/",
+        headers: body.headers || {},
+        body: body.body,
+      });
 
       if (!result.success) {
         throw new Error(result.error || "Function execution failed");
@@ -391,6 +423,117 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       },
     },
   )
+  // Direct HTTP endpoint for function invocation by name (GET, POST, PUT, DELETE, etc.)
+  // This route must come after /:id/invoke to avoid conflicts
+  .all(
+    "/:name",
+    async ({ apiKey, params, request, query, set }) => {
+      // Get function by name
+      const func = await getFunctionByName(apiKey.projectId, params.name);
+
+      if (func.status !== "deployed") {
+        set.status = 400;
+        return {
+          error: {
+            message: "Function is not deployed",
+            code: "FUNCTION_NOT_DEPLOYED",
+          },
+        };
+      }
+
+      // Parse the incoming request
+      const url = new URL(request.url);
+      const method = request.method;
+      const headers: Record<string, string> = {};
+      request.headers.forEach((value, key) => {
+        // Skip certain headers that shouldn't be passed to the function
+        if (
+          !key.toLowerCase().startsWith("x-api-key") &&
+          key.toLowerCase() !== "authorization" &&
+          key.toLowerCase() !== "host"
+        ) {
+          headers[key] = value;
+        }
+      });
+
+      // Get request body if present
+      let requestBody: any = undefined;
+      if (request.body && method !== "GET" && method !== "HEAD") {
+        try {
+          const contentType = request.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            requestBody = await request.json();
+          } else if (contentType.includes("text/")) {
+            requestBody = await request.text();
+          } else if (
+            contentType.includes("application/x-www-form-urlencoded")
+          ) {
+            const formData = await request.formData();
+            const formObj: Record<string, any> = {};
+            formData.forEach((value, key) => {
+              formObj[key] = value;
+            });
+            requestBody = formObj;
+          } else {
+            // For binary or other types, get as ArrayBuffer
+            const buffer = await request.arrayBuffer();
+            if (buffer.byteLength > 0) {
+              requestBody = Array.from(new Uint8Array(buffer));
+            }
+          }
+        } catch (error) {
+          // If body parsing fails, leave it undefined
+          console.warn("Failed to parse request body:", error);
+        }
+      }
+
+      // Execute function
+      const result = await executeFunction(func.id, apiKey.projectId, {
+        method,
+        url: url.pathname + url.search,
+        headers,
+        body: requestBody,
+      });
+
+      if (!result.success) {
+        set.status = 500;
+        return {
+          error: {
+            message: result.error || "Function execution failed",
+            code: "EXECUTION_ERROR",
+          },
+        };
+      }
+
+      // Return the function's response directly
+      if (result.response) {
+        // Set response headers
+        Object.entries(result.response.headers || {}).forEach(
+          ([key, value]) => {
+            set.headers[key] = value;
+          },
+        );
+
+        // Set status code
+        set.status = result.response.status || 200;
+
+        // Return response body
+        return result.response.body;
+      }
+
+      return {
+        error: {
+          message: "Function did not return a response",
+          code: "NO_RESPONSE",
+        },
+      };
+    },
+    {
+      params: t.Object({
+        name: t.String(),
+      }),
+    },
+  )
   // Get function logs
   .get(
     "/:id/logs",
@@ -409,14 +552,18 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
         : undefined;
 
       // Get logs from SQLite storage
-      const logs = await getFunctionLogsFromStorage(apiKey.projectId, params.id, {
-        limit,
-        offset,
-        level,
-        executionId,
-        startDate,
-        endDate,
-      });
+      const logs = await getFunctionLogsFromStorage(
+        apiKey.projectId,
+        params.id,
+        {
+          limit,
+          offset,
+          level,
+          executionId,
+          startDate,
+          endDate,
+        },
+      );
 
       return {
         logs: logs.map((log) => ({
@@ -477,10 +624,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
           (sum, m) => sum + m.invocations,
           0,
         );
-        const totalErrors = minuteMetrics.reduce(
-          (sum, m) => sum + m.errors,
-          0,
-        );
+        const totalErrors = minuteMetrics.reduce((sum, m) => sum + m.errors, 0);
         const totalDuration = minuteMetrics.reduce(
           (sum, m) => sum + m.totalDuration,
           0,
@@ -525,8 +669,7 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
       const invocations = metric?.invocations || 0;
       const errors = metric?.errors || 0;
       const totalDuration = metric?.totalDuration || 0;
-      const averageDuration =
-        invocations > 0 ? totalDuration / invocations : 0;
+      const averageDuration = invocations > 0 ? totalDuration / invocations : 0;
 
       return {
         invocations,
@@ -603,7 +746,8 @@ export const functionsRoutes = new Elysia({ prefix: "/functions" })
         .limit(1);
 
       const encryptedValue = await encrypt(body.value);
-      const isSecret = body.key.toLowerCase().includes("secret") ||
+      const isSecret =
+        body.key.toLowerCase().includes("secret") ||
         body.key.toLowerCase().includes("key") ||
         body.key.toLowerCase().includes("password") ||
         body.key.toLowerCase().includes("token");

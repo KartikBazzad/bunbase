@@ -1,18 +1,19 @@
-import { randomBytes } from "node:crypto";
-
 /**
  * Generate a secure API key with format: bunbase_pk_live_<32-char-random>
  */
 export function generateApiKey(): string {
-  // Generate 32 random bytes (256 bits) and convert to base64url
-  const randomPart = randomBytes(32)
-    .toString("base64")
+  // Generate 32 random bytes (256 bits) using Bun's crypto API
+  const randomBytes = new Uint8Array(32);
+  crypto.getRandomValues(randomBytes);
+  
+  // Convert to base64url
+  const base64 = btoa(String.fromCharCode(...randomBytes))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=/g, "")
     .substring(0, 32); // Ensure exactly 32 chars
 
-  return `bunbase_pk_live_${randomPart}`;
+  return `bunbase_pk_live_${base64}`;
 }
 
 /**

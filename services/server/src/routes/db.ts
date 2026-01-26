@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
 import { apiKeyResolver } from "../middleware/api-key";
 import { NotFoundError } from "../lib/errors";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { DocumentModels, CommonModels } from "./models";
 import { getProjectDb } from "../db/project-db-helpers";
@@ -10,6 +10,7 @@ import {
   projectDocuments,
 } from "../db/project-schema";
 import { logProjectDatabaseOperation } from "../lib/project-logger-utils";
+import { bunstoreEvents } from "../lib/bunstore-events";
 
 // Helper function to get collection by name
 async function getCollectionByName(
@@ -477,6 +478,17 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
         collectionName: params.collection,
       });
 
+      // Emit document created event
+      bunstoreEvents.emitCreated({
+        projectId: apiKey.projectId,
+        collectionPath: collection.path,
+        documentId: document.documentId,
+        path: document.path,
+        data: document.data,
+        createdAt: document.createdAt,
+        updatedAt: document.updatedAt,
+      });
+
       return {
         data: {
           documentId: document.documentId,
@@ -553,22 +565,54 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
       },
     },
   )
-  // Update document (full update)
+  // Upsert document (create if doesn't exist, update if exists)
   .put(
     "/:collection/:id",
     async ({ apiKey, params, body }) => {
       const projectDb = await getProjectDb(apiKey.projectId);
 
-      const collection = await getCollectionByName(
+      // Try to get existing collection, or create it if it doesn't exist (Firebase-style)
+      let collection = await getCollectionByName(
         projectDb,
         params.collection,
       );
 
       if (!collection) {
-        throw new NotFoundError("Collection", params.collection);
+        // Auto-create collection if it doesn't exist (Firebase behavior)
+        const collectionId = nanoid();
+        const path = params.collection; // Root collection path is just the name
+
+        // Check if path already exists (shouldn't, but just in case)
+        const [existing] = await projectDb
+          .select()
+          .from(projectCollections)
+          .where(eq(projectCollections.path, path))
+          .limit(1);
+
+        if (existing) {
+          collection = existing;
+        } else {
+          const [newCollection] = await projectDb
+            .insert(projectCollections)
+            .values({
+              collectionId: collectionId,
+              name: params.collection,
+              path: path,
+              parentDocumentId: null,
+              parentPath: null,
+            })
+            .returning();
+
+          if (!newCollection) {
+            throw new Error("Failed to create collection");
+          }
+
+          collection = newCollection;
+        }
       }
 
-      const [document] = await projectDb
+      // Check if document exists
+      const [existingDocument] = await projectDb
         .select()
         .from(projectDocuments)
         .where(
@@ -579,37 +623,89 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
         )
         .limit(1);
 
-      if (!document) {
-        throw new NotFoundError("Document", params.id);
+      let result;
+      const now = new Date();
+
+      if (existingDocument) {
+        // Update existing document
+        const [updated] = await projectDb
+          .update(projectDocuments)
+          .set({
+            data: body.data,
+            updatedAt: now,
+          })
+          .where(eq(projectDocuments.documentId, params.id))
+          .returning();
+
+        if (!updated) {
+          throw new Error("Failed to update document");
+        }
+
+        logProjectDatabaseOperation(apiKey.projectId, "update", "document", {
+          documentId: updated.documentId,
+          collectionId: collection.collectionId,
+          collectionName: params.collection,
+        });
+
+        // Emit document updated event with old and new data
+        bunstoreEvents.emitUpdated({
+          projectId: apiKey.projectId,
+          collectionPath: collection.path,
+          documentId: updated.documentId,
+          path: updated.path,
+          data: updated.data,
+          oldData: existingDocument.data,
+          createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
+        });
+
+        result = updated;
+      } else {
+        // Create new document
+        const path = generateDocumentPath(collection.path, params.id);
+
+        const [created] = await projectDb
+          .insert(projectDocuments)
+          .values({
+            documentId: params.id,
+            collectionId: collection.collectionId,
+            path: path,
+            data: body.data,
+          })
+          .returning();
+
+        if (!created) {
+          throw new Error("Failed to create document");
+        }
+
+        logProjectDatabaseOperation(apiKey.projectId, "create", "document", {
+          documentId: created.documentId,
+          collectionId: collection.collectionId,
+          collectionName: params.collection,
+        });
+
+        // Emit document created event
+        bunstoreEvents.emitCreated({
+          projectId: apiKey.projectId,
+          collectionPath: collection.path,
+          documentId: created.documentId,
+          path: created.path,
+          data: created.data,
+          createdAt: created.createdAt,
+          updatedAt: created.updatedAt,
+        });
+
+        result = created;
       }
-
-      const [updated] = await projectDb
-        .update(projectDocuments)
-        .set({
-          data: body.data,
-          updatedAt: new Date(),
-        })
-        .where(eq(projectDocuments.documentId, params.id))
-        .returning();
-
-      if (!updated) {
-        throw new Error("Failed to update document");
-      }
-
-      logProjectDatabaseOperation(apiKey.projectId, "update", "document", {
-        documentId: updated.documentId,
-        collectionId: collection.collectionId,
-        collectionName: params.collection,
-      });
 
       return {
         data: {
-          documentId: updated.documentId,
-          collectionId: updated.collectionId,
-          path: updated.path,
-          data: updated.data,
-          createdAt: updated.createdAt,
-          updatedAt: updated.updatedAt,
+          documentId: result.documentId,
+          collectionId: result.collectionId,
+          path: result.path,
+          data: result.data,
+          createdAt: result.createdAt,
+          updatedAt: result.updatedAt,
         },
       };
     },
@@ -678,6 +774,18 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
         collectionName: params.collection,
       });
 
+      // Emit document updated event with old and new data
+      bunstoreEvents.emitUpdated({
+        projectId: apiKey.projectId,
+        collectionPath: collection.path,
+        documentId: updated.documentId,
+        path: updated.path,
+        data: updated.data,
+        oldData: document.data,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt,
+      });
+
       return {
         data: {
           documentId: updated.documentId,
@@ -732,6 +840,17 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
         throw new NotFoundError("Document", params.id);
       }
 
+      // Emit document deleted event before deletion
+      bunstoreEvents.emitDeleted({
+        projectId: apiKey.projectId,
+        collectionPath: collection.path,
+        documentId: document.documentId,
+        path: document.path,
+        data: document.data,
+        createdAt: document.createdAt,
+        updatedAt: document.updatedAt,
+      });
+
       await projectDb
         .delete(projectDocuments)
         .where(eq(projectDocuments.documentId, params.id));
@@ -778,69 +897,146 @@ export const dbRoutes = new Elysia({ prefix: "/db" })
         data?: Record<string, any>;
       }> = [];
 
-      // Process each operation in the batch
-      for (const operation of body.operations) {
-        try {
-          if (operation.type === "create") {
-            const documentId = nanoid();
-            const path = generateDocumentPath(collection.path, documentId);
+      // Use a transaction for batch operations to improve performance
+      // SQLite with WAL mode handles concurrent transactions well
+      await projectDb.transaction(async (tx) => {
+        // Process each operation in the batch
+        for (const operation of body.operations) {
+          try {
+            if (operation.type === "create") {
+              const documentId = nanoid();
+              const path = generateDocumentPath(collection.path, documentId);
 
-            const [newDocument] = await projectDb
-              .insert(projectDocuments)
-              .values({
-                documentId,
-                collectionId: collection.collectionId,
-                path,
-                data: operation.data,
-              })
-              .returning();
+              const [newDocument] = await tx
+                .insert(projectDocuments)
+                .values({
+                  documentId,
+                  collectionId: collection.collectionId,
+                  path,
+                  data: operation.data || {},
+                })
+                .returning();
 
-            results.push({
-              success: true,
-              documentId: newDocument.documentId,
-              data: newDocument.data,
-            });
-          } else if (operation.type === "update") {
-            const [updated] = await projectDb
-              .update(projectDocuments)
-              .set({
-                data: operation.data,
-                updatedAt: new Date(),
-              })
-              .where(eq(projectDocuments.documentId, operation.documentId))
-              .returning();
+              if (newDocument) {
+                // Emit document created event (after transaction commits)
+                bunstoreEvents.emitCreated({
+                  projectId: apiKey.projectId,
+                  collectionPath: collection.path,
+                  documentId: newDocument.documentId,
+                  path: newDocument.path,
+                  data: newDocument.data,
+                  createdAt: newDocument.createdAt,
+                  updatedAt: newDocument.updatedAt,
+                });
 
-            if (updated) {
+                results.push({
+                  success: true,
+                  documentId: newDocument.documentId,
+                  data: newDocument.data,
+                });
+              } else {
+                results.push({
+                  success: false,
+                  error: "Failed to create document",
+                });
+              }
+            } else if (operation.type === "update") {
+              if (!operation.documentId) {
+                results.push({
+                  success: false,
+                  error: "documentId is required for update operations",
+                });
+                continue;
+              }
+
+              // Get old document data before update
+              const [oldDocument] = await tx
+                .select()
+                .from(projectDocuments)
+                .where(eq(projectDocuments.documentId, operation.documentId))
+                .limit(1);
+
+              const [updated] = await tx
+                .update(projectDocuments)
+                .set({
+                  data: operation.data || {},
+                  updatedAt: new Date(),
+                })
+                .where(eq(projectDocuments.documentId, operation.documentId))
+                .returning();
+
+              if (updated) {
+                // Emit document updated event
+                bunstoreEvents.emitUpdated({
+                  projectId: apiKey.projectId,
+                  collectionPath: collection.path,
+                  documentId: updated.documentId,
+                  path: updated.path,
+                  data: updated.data,
+                  oldData: oldDocument?.data,
+                  createdAt: updated.createdAt,
+                  updatedAt: updated.updatedAt,
+                });
+
+                results.push({
+                  success: true,
+                  documentId: updated.documentId,
+                  data: updated.data,
+                });
+              } else {
+                results.push({
+                  success: false,
+                  documentId: operation.documentId,
+                  error: "Document not found",
+                });
+              }
+            } else if (operation.type === "delete") {
+              if (!operation.documentId) {
+                results.push({
+                  success: false,
+                  error: "documentId is required for delete operations",
+                });
+                continue;
+              }
+
+              // Get document data before deletion
+              const [docToDelete] = await tx
+                .select()
+                .from(projectDocuments)
+                .where(eq(projectDocuments.documentId, operation.documentId))
+                .limit(1);
+
+              if (docToDelete) {
+                // Emit document deleted event before deletion
+                bunstoreEvents.emitDeleted({
+                  projectId: apiKey.projectId,
+                  collectionPath: collection.path,
+                  documentId: docToDelete.documentId,
+                  path: docToDelete.path,
+                  data: docToDelete.data,
+                  createdAt: docToDelete.createdAt,
+                  updatedAt: docToDelete.updatedAt,
+                });
+              }
+
+              await tx
+                .delete(projectDocuments)
+                .where(eq(projectDocuments.documentId, operation.documentId));
+
               results.push({
                 success: true,
-                documentId: updated.documentId,
-                data: updated.data,
-              });
-            } else {
-              results.push({
-                success: false,
                 documentId: operation.documentId,
-                error: "Document not found",
               });
             }
-          } else if (operation.type === "delete") {
-            await projectDb
-              .delete(projectDocuments)
-              .where(eq(projectDocuments.documentId, operation.documentId));
-
+          } catch (error) {
             results.push({
-              success: true,
+              success: false,
               documentId: operation.documentId,
+              error: error instanceof Error ? error.message : "Unknown error",
             });
           }
-        } catch (error) {
-          results.push({
-            success: false,
-            documentId: operation.documentId,
-            error: error instanceof Error ? error.message : "Unknown error",
-          });
         }
-      }
+      });
 
       // Log batch operation
       logProjectDatabaseOperation(apiKey.projectId, "batch", "document", {

@@ -15,7 +15,7 @@ const secret =
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
-    provider: "pg", // PGLite is PostgreSQL-compatible
+    provider: "sqlite", // Using Bun.SQLite
     schema: {
       user: users,
       session: sessions,

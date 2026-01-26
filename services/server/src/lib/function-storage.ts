@@ -3,10 +3,7 @@
  * Handles filesystem storage for function code with versioning
  */
 
-import { mkdir, writeFile, readFile, rm, stat } from "fs/promises";
-import { existsSync } from "fs";
-import { join, dirname } from "path";
-import { createHash } from "crypto";
+import { join } from "path";
 
 const FUNCTIONS_BASE_DIR = join(import.meta.dir, "../../functions");
 
@@ -39,16 +36,25 @@ function getVersionDir(
 /**
  * Calculate hash of code content
  */
-export function calculateCodeHash(code: string): string {
-  return createHash("sha256").update(code).digest("hex");
+export async function calculateCodeHash(code: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(code);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**
  * Ensure the functions base directory exists
  */
 async function ensureBaseDir(): Promise<void> {
-  if (!existsSync(FUNCTIONS_BASE_DIR)) {
-    await mkdir(FUNCTIONS_BASE_DIR, { recursive: true });
+  try {
+    // Try to read the directory - if it fails, create it
+    await Bun.readdir(FUNCTIONS_BASE_DIR);
+  } catch {
+    // Directory doesn't exist, create it by writing a file
+    // This will create the directory structure
+    await Bun.write(join(FUNCTIONS_BASE_DIR, ".keep"), "");
   }
 }
 
@@ -64,12 +70,18 @@ export async function storeFunctionCode(
   await ensureBaseDir();
 
   const versionDir = getVersionDir(projectId, functionId, version);
-  await mkdir(versionDir, { recursive: true });
+  // Ensure directory exists by trying to read it, or create it
+  try {
+    await Bun.readdir(versionDir);
+  } catch {
+    // Directory doesn't exist, create it by writing a file
+    await Bun.write(join(versionDir, ".keep"), "");
+  }
 
   const codePath = join(versionDir, "code.ts");
-  const codeHash = calculateCodeHash(code);
+  const codeHash = await calculateCodeHash(code);
 
-  await writeFile(codePath, code, "utf-8");
+  await Bun.write(codePath, code);
 
   return { codePath, codeHash };
 }
@@ -84,12 +96,13 @@ export async function readFunctionCode(
 ): Promise<string> {
   const versionDir = getVersionDir(projectId, functionId, version);
   const codePath = join(versionDir, "code.ts");
+  const file = Bun.file(codePath);
 
-  if (!existsSync(codePath)) {
+  if (!(await file.exists())) {
     throw new Error(`Function code not found for version ${version}`);
   }
 
-  return await readFile(codePath, "utf-8");
+  return await file.text();
 }
 
 /**
@@ -123,8 +136,14 @@ export async function deleteFunctionVersion(
   version: string,
 ): Promise<void> {
   const versionDir = getVersionDir(projectId, functionId, version);
-  if (existsSync(versionDir)) {
+  try {
+    // Check if directory exists by trying to read it
+    await Bun.readdir(versionDir);
+    // Directory exists, delete it using fs/promises (Bun doesn't have recursive delete)
+    const { rm } = await import("fs/promises");
     await rm(versionDir, { recursive: true });
+  } catch {
+    // Directory doesn't exist, nothing to delete
   }
 }
 
@@ -136,8 +155,14 @@ export async function deleteFunctionCode(
   functionId: string,
 ): Promise<void> {
   const functionDir = getFunctionDir(projectId, functionId);
-  if (existsSync(functionDir)) {
+  try {
+    // Check if directory exists by trying to read it
+    await Bun.readdir(functionDir);
+    // Directory exists, delete it
+    const { rm } = await import("fs/promises");
     await rm(functionDir, { recursive: true });
+  } catch {
+    // Directory doesn't exist, nothing to delete
   }
 }
 
@@ -149,16 +174,23 @@ export async function listFunctionVersions(
   functionId: string,
 ): Promise<string[]> {
   const versionsDir = join(getFunctionDir(projectId, functionId), "versions");
-  if (!existsSync(versionsDir)) {
+  
+  // Read directory and return version names using Bun.readdir
+  try {
+    const entries = await Bun.readdir(versionsDir);
+    const versionDirs: string[] = [];
+    
+    for await (const entry of entries) {
+      // Check if entry is a directory
+      if (entry.isDirectory()) {
+        versionDirs.push(entry.name);
+      }
+    }
+    
+    return versionDirs;
+  } catch {
     return [];
   }
-
-  // Read directory and return version names
-  const { readdir } = await import("fs/promises");
-  const entries = await readdir(versionsDir, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
 }
 
 /**
@@ -171,5 +203,10 @@ export async function versionExists(
 ): Promise<boolean> {
   const versionDir = getVersionDir(projectId, functionId, version);
   const codePath = join(versionDir, "code.ts");
-  return existsSync(codePath);
+  try {
+    const file = Bun.file(codePath);
+    return await file.exists();
+  } catch {
+    return false;
+  }
 }

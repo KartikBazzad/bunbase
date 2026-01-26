@@ -446,6 +446,8 @@ export const FunctionModels = {
     }),
   ),
   invoke: t.Object({
+    method: t.Optional(t.String()),
+    url: t.Optional(t.String()),
     body: t.Optional(t.Any()),
     headers: t.Optional(t.Record(t.String(), t.String())),
   }),

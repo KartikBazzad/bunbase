@@ -1,0 +1,532 @@
+[
+  {
+    "scenario": "users100",
+    "users": 100,
+    "timestamp": "2026-01-26T09:59:56.896Z",
+    "results": {
+      "totalRequests": 142566,
+      "successfulRequests": 142566,
+      "failedRequests": 0,
+      "successRate": 100,
+      "totalDuration": 181352,
+      "requestsPerSecond": 786.128633817107,
+      "latency": {
+        "mean": 116.19468176142979,
+        "median": 60,
+        "p95": 355,
+        "p99": 900,
+        "min": 0,
+        "max": 2802
+      },
+      "eventDelivery": {
+        "totalEvents": 500,
+        "avgLatency": 387.2
+      },
+      "operationBreakdown": {
+        "update": 28576,
+        "delete": 14162,
+        "read": 42762,
+        "create": 57066
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 115.89683874811621,
+          "p95": 350,
+          "p99": 894
+        },
+        "read": {
+          "mean": 116.84876759739956,
+          "p95": 356,
+          "p99": 927
+        },
+        "update": {
+          "mean": 115.88262877939529,
+          "p95": 358,
+          "p99": 898
+        },
+        "delete": {
+          "mean": 116.04949865838158,
+          "p95": 357,
+          "p99": 849
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users200",
+    "users": 200,
+    "timestamp": "2026-01-26T10:03:08.235Z",
+    "results": {
+      "totalRequests": 142248,
+      "successfulRequests": 142248,
+      "failedRequests": 0,
+      "successRate": 100,
+      "totalDuration": 181218,
+      "requestsPerSecond": 784.9551369069299,
+      "latency": {
+        "mean": 243.16220263202294,
+        "median": 154,
+        "p95": 823,
+        "p99": 1521,
+        "min": 0,
+        "max": 3095
+      },
+      "eventDelivery": {
+        "totalEvents": 1000,
+        "avgLatency": 693.2
+      },
+      "operationBreakdown": {
+        "update": 28435,
+        "delete": 14156,
+        "create": 57069,
+        "read": 42588
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 243,
+          "p95": 817,
+          "p99": 1535
+        },
+        "read": {
+          "mean": 242.48490185028646,
+          "p95": 819,
+          "p99": 1519
+        },
+        "update": {
+          "mean": 244.78860559170036,
+          "p95": 835,
+          "p99": 1520
+        },
+        "delete": {
+          "mean": 242.58681831025714,
+          "p95": 812,
+          "p99": 1528
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users300",
+    "users": 300,
+    "timestamp": "2026-01-26T10:06:20.304Z",
+    "results": {
+      "totalRequests": 110322,
+      "successfulRequests": 110274,
+      "failedRequests": 48,
+      "successRate": 99.95649099907543,
+      "totalDuration": 181989,
+      "requestsPerSecond": 606.2014737154443,
+      "latency": {
+        "mean": 480.4331049110785,
+        "median": 321,
+        "p95": 1291,
+        "p99": 2340,
+        "min": 0,
+        "max": 7812
+      },
+      "eventDelivery": {
+        "totalEvents": 1500,
+        "avgLatency": 1686.2
+      },
+      "operationBreakdown": {
+        "update": 22117,
+        "delete": 10896,
+        "read": 33120,
+        "create": 44189
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 485.2018828215167,
+          "p95": 1316,
+          "p99": 2394
+        },
+        "read": {
+          "mean": 481.74233091787437,
+          "p95": 1289,
+          "p99": 2373
+        },
+        "update": {
+          "mean": 470.5437898449157,
+          "p95": 1261,
+          "p99": 2213
+        },
+        "delete": {
+          "mean": 477.18722466960355,
+          "p95": 1270,
+          "p99": 2270
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users400",
+    "users": 400,
+    "timestamp": "2026-01-26T10:09:32.508Z",
+    "results": {
+      "totalRequests": 112774,
+      "successfulRequests": 112772,
+      "failedRequests": 2,
+      "successRate": 99.99822654157873,
+      "totalDuration": 182132,
+      "requestsPerSecond": 619.1882810269475,
+      "latency": {
+        "mean": 630.4992728820473,
+        "median": 363,
+        "p95": 1523,
+        "p99": 2913,
+        "min": 0,
+        "max": 9026
+      },
+      "eventDelivery": {
+        "totalEvents": 2000,
+        "avgLatency": 2816.075
+      },
+      "operationBreakdown": {
+        "update": 22712,
+        "delete": 11304,
+        "read": 33408,
+        "create": 45350
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 635.8570893054024,
+          "p95": 1534,
+          "p99": 3175
+        },
+        "read": {
+          "mean": 643.7924748563219,
+          "p95": 1546,
+          "p99": 3316
+        },
+        "update": {
+          "mean": 611.1288746037337,
+          "p95": 1481,
+          "p99": 2613
+        },
+        "delete": {
+          "mean": 608.6365888181175,
+          "p95": 1478,
+          "p99": 2547
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users500",
+    "users": 500,
+    "timestamp": "2026-01-26T10:12:44.971Z",
+    "results": {
+      "totalRequests": 102916,
+      "successfulRequests": 102826,
+      "failedRequests": 90,
+      "successRate": 99.91255004080998,
+      "totalDuration": 182375,
+      "requestsPerSecond": 564.3098012337217,
+      "latency": {
+        "mean": 867.5008939329161,
+        "median": 690,
+        "p95": 1934,
+        "p99": 2515,
+        "min": 0,
+        "max": 9754
+      },
+      "eventDelivery": {
+        "totalEvents": 2400,
+        "avgLatency": 3438.5833333333335
+      },
+      "operationBreakdown": {
+        "update": 20634,
+        "delete": 10346,
+        "create": 41261,
+        "read": 30675
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 883.0374203242772,
+          "p95": 1953,
+          "p99": 2746
+        },
+        "read": {
+          "mean": 881.9091442542788,
+          "p95": 1950,
+          "p99": 2771
+        },
+        "update": {
+          "mean": 831.9082582145973,
+          "p95": 1892,
+          "p99": 2336
+        },
+        "delete": {
+          "mean": 833.8060119853084,
+          "p95": 1894,
+          "p99": 2362
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users600",
+    "users": 600,
+    "timestamp": "2026-01-26T10:15:57.827Z",
+    "results": {
+      "totalRequests": 69245,
+      "successfulRequests": 69106,
+      "failedRequests": 139,
+      "successRate": 99.79926348472814,
+      "totalDuration": 182556,
+      "requestsPerSecond": 379.30826705230174,
+      "latency": {
+        "mean": 1556.4077983969962,
+        "median": 1295,
+        "p95": 3241,
+        "p99": 9579,
+        "min": 0,
+        "max": 12920
+      },
+      "eventDelivery": {
+        "totalEvents": 3000,
+        "avgLatency": 5173.45
+      },
+      "operationBreakdown": {
+        "delete": 6825,
+        "update": 13995,
+        "create": 27550,
+        "read": 20875
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 1590.8860254083484,
+          "p95": 3425,
+          "p99": 9736
+        },
+        "read": {
+          "mean": 1598.1999520958084,
+          "p95": 3437,
+          "p99": 9662
+        },
+        "update": {
+          "mean": 1473.8748124330118,
+          "p95": 2973,
+          "p99": 9097
+        },
+        "delete": {
+          "mean": 1458.6441025641025,
+          "p95": 2989,
+          "p99": 8499
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users700",
+    "users": 700,
+    "timestamp": "2026-01-26T10:19:10.824Z",
+    "results": {
+      "totalRequests": 73018,
+      "successfulRequests": 72984,
+      "failedRequests": 34,
+      "successRate": 99.95343613903421,
+      "totalDuration": 182910,
+      "requestsPerSecond": 399.201793231644,
+      "latency": {
+        "mean": 1723.5161467035525,
+        "median": 1454,
+        "p95": 2726,
+        "p99": 8000,
+        "min": 0,
+        "max": 14287
+      },
+      "eventDelivery": {
+        "totalEvents": 3500,
+        "avgLatency": 5843.371428571429
+      },
+      "operationBreakdown": {
+        "update": 14705,
+        "delete": 7255,
+        "read": 21844,
+        "create": 29214
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 1771.0530225234477,
+          "p95": 2773,
+          "p99": 12245
+        },
+        "read": {
+          "mean": 1778.5721479582494,
+          "p95": 2772,
+          "p99": 12317
+        },
+        "update": {
+          "mean": 1603.0820129207752,
+          "p95": 2661,
+          "p99": 5080
+        },
+        "delete": {
+          "mean": 1610.4352860096485,
+          "p95": 2631,
+          "p99": 5525
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users800",
+    "users": 800,
+    "timestamp": "2026-01-26T10:22:23.948Z",
+    "results": {
+      "totalRequests": 60347,
+      "successfulRequests": 60276,
+      "failedRequests": 71,
+      "successRate": 99.88234709264752,
+      "totalDuration": 182974,
+      "requestsPerSecond": 329.8118858417043,
+      "latency": {
+        "mean": 2388.1475632591514,
+        "median": 1759,
+        "p95": 3140,
+        "p99": 36957,
+        "min": 0,
+        "max": 41732
+      },
+      "eventDelivery": {
+        "totalEvents": 4000,
+        "avgLatency": 15627.675
+      },
+      "operationBreakdown": {
+        "update": 12011,
+        "delete": 5901,
+        "read": 18362,
+        "create": 24073
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 2634.218377435301,
+          "p95": 3447,
+          "p99": 38622
+        },
+        "read": {
+          "mean": 2560.2699596993793,
+          "p95": 3287,
+          "p99": 37735
+        },
+        "update": {
+          "mean": 1880.8014320206478,
+          "p95": 2838,
+          "p99": 5103
+        },
+        "delete": {
+          "mean": 1881.3792577529232,
+          "p95": 2865,
+          "p99": 5446
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users900",
+    "users": 900,
+    "timestamp": "2026-01-26T10:25:39.961Z",
+    "results": {
+      "totalRequests": 134613,
+      "successfulRequests": 134568,
+      "failedRequests": 45,
+      "successRate": 99.96657083639768,
+      "totalDuration": 185705,
+      "requestsPerSecond": 724.8754745429578,
+      "latency": {
+        "mean": 1212.1790540289571,
+        "median": 930,
+        "p95": 2413,
+        "p99": 4336,
+        "min": 0,
+        "max": 19288
+      },
+      "eventDelivery": {
+        "totalEvents": 4500,
+        "avgLatency": 8288.511111111111
+      },
+      "operationBreakdown": {
+        "update": 26982,
+        "delete": 13552,
+        "read": 40277,
+        "create": 53802
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 1270.3971785435485,
+          "p95": 2476,
+          "p99": 7355
+        },
+        "read": {
+          "mean": 1255.4527149489784,
+          "p95": 2451,
+          "p99": 4790
+        },
+        "update": {
+          "mean": 1092.315024831369,
+          "p95": 2294,
+          "p99": 3378
+        },
+        "delete": {
+          "mean": 1091.0889167650532,
+          "p95": 2316,
+          "p99": 3274
+        }
+      }
+    }
+  },
+  {
+    "scenario": "users1000",
+    "users": 1000,
+    "timestamp": "2026-01-26T10:28:53.149Z",
+    "results": {
+      "totalRequests": 106397,
+      "successfulRequests": 106312,
+      "failedRequests": 85,
+      "successRate": 99.92011052943222,
+      "totalDuration": 183100,
+      "requestsPerSecond": 581.0868377935554,
+      "latency": {
+        "mean": 1688.5037454063554,
+        "median": 1217,
+        "p95": 2704,
+        "p99": 5066,
+        "min": 0,
+        "max": 26372
+      },
+      "eventDelivery": {
+        "totalEvents": 5000,
+        "avgLatency": 11465.29
+      },
+      "operationBreakdown": {
+        "update": 21110,
+        "delete": 10656,
+        "create": 42930,
+        "read": 31701
+      },
+      "latencyByOperation": {
+        "create": {
+          "mean": 1790.2217097600746,
+          "p95": 2733,
+          "p99": 23821
+        },
+        "read": {
+          "mean": 1774.39724298918,
+          "p95": 2724,
+          "p99": 23776
+        },
+        "update": {
+          "mean": 1462.0811463761252,
+          "p95": 2674,
+          "p99": 3199
+        },
+        "delete": {
+          "mean": 1471.7356418918919,
+          "p95": 2683,
+          "p99": 3200
+        }
+      }
+    }
+  }
+]

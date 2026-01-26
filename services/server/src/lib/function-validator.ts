@@ -78,12 +78,16 @@ export async function validateCodeSyntax(
     }
   }
 
-  // Try to parse the code using Bun's parser
+  // Try to validate syntax using Bun's Transpiler
   try {
-    // Use Bun's built-in parser to check syntax
-    // This will throw if the code is invalid
-    await Bun.parse(code);
+    // Use Bun's Transpiler to check if code is valid
+    // This will throw if the code has syntax errors
+    const transpiler = new Bun.Transpiler({
+      loader: "ts", // Treat as TypeScript
+    });
+    transpiler.transformSync(code);
   } catch (error: any) {
+    // If transpilation fails, it's likely a syntax error
     errors.push(`Syntax error: ${error.message || "Invalid code syntax"}`);
   }
 

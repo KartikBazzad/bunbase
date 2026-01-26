@@ -4,16 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/index.ts",
+    "dev": "bun --watch src/index.ts",
     "start": "NODE_ENV=production bun src/index.ts",
-    "build": "bun run build.ts"
+    "build": "bun run build.ts",
+    "migrate": "bun run migrate.ts",
+    "generate": "bunx drizzle-kit generate --dialect sqlite --schema ./src/db/schema.ts"
   },
   "dependencies": {
     "@bunbase/schemas": "workspace:*",
-    "@electric-sql/pglite": "^0.3.15",
     "@elysiajs/cors": "^1.4.1",
     "@elysiajs/eden": "^1.4.6",
+    "@elysiajs/html": "^1.4.0",
+    "@elysiajs/static": "^1.4.7",
     "@hookform/resolvers": "^5.2.2",
+    "@libsql/client": "^0.17.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-aspect-ratio": "^1.1.8",
