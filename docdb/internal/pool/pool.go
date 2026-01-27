@@ -161,6 +161,32 @@ func (p *Pool) CreateDB(name string) (uint64, error) {
 	return dbID, nil
 }
 
+func (p *Pool) OpenOrCreateDB(name string) (uint64, error) {
+	if p.stopped {
+		return 0, ErrPoolStopped
+	}
+
+	// Try to create the database
+	dbID, err := p.catalog.Create(name)
+	if err == nil {
+		// Database was created, register it with memory
+		p.memory.RegisterDB(dbID, p.cfg.Memory.PerDBLimitMB)
+		return dbID, nil
+	}
+
+	// If database already exists, get its ID
+	if err == catalog.ErrDBExists {
+		dbID, err := p.catalog.GetByName(name)
+		if err != nil {
+			return 0, err
+		}
+		return dbID, nil
+	}
+
+	// Some other error occurred
+	return 0, err
+}
+
 func (p *Pool) DeleteDB(dbID uint64) error {
 	if p.stopped {
 		return ErrPoolStopped

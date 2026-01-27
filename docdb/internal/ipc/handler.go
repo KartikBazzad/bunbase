@@ -32,13 +32,15 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 	case CmdOpenDB:
 		if len(frame.Ops) == 0 || len(frame.Ops[0].Payload) == 0 {
 			response.Status = types.StatusError
+			response.Data = []byte("invalid database name")
 			return response
 		}
 
 		dbName := string(frame.Ops[0].Payload)
-		dbID, err := h.pool.CreateDB(dbName)
+		dbID, err := h.pool.OpenOrCreateDB(dbName)
 		if err != nil {
 			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
 			return response
 		}
 
@@ -49,11 +51,13 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 	case CmdCloseDB:
 		if frame.DBID == 0 {
 			response.Status = types.StatusError
+			response.Data = []byte("invalid database ID")
 			return response
 		}
 
-		if err := h.pool.DeleteDB(frame.DBID); err != nil {
+		if err := h.pool.CloseDB(frame.DBID); err != nil {
 			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
 			return response
 		}
 

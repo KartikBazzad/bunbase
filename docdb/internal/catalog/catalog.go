@@ -182,6 +182,23 @@ func (c *Catalog) Get(dbID uint64) (*types.CatalogEntry, error) {
 	return entry, nil
 }
 
+func (c *Catalog) GetByName(name string) (uint64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	dbID, exists := c.names[name]
+	if !exists {
+		return 0, ErrDBNotFound
+	}
+
+	entry, exists := c.entries[dbID]
+	if !exists || entry.Status != types.DBActive {
+		return 0, ErrDBNotFound
+	}
+
+	return dbID, nil
+}
+
 func (c *Catalog) List() []*types.CatalogEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

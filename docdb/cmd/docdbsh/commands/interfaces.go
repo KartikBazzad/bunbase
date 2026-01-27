@@ -1,0 +1,20 @@
+package commands
+
+import (
+	"github.com/kartikbazzad/docdb/internal/ipc"
+	"github.com/kartikbazzad/docdb/internal/types"
+)
+
+type Client interface {
+	OpenDB(name string) (uint64, error)
+	CloseDB(dbID uint64) error
+	Execute(dbID uint64, ops []ipc.Operation) ([]byte, error)
+	Stats() (*types.Stats, error)
+}
+
+type Shell interface {
+	GetDB() uint64
+	SetDB(uint64)
+	ClearDB()
+	GetClient() Client
+}

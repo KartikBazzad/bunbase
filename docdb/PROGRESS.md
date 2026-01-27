@@ -1,7 +1,7 @@
 # DocDB Progress Documentation
 
 > **Status**: Active Development (v0)  
-> **Last Updated**: January 2026
+ > **Last Updated**: January 27, 2026
 
 This document provides a comprehensive overview of implemented features, architecture components, client libraries, testing coverage, and known limitations in DocDB.
 
@@ -30,6 +30,7 @@ DocDB is a **file-based, ACID document database** written in Go. The project pri
 - ✅ **IPC Server**: Unix domain socket server operational
 - ✅ **Go Client**: Complete implementation
 - ✅ **TypeScript Client**: Complete implementation with JSON API
+- ✅ **DocDB Shell**: Debugging and administrative CLI (docdbsh)
 - ✅ **Crash Recovery**: WAL replay with CRC32 validation (fully functional)
 - ✅ **Memory Management**: Global and per-DB capacity limits
 - ❌ **Secondary Indexes**: Explicitly out of scope for v0
@@ -243,10 +244,11 @@ DocDB is a **file-based, ACID document database** written in Go. The project pri
 | **WAL Recovery** | `internal/wal/recovery.go` | ✅ | WAL replay (fully functional) |
 | **IPC Server** | `internal/ipc/server.go` | ✅ | Unix socket server |
 | **IPC Handler** | `internal/ipc/handler.go` | ✅ | Request handling |
-| **IPC Protocol** | `internal/ipc/protocol.go` | ✅ | Binary protocol encoding/decoding |
-| **Memory Caps** | `internal/memory/caps.go` | ✅ | Memory limit management |
-| **Buffer Pool** | `internal/memory/pool.go` | ✅ | Buffer allocation pool |
-| **Logger** | `internal/logger/logger.go` | ✅ | Structured logging |
+ | **IPC Protocol** | `internal/ipc/protocol.go` | ✅ | Binary protocol encoding/decoding |
+ | **Memory Caps** | `internal/memory/caps.go` | ✅ | Memory limit management |
+ | **Buffer Pool** | `internal/memory/pool.go` | ✅ | Buffer allocation pool |
+ | **Logger** | `internal/logger/logger.go` | ✅ | Structured logging |
+ | **Shell** | `cmd/docdbsh/` | ✅ | Interactive debugging CLI |
 
 ### Configuration
 
@@ -257,9 +259,10 @@ DocDB is a **file-based, ACID document database** written in Go. The project pri
 
 ### Entry Point
 
-| Component | Location | Status | Description |
-|-----------|----------|--------|-------------|
-| **Main** | `cmd/docdb/main.go` | ✅ | Server entry point with CLI flags |
+ | Component | Location | Status | Description |
+ |-----------|----------|--------|-------------|
+ | **Main** | `cmd/docdb/main.go` | ✅ | Server entry point with CLI flags |
+ | **Shell** | `cmd/docdbsh/main.go` | ✅ | Shell entry point with REPL |
 
 ---
 
@@ -290,6 +293,40 @@ data, err := cli.Read(dbID, 1)
 err = cli.Update(dbID, 1, []byte("updated"))
 err = cli.Delete(dbID, 1)
 ```
+
+### DocDB Shell (docdbsh)
+
+#### ✅ Implementation Status
+- **Location**: `cmd/docdbsh/`
+- **Status**: Complete
+- **Purpose**: Debugging and administrative CLI for DocDB
+- **Features**:
+  - Thin client - every command maps 1:1 to IPC
+  - Interactive REPL with command history
+  - Explicit payload formats (raw:, hex:, json:)
+  - Database lifecycle (.open, .close)
+  - CRUD operations (.create, .read, .update, .delete)
+  - Introspection (.stats, .mem, .wal)
+  - Error transparency (verbatim server errors)
+  - Deterministic behavior
+  - Single static binary (3.8M)
+  - No external dependencies (Go stdlib only)
+- **Commands**:
+  - Meta: `.help`, `.exit`, `.clear`
+  - Database: `.open <db_name>`, `.close`
+  - CRUD: `.create <id> <payload>`, `.read <id>`, `.update <id> <payload>`, `.delete <id>`
+  - Stats: `.stats`, `.mem`, `.wal`
+- **Payload Formats**:
+  - `raw:"Hello world"` - UTF-8 string
+  - `hex:48656c6c6f` - Hex-encoded bytes
+  - `json:{"key":"val"}` - JSON object
+- **Documentation**:
+  - `cmd/docdbsh/README.md` - Usage guide
+  - `cmd/docdbsh/PROTOCOL.md` - Protocol mapping
+  - `cmd/docdbsh/SESSION_TRANSCRIPT.md` - Example session
+  - `cmd/docdbsh/IMPLEMENTATION_SUMMARY.md` - Implementation details
+- **Testing**: Unit tests for parsing, payload decoding, and error handling (all passing)
+- **See**: [Shell Documentation](docs/shell.md) for complete details
 
 ### TypeScript/Bun Client
 
@@ -342,7 +379,9 @@ await jsonClient.createJSON(dbID, 1n, { id: 1, name: 'John' });
 const user = await jsonClient.readJSON<User>(dbID, 1n);
 ```
 
-See [TypeScript Client Implementation Summary](tsclient/IMPLEMENTATION_SUMMARY.md) for complete details.
+ See [TypeScript Client Implementation Summary](tsclient/IMPLEMENTATION_SUMMARY.md) for complete details.
+
+See [Shell Documentation](docs/shell.md) for complete details on the DocDB Shell.
 
 ---
 
@@ -432,23 +471,28 @@ go test -bench=. ./tests/benchmarks
 | **Troubleshooting** | `docs/troubleshooting.md` | Debugging, common issues, and recovery procedures |
 | **On-Disk Format** | `docs/ondisk_format.md` | Binary format specifications |
 | **Failure Modes** | `docs/failure_modes.md` | Failure handling and recovery |
-| **TypeScript Client** | `tsclient/README.md` | TypeScript client documentation |
-| **TS Implementation** | `tsclient/IMPLEMENTATION_SUMMARY.md` | Detailed TS client status |
+ | **TypeScript Client** | `tsclient/README.md` | TypeScript client documentation |
+ | **TS Implementation** | `tsclient/IMPLEMENTATION_SUMMARY.md` | Detailed TS client status |
+ | **Shell Guide** | `docs/shell.md` | DocDB Shell usage and reference |
+ | **Shell Usage** | `cmd/docdbsh/README.md` | Shell command reference |
+ | **Shell Protocol** | `cmd/docdbsh/PROTOCOL.md` | Command to IPC mapping |
+ | **Shell Session** | `cmd/docdbsh/SESSION_TRANSCRIPT.md` | Example shell session |
 
-### Documentation Coverage
+ ### Documentation Coverage
 
-- ✅ Architecture overview with diagrams
-- ✅ Storage format specifications
-- ✅ Failure mode handling
-- ✅ Client library documentation
-- ✅ API examples (Go and TypeScript)
-- ✅ Error codes and handling
-- ✅ Configuration reference (complete)
-- ✅ Usage guide (comprehensive)
-- ✅ Transaction documentation
-- ✅ Concurrency model documentation
-- ✅ Testing guide with examples
-- ✅ Troubleshooting and debugging guide
+ - ✅ Architecture overview with diagrams
+ - ✅ Storage format specifications
+ - ✅ Failure mode handling
+ - ✅ Client library documentation (Go, TypeScript, Shell)
+ - ✅ API examples (Go and TypeScript)
+ - ✅ Error codes and handling
+ - ✅ Configuration reference (complete)
+ - ✅ Usage guide (comprehensive)
+ - ✅ Transaction documentation
+ - ✅ Concurrency model documentation
+ - ✅ Testing guide with examples
+ - ✅ Troubleshooting and debugging guide
+ - ✅ Shell documentation (complete reference and examples)
 
 ---
 
@@ -550,14 +594,15 @@ Benchmark tests are available in `tests/benchmarks/bench_test.go`:
 - Memory management (global + per-DB)
 - Compaction system
 - IPC server (Unix socket)
-- Go client library
-- TypeScript client library
-- **Crash recovery with deterministic WAL replay** ✅
-- Integration tests (including persistence) ✅
-- Failure mode tests
-- Benchmarks
-- Pool-level fairness with backpressure signaling ✅
-- Comprehensive documentation (architecture, transactions, concurrency, testing, troubleshooting)
+ - Go client library
+ - TypeScript client library
+ - DocDB Shell (debugging CLI) ✅
+ - **Crash recovery with deterministic WAL replay** ✅
+ - Integration tests (including persistence) ✅
+ - Failure mode tests
+ - Benchmarks
+ - Pool-level fairness with backpressure signaling ✅
+ - Comprehensive documentation (architecture, transactions, concurrency, testing, troubleshooting, shell)
 
 ### Key Correctness Achievements
 
