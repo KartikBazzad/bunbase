@@ -1,3 +1,14 @@
+// Package docdb implements sharded in-memory index for document lookups.
+//
+// The index is split into multiple shards to reduce lock contention.
+// Each shard is protected by its own RWMutex, allowing concurrent reads
+// across different shards while still providing thread-safety.
+//
+// Sharding Strategy: Document ID is hashed using modulo operation.
+//
+//	shard_id = doc_id % num_shards
+//
+// This ensures documents are distributed evenly across shards.
 package docdb
 
 import (
@@ -7,12 +18,20 @@ import (
 )
 
 const (
-	DefaultNumShards = 256
+	DefaultNumShards = 256 // Number of index shards (tunable for performance)
 )
 
+// IndexShard manages a subset of document versions.
+//
+// Each shard is protected by its own RWMutex to enable:
+// - Concurrent reads from different goroutines
+// - Serialized writes within a shard
+// - High throughput with reduced contention
+//
+// Thread Safety: All methods are thread-safe via mu.
 type IndexShard struct {
-	mu   sync.RWMutex
-	data map[uint64]*types.DocumentVersion
+	mu   sync.RWMutex                      // Protects shard data
+	data map[uint64]*types.DocumentVersion // Document versions in this shard
 }
 
 func NewIndexShard() *IndexShard {

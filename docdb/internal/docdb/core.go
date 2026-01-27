@@ -1,3 +1,25 @@
+// Package docdb implements core document database engine.
+//
+// LogicalDB is a single database instance that manages:
+//   - Append-only data file storage
+//   - Write-ahead log (WAL) for durability
+//   - Sharded in-memory index for fast lookups
+//   - MVCC-lite for snapshot-based reads
+//   - Transaction management for atomic operations
+//
+// Each LogicalDB is isolated and has its own:
+//   - Data file (<dbname>.data)
+//   - WAL file (<dbname>.wal)
+//   - In-memory index (recovered from WAL on open)
+//
+// Commit ordering invariant:
+// 1. Write WAL record (includes fsync if enabled)
+// 2. Update index (making transaction visible)
+//
+// This ensures no phantom visibility after crash:
+// - If crash occurs before index update: WAL persists, data is recovered on restart
+// - If crash occurs after index update: WAL already persisted, consistent state
+// - Transaction is only visible after WAL is durable
 package docdb
 
 import (
@@ -13,22 +35,29 @@ import (
 	"github.com/kartikbazzad/docdb/internal/wal"
 )
 
+// LogicalDB represents a single logical database instance.
+//
+// It manages the complete lifecycle of documents within this database,
+// including storage, indexing, transaction management, and recovery.
+//
+// Thread Safety: All public methods are safe for concurrent use.
+// The mu (RWMutex) protects all internal state.
 type LogicalDB struct {
-	mu        sync.RWMutex
-	dbID      uint64
-	dbName    string
-	dataFile  *DataFile
-	wal       *wal.Writer
-	index     *Index
-	mvcc      *MVCC
-	txManager *TransactionManager
-	memory    *memory.Caps
-	pool      *memory.BufferPool
-	cfg       *config.Config
-	logger    *logger.Logger
-	closed    bool
-	dataDir   string
-	walDir    string
+	mu        sync.RWMutex        // Protects all internal state
+	dbID      uint64              // Unique database identifier
+	dbName    string              // Human-readable database name
+	dataFile  *DataFile           // Append-only file for document payloads
+	wal       *wal.Writer         // Write-ahead log for durability
+	index     *Index              // Sharded in-memory index
+	mvcc      *MVCC               // Multi-version concurrency control
+	txManager *TransactionManager // Transaction lifecycle management
+	memory    *memory.Caps        // Memory limit tracking
+	pool      *memory.BufferPool  // Efficient buffer allocation
+	cfg       *config.Config      // Database configuration
+	logger    *logger.Logger      // Structured logging
+	closed    bool                // True if database is closed
+	dataDir   string              // Directory for data files
+	walDir    string              // Directory for WAL files
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
@@ -71,6 +100,10 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	db.wal = wal.NewWriter(walFile, db.cfg.WAL.MaxFileSizeMB*1024*1024, db.cfg.WAL.FsyncOnCommit, db.logger)
 	if err := db.wal.Open(); err != nil {
 		return fmt.Errorf("failed to open WAL: %w", err)
+	}
+
+	if err := db.replayWAL(); err != nil {
+		db.logger.Warn("Failed to replay WAL: %v", err)
 	}
 
 	db.logger.Info("Opened database: %s (id=%d)", db.dbName, db.dbID)
@@ -325,23 +358,98 @@ func (db *LogicalDB) replayWAL() error {
 		records = append(records, record)
 	}
 
+	// Track the highest transaction ID to update MVCC
+	maxTxID := uint64(0)
+
+	// Replay records in order, writing payloads to data file
 	for _, rec := range records {
 		txID := rec.TxID
+		if txID > maxTxID {
+			maxTxID = txID
+		}
 
 		switch rec.OpType {
 		case types.OpCreate:
-			version := db.mvcc.CreateVersion(rec.DocID, txID, 0, rec.PayloadLen)
+			// Write payload to data file to get the actual offset
+			offset, err := db.dataFile.Write(rec.Payload)
+			if err != nil {
+				db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+				continue
+			}
+
+			// Allocate memory for the payload
+			memoryNeeded := uint64(len(rec.Payload))
+			if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+				db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+				continue
+			}
+
+			// Create version with correct offset
+			version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
 			db.index.Set(version)
+
 		case types.OpUpdate:
 			existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
-			if exists {
-				version := db.mvcc.UpdateVersion(existing, txID, 0, rec.PayloadLen)
+			if !exists {
+				// If document doesn't exist, treat as create
+				offset, err := db.dataFile.Write(rec.Payload)
+				if err != nil {
+					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+					continue
+				}
+
+				memoryNeeded := uint64(len(rec.Payload))
+				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+					continue
+				}
+
+				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
+				db.index.Set(version)
+			} else {
+				// Write new payload to data file
+				offset, err := db.dataFile.Write(rec.Payload)
+				if err != nil {
+					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+					continue
+				}
+
+				// Calculate memory change
+				oldMemory := uint64(existing.Length)
+				memoryNeeded := uint64(len(rec.Payload))
+
+				// Try to allocate new memory
+				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+					continue
+				}
+
+				// Free old memory
+				if oldMemory > 0 {
+					db.memory.Free(db.dbID, oldMemory)
+				}
+
+				// Update version with correct offset
+				version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
 				db.index.Set(version)
 			}
+
 		case types.OpDelete:
+			existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
+			if exists {
+				// Free memory for deleted document
+				if existing.Length > 0 {
+					db.memory.Free(db.dbID, uint64(existing.Length))
+				}
+			}
 			version := db.mvcc.DeleteVersion(rec.DocID, txID)
 			db.index.Set(version)
 		}
+	}
+
+	// Update MVCC to use the next transaction ID after the highest one found
+	if maxTxID > 0 {
+		db.mvcc.SetCurrentTxID(maxTxID + 1)
 	}
 
 	db.logger.Info("Replayed %d WAL records", len(records))

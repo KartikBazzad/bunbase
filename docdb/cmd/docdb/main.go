@@ -52,4 +52,5 @@ func main() {
 	}
 
 	logr.Info("DocDB stopped")
+	os.Exit(0)
 }

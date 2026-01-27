@@ -1,3 +1,18 @@
+// Package pool manages multiple logical databases in a single runtime.
+//
+// Pool provides:
+//   - Database lifecycle management (create, open, close, delete)
+//   - Request scheduling (round-robin across databases)
+//   - Memory management (global and per-DB limits)
+//   - Lazy database opening (opened on first access)
+//
+// Architecture:
+//   - Each database gets its own queue (depth = QueueDepth)
+//   - Round-robin scheduler picks next queue to service
+//   - Workers execute requests sequentially per-database
+//   - Backpressure: QueueFull error when queue at capacity
+//
+// Thread Safety: Pool operations are thread-safe via scheduler.
 package pool
 
 import (
@@ -16,6 +31,17 @@ var (
 	ErrQueueFull   = errors.New("request queue is full")
 )
 
+// Request represents a database operation to be executed.
+//
+// It contains all information needed to execute the operation
+// and a response channel for sending the result.
+//
+// Lifecycle:
+//  1. Created by client (via IPC)
+//  2. Enqueued in scheduler (per-DB queue)
+//  3. Executed by worker (handleRequest)
+//  4. Result sent on Response channel
+//  5. Response sent back to client
 type Request struct {
 	DBID     uint64
 	DocID    uint64
@@ -24,23 +50,60 @@ type Request struct {
 	Response chan Response
 }
 
+// Response represents result of database operation.
+//
+// It contains operation status, optional data, and error.
+//
+// Fields:
+//   - Status: Operation result (OK, Error, NotFound, MemoryLimit)
+//   - Data: Response data (document payload, DB ID, etc.)
+//   - Error: Error if operation failed (nil on success)
+//
+// Lifecycle: Created by handleRequest, sent on Response channel.
 type Response struct {
-	Status types.Status
-	Data   []byte
-	Error  error
+	Status types.Status // Operation result status
+	Data   []byte       // Response data (document payload, DB ID, stats, etc.)
+	Error  error        // Error if operation failed, nil on success
 }
 
+// Pool manages multiple logical databases.
+//
+// It provides:
+//   - Database lifecycle management (create, open, close, delete)
+//   - Catalog persistence (metadata about databases)
+//   - Request scheduling (round-robin across databases)
+//   - Memory management (global + per-DB limits)
+//   - Statistics aggregation
+//
+// Thread Safety: Pool operations are thread-safe.
+// Individual databases have their own locking.
 type Pool struct {
-	dbs     map[uint64]*docdb.LogicalDB
-	catalog *catalog.Catalog
-	sched   *Scheduler
-	memory  *memory.Caps
-	pool    *memory.BufferPool
-	cfg     *config.Config
-	logger  *logger.Logger
-	stopped bool
+	dbs     map[uint64]*docdb.LogicalDB // Open databases by ID
+	catalog *catalog.Catalog            // Database metadata catalog
+	sched   *Scheduler                  // Request scheduler
+	memory  *memory.Caps                // Memory limit tracker
+	pool    *memory.BufferPool          // Buffer allocation pool
+	cfg     *config.Config              // Configuration
+	logger  *logger.Logger              // Structured logging
+	stopped bool                        // True if pool is shutting down
 }
 
+// NewPool creates a new database pool.
+//
+// It initializes:
+//   - Memory caps (global and per-DB limits)
+//   - Buffer pool (for efficient allocations)
+//   - Catalog (for database metadata)
+//   - Scheduler (for request distribution)
+//
+// Parameters:
+//   - cfg: Pool configuration (memory, queue depth, etc.)
+//   - log: Logger instance
+//
+// Returns:
+//   - Initialized pool ready for Start()
+//
+// Note: Pool is not started until Start() is called.
 func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
 	bufferPool := memory.NewBufferPool(cfg.Memory.BufferSizes)
@@ -166,7 +229,13 @@ func (p *Pool) Execute(req *Request) {
 		return
 	}
 
-	p.sched.Enqueue(req)
+	if err := p.sched.Enqueue(req); err != nil {
+		req.Response <- Response{
+			Status: types.StatusError,
+			Error:  err,
+		}
+		return
+	}
 }
 
 func (p *Pool) handleRequest(req *Request) {

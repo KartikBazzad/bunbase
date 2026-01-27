@@ -271,7 +271,6 @@ func TestMemoryLimits(t *testing.T) {
 }
 
 func TestPersistence(t *testing.T) {
-	t.Skip("Persistence requires WAL replay implementation - v0 limitation")
 	tmpDir, err := os.MkdirTemp("", "docdb-persist-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)

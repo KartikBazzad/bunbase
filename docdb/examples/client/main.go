@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -58,6 +60,8 @@ func main() {
 		}
 
 		fmt.Printf("  Document %d: %s\n", docID, string(data))
+		fmt.Printf("  Document %d data (hex): %s\n", docID, hex.EncodeToString(data))
+		fmt.Printf("  Document %d data (length): %d bytes\n", docID, len(data))
 	}
 	fmt.Println()
 
@@ -77,6 +81,8 @@ func main() {
 		fmt.Printf("Failed to read document 3: %v\n", err)
 	} else {
 		fmt.Printf("  Document 3: %s\n", string(data))
+		fmt.Printf("  Document 3 data (hex): %s\n", hex.EncodeToString(data))
+		fmt.Printf("  Document 3 data (length): %d bytes\n", len(data))
 	}
 	fmt.Println()
 
@@ -100,8 +106,82 @@ func main() {
 		}
 
 		fmt.Printf("  Document %d: %s\n", docID, string(data))
+		fmt.Printf("  Document %d data (hex): %s\n", docID, hex.EncodeToString(data))
+		fmt.Printf("  Document %d data (length): %d bytes\n", docID, len(data))
 	}
 	fmt.Println()
+
+	fmt.Println("=== JSON Document Operations ===")
+	fmt.Println()
+
+	// Create JSON documents
+	type User struct {
+		ID       int    `json:"id"`
+		Name     string `json:"name"`
+		Email    string `json:"email"`
+		Age      int    `json:"age"`
+		Active   bool   `json:"active"`
+		Tags     []string `json:"tags"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+
+	jsonDocs := []User{
+		{ID: 100, Name: "Alice Johnson", Email: "alice@example.com", Age: 28, Active: true, Tags: []string{"developer", "go"}, Metadata: map[string]interface{}{"role": "backend", "level": "senior"}},
+		{ID: 101, Name: "Bob Smith", Email: "bob@example.com", Age: 32, Active: true, Tags: []string{"designer", "ui"}, Metadata: map[string]interface{}{"role": "frontend", "level": "mid"}},
+		{ID: 102, Name: "Charlie Brown", Email: "charlie@example.com", Age: 25, Active: false, Tags: []string{"intern"}, Metadata: map[string]interface{}{"role": "fullstack", "level": "junior"}},
+	}
+
+	fmt.Println("Creating JSON documents...")
+	for i, user := range jsonDocs {
+		docID := uint64(100 + i) // Use IDs 100, 101, 102
+		
+		jsonData, err := json.MarshalIndent(user, "", "  ")
+		if err != nil {
+			fmt.Printf("Failed to marshal JSON for document %d: %v\n", docID, err)
+			continue
+		}
+
+		err = cli.Create(dbID, docID, jsonData)
+		if err != nil {
+			fmt.Printf("Failed to create JSON document %d: %v\n", docID, err)
+			continue
+		}
+
+		fmt.Printf("  Created JSON document %d:\n", docID)
+		fmt.Printf("    %s\n", string(jsonData))
+	}
+	fmt.Println()
+
+	fmt.Println("Reading JSON documents...")
+	for i := 0; i < len(jsonDocs); i++ {
+		docID := uint64(100 + i)
+
+		data, err := cli.Read(dbID, docID)
+		if err != nil {
+			fmt.Printf("Failed to read JSON document %d: %v\n", docID, err)
+			continue
+		}
+
+		fmt.Printf("  Document %d (raw): %s\n", docID, string(data))
+		fmt.Printf("  Document %d (hex): %s\n", docID, hex.EncodeToString(data))
+		fmt.Printf("  Document %d (length): %d bytes\n", docID, len(data))
+
+		// Parse and display as structured JSON
+		var user User
+		if err := json.Unmarshal(data, &user); err != nil {
+			fmt.Printf("  Failed to parse JSON: %v\n", err)
+		} else {
+			fmt.Printf("  Document %d (parsed):\n", docID)
+			fmt.Printf("    ID: %d\n", user.ID)
+			fmt.Printf("    Name: %s\n", user.Name)
+			fmt.Printf("    Email: %s\n", user.Email)
+			fmt.Printf("    Age: %d\n", user.Age)
+			fmt.Printf("    Active: %v\n", user.Active)
+			fmt.Printf("    Tags: %v\n", user.Tags)
+			fmt.Printf("    Metadata: %v\n", user.Metadata)
+		}
+		fmt.Println()
+	}
 
 	fmt.Println("Getting pool stats...")
 	stats, err := cli.Stats()

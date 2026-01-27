@@ -1,3 +1,25 @@
+// Package wal implements Write-Ahead Log for durability.
+//
+// WAL provides:
+//   - Append-only writes (no overwrites)
+//   - Binary record format with CRC32 checksums
+//   - Optional fsync on every write (durability)
+//   - Size tracking (for rotation warnings)
+//   - Crash recovery (via reader)
+//
+// WAL Format (per record):
+//
+//	[8 bytes: record_len] [8 bytes: tx_id] [8 bytes: db_id]
+//	[1 byte: op_type] [8 bytes: doc_id] [4 bytes: payload_len]
+//	[N bytes: payload] [4 bytes: crc32]
+//
+// Durability Guarantees:
+//   - If fsync enabled: Record is on disk after Write() returns
+//   - If fsync disabled: Record is in OS buffer (may be lost on crash)
+//   - CRC32 detects corruption on replay
+//   - Truncation at first corrupt record (partial recovery)
+//
+// Thread Safety: All methods are thread-safe (mu protects file).
 package wal
 
 import (
@@ -8,16 +30,37 @@ import (
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
+// Writer manages append-only WAL file.
+//
+// It provides:
+//   - Atomic record writes (with optional fsync)
+//   - CRC32 checksum calculation
+//   - Size tracking (for rotation warnings)
+//   - Thread-safe file operations
+//
+// Thread Safety: All methods are thread-safe via mu.
 type Writer struct {
-	mu      sync.Mutex
-	file    *os.File
-	path    string
-	size    uint64
-	maxSize uint64
-	fsync   bool
-	logger  *logger.Logger
+	mu      sync.Mutex     // Protects all file operations
+	file    *os.File       // Open WAL file handle (append mode)
+	path    string         // WAL file path
+	size    uint64         // Current file size (in bytes)
+	maxSize uint64         // Maximum size before warning (0 = unlimited)
+	fsync   bool           // If true, fsync after each write
+	logger  *logger.Logger // Structured logging
 }
 
+// NewWriter creates a new WAL writer.
+//
+// Parameters:
+//   - path: WAL file path (will be created if doesn't exist)
+//   - maxSize: Maximum file size before logging warning (0 = no limit)
+//   - fsync: If true, call file.Sync() after each write (slower, more durable)
+//   - log: Logger instance
+//
+// Returns:
+//   - Initialized WAL writer ready for Open()
+//
+// Note: Writer is not opened until Open() is called.
 func NewWriter(path string, maxSize uint64, fsync bool, log *logger.Logger) *Writer {
 	return &Writer{
 		path:    path,

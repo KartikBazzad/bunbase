@@ -169,8 +169,13 @@ go test -bench=. ./tests/benchmarks
 
 ## Documentation
 
-- [On-Disk Format](docs/ondisk_format.md)
-- [Failure Modes](docs/failure_modes.md)
+- [Usage Guide](docs/usage.md) - Comprehensive usage examples for Go and TypeScript
+- [Configuration Guide](docs/configuration.md) - All configuration options and recommended settings
+- [On-Disk Format](docs/ondisk_format.md) - Binary format specifications
+- [Failure Modes](docs/failure_modes.md) - Failure handling and recovery
+- [TypeScript Client](tsclient/README.md) - TypeScript client documentation
+- [TS Implementation](tsclient/IMPLEMENTATION_SUMMARY.md) - Detailed TS client status
+- [Progress](PROGRESS.md) - Implementation status and recent fixes
 
 ## License
 

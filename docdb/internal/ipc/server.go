@@ -11,14 +11,16 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	logger   *logger.Logger
-	pool     *pool.Pool
-	handler  *Handler
-	listener net.Listener
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	running  bool
+	cfg         *config.Config
+	logger      *logger.Logger
+	pool        *pool.Pool
+	handler     *Handler
+	listener    net.Listener
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	running     bool
+	connections map[net.Conn]bool
+	connMu      sync.Mutex
 }
 
 func NewServer(cfg *config.Config, log *logger.Logger) (*Server, error) {
@@ -26,11 +28,12 @@ func NewServer(cfg *config.Config, log *logger.Logger) (*Server, error) {
 	h := NewHandler(p)
 
 	return &Server{
-		cfg:     cfg,
-		logger:  log,
-		pool:    p,
-		handler: h,
-		running: false,
+		cfg:         cfg,
+		logger:      log,
+		pool:        p,
+		handler:     h,
+		running:     false,
+		connections: make(map[net.Conn]bool),
 	}, nil
 }
 
@@ -68,9 +71,8 @@ func (s *Server) Start() error {
 
 func (s *Server) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.running {
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -80,6 +82,14 @@ func (s *Server) Stop() error {
 
 	s.pool.Stop()
 	s.running = false
+	s.mu.Unlock()
+
+	// Close all active connections to unblock any waiting reads
+	s.connMu.Lock()
+	for conn := range s.connections {
+		conn.Close()
+	}
+	s.connMu.Unlock()
 
 	s.wg.Wait()
 
@@ -103,6 +113,10 @@ func (s *Server) acceptLoop() {
 			continue
 		}
 
+		s.connMu.Lock()
+		s.connections[conn] = true
+		s.connMu.Unlock()
+
 		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
@@ -110,7 +124,12 @@ func (s *Server) acceptLoop() {
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		s.connMu.Lock()
+		delete(s.connections, conn)
+		s.connMu.Unlock()
+	}()
 
 	s.logger.Debug("New connection from %s", conn.RemoteAddr())
 
