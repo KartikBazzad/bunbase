@@ -31,7 +31,7 @@ func NewValidator(db *LogicalDB, log *logger.Logger) *Validator {
 
 // ValidateDocument checks the health of a document by reading it
 // and verifying CRC32 checksum.
-func (v *Validator) ValidateDocument(docID uint64) (DocumentHealth, error) {
+func (v *Validator) ValidateDocument(collection string, docID uint64) (DocumentHealth, error) {
 	v.db.mu.RLock()
 	defer v.db.mu.RUnlock()
 
@@ -39,7 +39,11 @@ func (v *Validator) ValidateDocument(docID uint64) (DocumentHealth, error) {
 		return HealthUnknown, ErrDBNotOpen
 	}
 
-	version, exists := v.db.index.Get(docID, v.db.mvcc.CurrentSnapshot())
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	version, exists := v.db.index.Get(collection, docID, v.db.mvcc.CurrentSnapshot())
 	if !exists {
 		return HealthMissing, nil
 	}
@@ -51,7 +55,7 @@ func (v *Validator) ValidateDocument(docID uint64) (DocumentHealth, error) {
 	// Try to read the document - this will verify CRC32
 	_, err := v.db.dataFile.Read(version.Offset, version.Length)
 	if err != nil {
-		v.logger.Warn("Document %d validation failed: %v", docID, err)
+		v.logger.Warn("Document %d in collection %s validation failed: %v", docID, collection, err)
 		return HealthCorrupt, err
 	}
 
@@ -59,7 +63,7 @@ func (v *Validator) ValidateDocument(docID uint64) (DocumentHealth, error) {
 }
 
 // ValidateAllDocuments validates all documents in the database.
-func (v *Validator) ValidateAllDocuments() (map[uint64]DocumentHealth, error) {
+func (v *Validator) ValidateAllDocuments() (map[string]map[uint64]DocumentHealth, error) {
 	v.db.mu.RLock()
 	defer v.db.mu.RUnlock()
 
@@ -67,19 +71,22 @@ func (v *Validator) ValidateAllDocuments() (map[uint64]DocumentHealth, error) {
 		return nil, ErrDBNotOpen
 	}
 
-	results := make(map[uint64]DocumentHealth)
+	results := make(map[string]map[uint64]DocumentHealth)
 
-	v.db.index.ForEach(func(docID uint64, version *types.DocumentVersion) {
-		if version.DeletedTxID != nil {
-			return // Skip deleted documents
-		}
+	v.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+		results[collection] = make(map[uint64]DocumentHealth)
+		ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
+			if version.DeletedTxID != nil {
+				return // Skip deleted documents
+			}
 
-		_, err := v.db.dataFile.Read(version.Offset, version.Length)
-		if err != nil {
-			results[docID] = HealthCorrupt
-		} else {
-			results[docID] = HealthValid
-		}
+			_, err := v.db.dataFile.Read(version.Offset, version.Length)
+			if err != nil {
+				results[collection][docID] = HealthCorrupt
+			} else {
+				results[collection][docID] = HealthValid
+			}
+		})
 	})
 
 	return results, nil

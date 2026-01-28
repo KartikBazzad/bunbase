@@ -3,6 +3,9 @@ export enum OperationType {
   Read = 2,
   Update = 3,
   Delete = 4,
+  Patch = 7,
+  CreateCollection = 8,
+  DeleteCollection = 9,
 }
 
 export enum Status {
@@ -18,12 +21,23 @@ export enum Command {
   CloseDB = 2,
   Execute = 3,
   Stats = 4,
+  CreateCollection = 5,
+  DeleteCollection = 6,
+  ListCollections = 7,
+}
+
+export interface PatchOperation {
+  op: "set" | "delete" | "insert";
+  path: string;
+  value?: any;
 }
 
 export interface Operation {
   opType: OperationType;
+  collection?: string;
   docID: bigint;
   payload: Uint8Array | null;
+  patchOps?: PatchOperation[];
 }
 
 export interface RequestFrame {

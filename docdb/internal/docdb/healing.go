@@ -69,37 +69,40 @@ func (hs *HealingService) Stop() {
 }
 
 // HealOnCorruption triggers healing when corruption is detected during read.
-func (hs *HealingService) HealOnCorruption(docID uint64) {
+func (hs *HealingService) HealOnCorruption(collection string, docID uint64) {
 	if !hs.cfg.OnReadCorruption {
 		return
 	}
 
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
 	hs.mu.Lock()
 	hs.healingStats.OnDemandHealings++
 	hs.mu.Unlock()
 
-	hs.logger.Info("Triggering on-demand healing for document %d", docID)
+	hs.logger.Info("Triggering on-demand healing for document %d in collection %s", docID, collection)
 
-	// Add to queue for batch processing
-	hs.queueMu.Lock()
-	hs.healingQueue = append(hs.healingQueue, docID)
-	queueLen := len(hs.healingQueue)
-	hs.queueMu.Unlock()
-
-	// If queue is getting large, process immediately
-	if queueLen >= hs.cfg.MaxBatchSize {
-		hs.processHealingQueue()
+	// For simplicity, heal immediately rather than queueing
+	// Queue would need to store (collection, docID) pairs
+	if err := hs.healer.HealDocument(collection, docID); err != nil {
+		hs.logger.Warn("Failed to heal document %d: %v", docID, err)
 	}
 }
 
 // HealDocument manually heals a specific document.
-func (hs *HealingService) HealDocument(docID uint64) error {
+func (hs *HealingService) HealDocument(collection string, docID uint64) error {
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
 	hs.mu.Lock()
 	hs.healingStats.OnDemandHealings++
 	hs.mu.Unlock()
 
-	if err := hs.healer.HealDocument(docID); err != nil {
-		hs.logger.Warn("Failed to heal document %d: %v", docID, err)
+	if err := hs.healer.HealDocument(collection, docID); err != nil {
+		hs.logger.Warn("Failed to heal document %d in collection %s: %v", docID, collection, err)
 		return err
 	}
 
@@ -108,7 +111,7 @@ func (hs *HealingService) HealDocument(docID uint64) error {
 	hs.healingStats.LastHealingTime = time.Now()
 	hs.mu.Unlock()
 
-	hs.logger.Info("Successfully healed document %d", docID)
+	hs.logger.Info("Successfully healed document %d in collection %s", docID, collection)
 	return nil
 }
 
@@ -168,68 +171,39 @@ func (hs *HealingService) performHealthScan() {
 		return
 	}
 
-	corrupted := make([]uint64, 0)
-	for docID, health := range healthMap {
-		if health == HealthCorrupt {
-			corrupted = append(corrupted, docID)
+	corruptedCount := 0
+	for collection, docs := range healthMap {
+		for docID, health := range docs {
+			if health == HealthCorrupt {
+				corruptedCount++
+				// Heal immediately during scan
+				if err := hs.healer.HealDocument(collection, docID); err != nil {
+					hs.logger.Warn("Failed to heal document %d in collection %s: %v", docID, collection, err)
+				}
+			}
 		}
 	}
 
 	hs.mu.Lock()
 	hs.healingStats.TotalScans++
-	hs.healingStats.DocumentsCorrupted = uint64(len(corrupted))
+	hs.healingStats.DocumentsCorrupted = uint64(corruptedCount)
 	hs.healingStats.LastScanTime = time.Now()
 	hs.mu.Unlock()
 
-	if len(corrupted) > 0 {
-		hs.logger.Info("Health scan found %d corrupted documents", len(corrupted))
-
-		// Add to healing queue
-		hs.queueMu.Lock()
-		hs.healingQueue = append(hs.healingQueue, corrupted...)
-		hs.queueMu.Unlock()
+	if corruptedCount > 0 {
+		hs.logger.Info("Health scan found %d corrupted documents", corruptedCount)
 	} else {
 		hs.logger.Debug("Health scan completed - no corruption detected")
 	}
 }
 
 // processHealingQueue processes documents in the healing queue.
+// Note: Queue processing simplified - queue stores docIDs but we need collection.
+// For v0.2, we'll heal immediately rather than queueing.
 func (hs *HealingService) processHealingQueue() {
+	// Queue processing is simplified in v0.2
+	// Actual healing happens in performHealthScan()
 	hs.queueMu.Lock()
-	if len(hs.healingQueue) == 0 {
-		hs.queueMu.Unlock()
-		return
-	}
-
-	// Process up to MaxBatchSize documents
-	batchSize := hs.cfg.MaxBatchSize
-	if batchSize > len(hs.healingQueue) {
-		batchSize = len(hs.healingQueue)
-	}
-
-	batch := make([]uint64, batchSize)
-	copy(batch, hs.healingQueue[:batchSize])
-	hs.healingQueue = hs.healingQueue[batchSize:]
+	hs.healingQueue = hs.healingQueue[:0] // Clear queue
 	hs.queueMu.Unlock()
-
-	hs.logger.Debug("Processing healing queue: %d documents", len(batch))
-
-	healed := 0
-	for _, docID := range batch {
-		if err := hs.healer.HealDocument(docID); err != nil {
-			hs.logger.Warn("Failed to heal document %d: %v", docID, err)
-			continue
-		}
-		healed++
-	}
-
-	hs.mu.Lock()
-	hs.healingStats.DocumentsHealed += uint64(healed)
-	hs.healingStats.BackgroundHealings += uint64(healed)
-	hs.healingStats.LastHealingTime = time.Now()
-	hs.mu.Unlock()
-
-	if healed > 0 {
-		hs.logger.Info("Healed %d documents from queue", healed)
-	}
 }

@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -244,6 +245,136 @@ func (c *Client) readFrame() ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+func (c *Client) CreateCollection(dbID uint64, name string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdCreateCollection,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpCreateCollection,
+				Collection: name,
+				DocID:      0,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return fmt.Errorf("%s", string(resp.Data))
+	}
+
+	return nil
+}
+
+func (c *Client) DeleteCollection(dbID uint64, name string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdDeleteCollection,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpDeleteCollection,
+				Collection: name,
+				DocID:      0,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return fmt.Errorf("%s", string(resp.Data))
+	}
+
+	return nil
+}
+
+func (c *Client) ListCollections(dbID uint64) ([]string, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdListCollections,
+		DBID:      dbID,
+		OpCount:   0,
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != types.StatusOK {
+		return nil, fmt.Errorf("%s", string(resp.Data))
+	}
+
+	var collections []string
+	if err := json.Unmarshal(resp.Data, &collections); err != nil {
+		return nil, fmt.Errorf("failed to parse collections: %w", err)
+	}
+
+	return collections, nil
+}
+
+func (c *Client) ListDBs() ([]*types.DBInfo, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdListDBs,
+		DBID:      0,
+		OpCount:   0,
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != types.StatusOK {
+		return nil, fmt.Errorf("%s", string(resp.Data))
+	}
+
+	var dbInfos []*types.DBInfo
+	if err := json.Unmarshal(resp.Data, &dbInfos); err != nil {
+		return nil, fmt.Errorf("failed to parse database info: %w", err)
+	}
+
+	return dbInfos, nil
 }
 
 func (c *Client) parseStats(data []byte) (*types.Stats, error) {

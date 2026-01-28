@@ -1,16 +1,27 @@
 package wal
 
 const (
-	RecordLenSize  = 8
-	TxIDSize       = 8
-	DBIDSize       = 8
-	OpTypeSize     = 1
-	DocIDSize      = 8
-	PayloadLenSize = 4
-	CRCSize        = 4
+	RecordLenSize     = 8
+	TxIDSize          = 8
+	DBIDSize          = 8
+	CollectionLenSize = 2 // v0.2: collection name length (0-65535 bytes)
+	OpTypeSize        = 1
+	DocIDSize         = 8
+	PayloadLenSize    = 4
+	CRCSize           = 4
 
-	HeaderSize     = RecordLenSize + TxIDSize + DBIDSize + OpTypeSize + DocIDSize + PayloadLenSize
-	RecordOverhead = HeaderSize + CRCSize
+	// v0.1 format (no collection field)
+	HeaderSizeV1     = RecordLenSize + TxIDSize + DBIDSize + OpTypeSize + DocIDSize + PayloadLenSize
+	RecordOverheadV1 = HeaderSizeV1 + CRCSize
+
+	// v0.2 format (with collection field)
+	// Note: Collection name length is variable, so HeaderSizeV2 is minimum
+	HeaderSizeV2Min     = RecordLenSize + TxIDSize + DBIDSize + CollectionLenSize + OpTypeSize + DocIDSize + PayloadLenSize
+	RecordOverheadV2Min = HeaderSizeV2Min + CRCSize
+
+	// For backward compatibility, use v0.1 constants as defaults
+	HeaderSize     = HeaderSizeV1
+	RecordOverhead = RecordOverheadV1
 )
 
 const (

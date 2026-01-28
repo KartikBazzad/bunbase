@@ -127,9 +127,13 @@ func (c *Client) CloseDB(dbID uint64) error {
 	return nil
 }
 
-func (c *Client) Create(dbID uint64, docID uint64, payload []byte) error {
+func (c *Client) Create(dbID uint64, collection string, docID uint64, payload []byte) error {
 	if err := c.Connect(); err != nil {
 		return err
+	}
+
+	if collection == "" {
+		collection = "_default"
 	}
 
 	if err := validateJSON(payload); err != nil {
@@ -145,9 +149,10 @@ func (c *Client) Create(dbID uint64, docID uint64, payload []byte) error {
 		OpCount:   1,
 		Ops: []ipc.Operation{
 			{
-				OpType:  types.OpCreate,
-				DocID:   docID,
-				Payload: payload,
+				OpType:     types.OpCreate,
+				Collection: collection,
+				DocID:      docID,
+				Payload:    payload,
 			},
 		},
 	}
@@ -164,9 +169,13 @@ func (c *Client) Create(dbID uint64, docID uint64, payload []byte) error {
 	return nil
 }
 
-func (c *Client) Read(dbID uint64, docID uint64) ([]byte, error) {
+func (c *Client) Read(dbID uint64, collection string, docID uint64) ([]byte, error) {
 	if err := c.Connect(); err != nil {
 		return nil, err
+	}
+
+	if collection == "" {
+		collection = "_default"
 	}
 
 	reqID := c.nextRequestID()
@@ -178,9 +187,10 @@ func (c *Client) Read(dbID uint64, docID uint64) ([]byte, error) {
 		OpCount:   1,
 		Ops: []ipc.Operation{
 			{
-				OpType:  types.OpRead,
-				DocID:   docID,
-				Payload: nil,
+				OpType:     types.OpRead,
+				Collection: collection,
+				DocID:      docID,
+				Payload:    nil,
 			},
 		},
 	}
@@ -201,9 +211,13 @@ func (c *Client) Read(dbID uint64, docID uint64) ([]byte, error) {
 	return c.parseReadResponse(resp.Data)
 }
 
-func (c *Client) Update(dbID uint64, docID uint64, payload []byte) error {
+func (c *Client) Update(dbID uint64, collection string, docID uint64, payload []byte) error {
 	if err := c.Connect(); err != nil {
 		return err
+	}
+
+	if collection == "" {
+		collection = "_default"
 	}
 
 	if err := validateJSON(payload); err != nil {
@@ -219,9 +233,10 @@ func (c *Client) Update(dbID uint64, docID uint64, payload []byte) error {
 		OpCount:   1,
 		Ops: []ipc.Operation{
 			{
-				OpType:  types.OpUpdate,
-				DocID:   docID,
-				Payload: payload,
+				OpType:     types.OpUpdate,
+				Collection: collection,
+				DocID:      docID,
+				Payload:    payload,
 			},
 		},
 	}
@@ -238,9 +253,13 @@ func (c *Client) Update(dbID uint64, docID uint64, payload []byte) error {
 	return nil
 }
 
-func (c *Client) Delete(dbID uint64, docID uint64) error {
+func (c *Client) Delete(dbID uint64, collection string, docID uint64) error {
 	if err := c.Connect(); err != nil {
 		return err
+	}
+
+	if collection == "" {
+		collection = "_default"
 	}
 
 	reqID := c.nextRequestID()
@@ -252,9 +271,10 @@ func (c *Client) Delete(dbID uint64, docID uint64) error {
 		OpCount:   1,
 		Ops: []ipc.Operation{
 			{
-				OpType:  types.OpDelete,
-				DocID:   docID,
-				Payload: nil,
+				OpType:     types.OpDelete,
+				Collection: collection,
+				DocID:      docID,
+				Payload:    nil,
 			},
 		},
 	}
@@ -269,6 +289,144 @@ func (c *Client) Delete(dbID uint64, docID uint64) error {
 	}
 
 	return nil
+}
+
+func (c *Client) Patch(dbID uint64, collection string, docID uint64, ops []types.PatchOperation) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	if collection == "" {
+		collection = "_default"
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdExecute,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpPatch,
+				Collection: collection,
+				DocID:      docID,
+				PatchOps:   ops,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return errors.New(string(resp.Data))
+	}
+
+	return nil
+}
+
+func (c *Client) CreateCollection(dbID uint64, name string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdCreateCollection,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpCreateCollection,
+				Collection: name,
+				DocID:      0,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return errors.New(string(resp.Data))
+	}
+
+	return nil
+}
+
+func (c *Client) DeleteCollection(dbID uint64, name string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdDeleteCollection,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpDeleteCollection,
+				Collection: name,
+				DocID:      0,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return errors.New(string(resp.Data))
+	}
+
+	return nil
+}
+
+func (c *Client) ListCollections(dbID uint64) ([]string, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdListCollections,
+		DBID:      dbID,
+		OpCount:   0,
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != types.StatusOK {
+		return nil, errors.New(string(resp.Data))
+	}
+
+	var collections []string
+	if err := json.Unmarshal(resp.Data, &collections); err != nil {
+		return nil, fmt.Errorf("failed to parse collections: %w", err)
+	}
+
+	return collections, nil
 }
 
 func (c *Client) BatchExecute(dbID uint64, ops []ipc.Operation) ([][]byte, error) {

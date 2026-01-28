@@ -59,11 +59,18 @@ func (h HelpResult) Print(w io.Writer) {
 	fmt.Fprintln(w, "  .pretty on|off       Toggle JSON formatting")
 	fmt.Fprintln(w, "  .history             Show command history")
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Collections:")
+	fmt.Fprintln(w, "  .use <collection>                Set current collection")
+	fmt.Fprintln(w, "  .collections                     List all collections")
+	fmt.Fprintln(w, "  .create-collection <name>        Create collection")
+	fmt.Fprintln(w, "  .drop-collection <name>          Delete collection")
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "CRUD Operations:")
 	fmt.Fprintln(w, "  .create <doc_id> <payload>      Create document")
 	fmt.Fprintln(w, "  .read <doc_id>                   Read document")
 	fmt.Fprintln(w, "  .update <doc_id> <payload>      Update document")
 	fmt.Fprintln(w, "  .delete <doc_id>                 Delete document")
+	fmt.Fprintln(w, "  .patch <doc_id> <patch-ops>      Patch document (path-based updates)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Payload Format:")
 	fmt.Fprintln(w, "  Documents must be valid JSON:")
@@ -273,9 +280,10 @@ func Create(s Shell, cmd *parser.Command) Result {
 
 	ops := []ipc.Operation{
 		{
-			OpType:  types.OpCreate,
-			DocID:   docID,
-			Payload: payload,
+			OpType:     types.OpCreate,
+			Collection: s.GetCollection(),
+			DocID:      docID,
+			Payload:    payload,
 		},
 	}
 
@@ -302,9 +310,10 @@ func Read(s Shell, cmd *parser.Command) Result {
 
 	ops := []ipc.Operation{
 		{
-			OpType:  types.OpRead,
-			DocID:   docID,
-			Payload: nil,
+			OpType:     types.OpRead,
+			Collection: s.GetCollection(),
+			DocID:      docID,
+			Payload:    nil,
 		},
 	}
 
@@ -342,9 +351,10 @@ func Update(s Shell, cmd *parser.Command) Result {
 
 	ops := []ipc.Operation{
 		{
-			OpType:  types.OpUpdate,
-			DocID:   docID,
-			Payload: payload,
+			OpType:     types.OpUpdate,
+			Collection: s.GetCollection(),
+			DocID:      docID,
+			Payload:    payload,
 		},
 	}
 
@@ -371,9 +381,10 @@ func Delete(s Shell, cmd *parser.Command) Result {
 
 	ops := []ipc.Operation{
 		{
-			OpType:  types.OpDelete,
-			DocID:   docID,
-			Payload: nil,
+			OpType:     types.OpDelete,
+			Collection: s.GetCollection(),
+			DocID:      docID,
+			Payload:    nil,
 		},
 	}
 
@@ -412,14 +423,45 @@ func WAL(s Shell) Result {
 }
 
 type ListDBsResult struct {
-	Stats *types.Stats
+	DBInfos []*types.DBInfo
+}
+
+func formatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func (l ListDBsResult) Print(w io.Writer) {
 	fmt.Fprintln(w, "OK")
-	fmt.Fprintf(w, "total_dbs=%d\n", l.Stats.TotalDBs)
-	fmt.Fprintf(w, "active_dbs=%d\n", l.Stats.ActiveDBs)
-	fmt.Fprintln(w, "Use '.open <dbname>' or '.use <dbname>' to access a database")
+	if len(l.DBInfos) == 0 {
+		fmt.Fprintln(w, "No databases found")
+		fmt.Fprintln(w, "Use '.open <dbname>' or '.use <dbname>' to create a database")
+	} else {
+		fmt.Fprintf(w, "databases=%d\n", len(l.DBInfos))
+		fmt.Fprintln(w)
+		// Print header
+		fmt.Fprintf(w, "%-20s %8s %19s %12s %12s %10s\n", "NAME", "ID", "CREATED", "WAL_SIZE", "MEMORY", "DOCS")
+		fmt.Fprintln(w, strings.Repeat("-", 90))
+		// Print each database
+		for _, info := range l.DBInfos {
+			createdStr := info.CreatedAt.Format("2006-01-02 15:04:05")
+			fmt.Fprintf(w, "%-20s %8d %19s %12s %12s %10d\n",
+				info.Name,
+				info.ID,
+				createdStr,
+				formatBytes(info.WALSize),
+				formatBytes(info.MemoryUsed),
+				info.DocsLive)
+		}
+	}
 }
 
 func (l ListDBsResult) IsExit() bool {
@@ -427,12 +469,12 @@ func (l ListDBsResult) IsExit() bool {
 }
 
 func ListDBs(s Shell) Result {
-	stats, err := s.GetClient().Stats()
+	dbInfos, err := s.GetClient().ListDBs()
 	if err != nil {
 		return ErrorResult{Err: err.Error()}
 	}
 
-	return ListDBsResult{Stats: stats}
+	return ListDBsResult{DBInfos: dbInfos}
 }
 
 type PWDResult struct {
@@ -629,4 +671,120 @@ func HealStats(s Shell) Result {
 	// TODO: Implement IPC protocol support for healing stats
 	// For now, return not implemented
 	return HealStatsResult{Error: "healing stats not yet implemented in IPC protocol"}
+}
+
+// Collection management commands
+
+func UseCollection(s Shell, cmd *parser.Command) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	if err := parser.ValidateArgs(cmd, 1); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	collection := cmd.Args[0]
+	s.SetCollection(collection)
+	return OKResult{}
+}
+
+func ListCollections(s Shell) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	collections, err := s.GetClient().ListCollections(s.GetDB())
+	if err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return CollectionsResult{Collections: collections}
+}
+
+type CollectionsResult struct {
+	Collections []string
+}
+
+func (c CollectionsResult) Print(w io.Writer) {
+	fmt.Fprintln(w, "OK")
+	for _, coll := range c.Collections {
+		fmt.Fprintln(w, coll)
+	}
+}
+
+func (c CollectionsResult) IsExit() bool {
+	return false
+}
+
+func CreateCollection(s Shell, cmd *parser.Command) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	if err := parser.ValidateArgs(cmd, 1); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	name := cmd.Args[0]
+	if err := s.GetClient().CreateCollection(s.GetDB(), name); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return OKResult{}
+}
+
+func DropCollection(s Shell, cmd *parser.Command) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	if err := parser.ValidateArgs(cmd, 1); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	name := cmd.Args[0]
+	if err := s.GetClient().DeleteCollection(s.GetDB(), name); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return OKResult{}
+}
+
+func Patch(s Shell, cmd *parser.Command) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	if err := parser.ValidateArgs(cmd, 2); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	docID, err := parser.ParseUint64(cmd.Args[0])
+	if err != nil {
+		return ErrorResult{Err: fmt.Sprintf("invalid doc_id: %s", err)}
+	}
+
+	// Parse patch operations JSON array
+	patchOpsJSON := strings.Join(cmd.Args[1:], " ")
+	var patchOps []types.PatchOperation
+	if err := json.Unmarshal([]byte(patchOpsJSON), &patchOps); err != nil {
+		return ErrorResult{Err: fmt.Sprintf("invalid patch operations: %s", err)}
+	}
+
+	ops := []ipc.Operation{
+		{
+			OpType:     types.OpPatch,
+			Collection: s.GetCollection(),
+			DocID:      docID,
+			PatchOps:   patchOps,
+			Payload:    nil,
+		},
+	}
+
+	if _, err := s.GetClient().Execute(s.GetDB(), ops); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return OKResult{}
 }

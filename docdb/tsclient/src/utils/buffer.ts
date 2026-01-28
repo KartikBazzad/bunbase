@@ -1,11 +1,44 @@
-export function readLittleEndianUint32(buf: Uint8Array, offset: number = 0): number {
-  return buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | (buf[offset + 3] << 24);
+export function readLittleEndianUint16(
+  buf: Uint8Array,
+  offset: number = 0,
+): number {
+  return buf[offset] | (buf[offset + 1] << 8);
 }
 
-export function readLittleEndianUint64(buf: Uint8Array, offset: number = 0): bigint {
-  const low = buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | (buf[offset + 3] << 24);
-  const high = buf[offset + 4] | (buf[offset + 5] << 8) | (buf[offset + 6] << 16) | (buf[offset + 7] << 24);
+export function readLittleEndianUint32(
+  buf: Uint8Array,
+  offset: number = 0,
+): number {
+  return (
+    buf[offset] |
+    (buf[offset + 1] << 8) |
+    (buf[offset + 2] << 16) |
+    (buf[offset + 3] << 24)
+  );
+}
+
+export function readLittleEndianUint64(
+  buf: Uint8Array,
+  offset: number = 0,
+): bigint {
+  const low =
+    buf[offset] |
+    (buf[offset + 1] << 8) |
+    (buf[offset + 2] << 16) |
+    (buf[offset + 3] << 24);
+  const high =
+    buf[offset + 4] |
+    (buf[offset + 5] << 8) |
+    (buf[offset + 6] << 16) |
+    (buf[offset + 7] << 24);
   return BigInt(high) * 4294967296n + BigInt(low);
+}
+
+export function writeLittleEndianUint16(value: number): Uint8Array {
+  const buf = new Uint8Array(2);
+  buf[0] = value & 0xff;
+  buf[1] = (value >> 8) & 0xff;
+  return buf;
 }
 
 export function writeLittleEndianUint32(value: number): Uint8Array {

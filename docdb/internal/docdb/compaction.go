@@ -35,11 +35,14 @@ func (c *Compactor) ShouldCompact() bool {
 	tombstoneCount := 0
 	totalCount := 0
 
-	c.db.index.ForEach(func(docID uint64, version *types.DocumentVersion) {
-		totalCount++
-		if version.DeletedTxID != nil {
-			tombstoneCount++
-		}
+	// Check tombstone ratio across all collections
+	c.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+		ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
+			totalCount++
+			if version.DeletedTxID != nil {
+				tombstoneCount++
+			}
+		})
 	})
 
 	if totalCount > 0 && float64(tombstoneCount)/float64(totalCount) > c.db.cfg.DB.CompactionTombstoneRatio {
@@ -68,43 +71,63 @@ func (c *Compactor) Compact() error {
 	}
 	defer compactFile.Close()
 
-	newOffsets := make(map[uint64]uint64)
+	// Map: (collection, docID) -> newOffset
+	newOffsets := make(map[string]map[uint64]uint64)
 
-	c.db.index.ForEach(func(docID uint64, version *types.DocumentVersion) {
-		if version.DeletedTxID == nil {
-			payload, err := c.db.dataFile.Read(version.Offset, version.Length)
-			if err != nil {
-				c.logger.Error("Failed to read doc %d during compaction: %v", docID, err)
-				return
+	// Compact all collections
+	c.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+		newOffsets[collection] = make(map[uint64]uint64)
+
+		ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
+			if version.DeletedTxID == nil {
+				payload, err := c.db.dataFile.Read(version.Offset, version.Length)
+				if err != nil {
+					c.logger.Error("Failed to read doc %d in collection %s during compaction: %v", docID, collection, err)
+					return
+				}
+
+				newOffset, err := compactFile.Write(payload)
+				if err != nil {
+					c.logger.Error("Failed to write doc %d in collection %s during compaction: %v", docID, collection, err)
+					return
+				}
+
+				newOffsets[collection][docID] = newOffset
 			}
-
-			newOffset, err := compactFile.Write(payload)
-			if err != nil {
-				c.logger.Error("Failed to write doc %d during compaction: %v", docID, err)
-				return
-			}
-
-			newOffsets[docID] = newOffset
-		}
+		})
 	})
 
 	if err := compactFile.Close(); err != nil {
 		return err
 	}
 
-	for _, shard := range c.db.index.shards {
-		shard.mu.Lock()
-		for docID, version := range shard.data {
-			if version.DeletedTxID == nil {
-				if newOffset, exists := newOffsets[docID]; exists {
-					version.Offset = newOffset
-				}
-			} else {
-				delete(shard.data, docID)
-			}
+	// Update offsets for all collections
+	c.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+		collectionOffsets := newOffsets[collection]
+		if collectionOffsets == nil {
+			return
 		}
-		shard.mu.Unlock()
-	}
+
+		// Update offsets for live documents
+		ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
+			if version.DeletedTxID == nil {
+				if newOffset, exists := collectionOffsets[docID]; exists {
+					// Create updated version with new offset
+					updatedVersion := *version
+					updatedVersion.Offset = newOffset
+					ci.Set(&updatedVersion)
+				}
+			}
+			// Deleted documents are already marked, no need to remove them here
+			// They'll be cleaned up naturally over time
+		})
+	})
+
+	// Update collection document counts after compaction
+	c.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+		liveCount := ci.LiveCount()
+		c.db.collections.SetDocCount(collection, uint64(liveCount))
+	})
 
 	if err := c.db.dataFile.Close(); err != nil {
 		c.logger.Error("Failed to close old data file: %v", err)

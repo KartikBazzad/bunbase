@@ -107,11 +107,13 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 			}
 
 			req := &pool.Request{
-				DBID:     frame.DBID,
-				DocID:    op.DocID,
-				OpType:   op.OpType,
-				Payload:  op.Payload,
-				Response: make(chan pool.Response, 1),
+				DBID:       frame.DBID,
+				Collection: op.Collection,
+				DocID:      op.DocID,
+				OpType:     op.OpType,
+				Payload:    op.Payload,
+				PatchOps:   op.PatchOps,
+				Response:   make(chan pool.Response, 1),
 			}
 
 			h.pool.Execute(req)
@@ -130,6 +132,74 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 
 		response.Status = types.StatusOK
 		response.Data = serializeResponses(responses)
+
+	case CmdCreateCollection:
+		if frame.DBID == 0 || len(frame.Ops) == 0 || frame.Ops[0].Collection == "" {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid collection name")
+			return response
+		}
+
+		err := h.pool.CreateCollection(frame.DBID, frame.Ops[0].Collection)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		response.Status = types.StatusOK
+
+	case CmdDeleteCollection:
+		if frame.DBID == 0 || len(frame.Ops) == 0 || frame.Ops[0].Collection == "" {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid collection name")
+			return response
+		}
+
+		err := h.pool.DeleteCollection(frame.DBID, frame.Ops[0].Collection)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		response.Status = types.StatusOK
+
+	case CmdListCollections:
+		if frame.DBID == 0 {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid database ID")
+			return response
+		}
+
+		collections, err := h.pool.ListCollections(frame.DBID)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		collectionsJSON, err := json.Marshal(collections)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte("failed to serialize collections")
+			return response
+		}
+
+		response.Status = types.StatusOK
+		response.Data = collectionsJSON
+
+	case CmdListDBs:
+		dbInfos := h.pool.ListDBs()
+		dbInfosJSON, err := json.Marshal(dbInfos)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte("failed to serialize database info")
+			return response
+		}
+
+		response.Status = types.StatusOK
+		response.Data = dbInfosJSON
 
 	case CmdStats:
 		stats := h.pool.Stats()

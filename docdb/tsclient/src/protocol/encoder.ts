@@ -1,18 +1,45 @@
-import { RequestFrame, ResponseFrame, OperationType } from '../types/protocol';
-import { SIZES, FRAME_OVERHEAD, OP_OVERHEAD, RESPONSE_OVERHEAD, MAX_FRAME_SIZE } from './constants';
-import { writeLittleEndianUint32, writeLittleEndianUint64 } from '../utils/buffer';
-import { ValidationError, FrameError } from '../types/errors';
+import { RequestFrame, ResponseFrame, OperationType } from "../types/protocol";
+import {
+  SIZES,
+  FRAME_OVERHEAD,
+  OP_OVERHEAD,
+  RESPONSE_OVERHEAD,
+  MAX_FRAME_SIZE,
+} from "./constants";
+import {
+  writeLittleEndianUint32,
+  writeLittleEndianUint64,
+  writeLittleEndianUint16,
+  stringToUint8Array,
+} from "../utils/buffer";
+import { ValidationError, FrameError } from "../types/errors";
 
 export class ProtocolEncoder {
   static encodeRequest(frame: RequestFrame): Uint8Array {
     let size = FRAME_OVERHEAD;
 
     for (const op of frame.ops) {
-      size += OP_OVERHEAD + (op.payload ? op.payload.length : 0);
+      size += SIZES.OP_TYPE;
+
+      // Collection name
+      const collection = op.collection || "_default";
+      const collectionBytes = stringToUint8Array(collection);
+      size += SIZES.COLLECTION_LEN + collectionBytes.length;
+
+      size += SIZES.DOC_ID;
+
+      // Patch operations (for OpPatch)
+      if (op.opType === OperationType.Patch && op.patchOps) {
+        const patchOpsJSON = JSON.stringify(op.patchOps);
+        const patchOpsBytes = stringToUint8Array(patchOpsJSON);
+        size += SIZES.PATCH_OPS_LEN + patchOpsBytes.length;
+      }
+
+      size += SIZES.PAYLOAD_LEN + (op.payload ? op.payload.length : 0);
     }
 
     if (size > MAX_FRAME_SIZE) {
-      throw new ValidationError('Frame size exceeds maximum');
+      throw new ValidationError("Frame size exceeds maximum");
     }
 
     const buf = new Uint8Array(size);
@@ -37,9 +64,33 @@ export class ProtocolEncoder {
       buf[offset] = op.opType;
       offset += SIZES.OP_TYPE;
 
+      // Encode collection name
+      const collection = op.collection || "_default";
+      const collectionBytes = stringToUint8Array(collection);
+      const collectionLenBuf = writeLittleEndianUint16(collectionBytes.length);
+      buf.set(collectionLenBuf, offset);
+      offset += SIZES.COLLECTION_LEN;
+      if (collectionBytes.length > 0) {
+        buf.set(collectionBytes, offset);
+        offset += collectionBytes.length;
+      }
+
       const docIDBuf = writeLittleEndianUint64(op.docID);
       buf.set(docIDBuf, offset);
       offset += SIZES.DOC_ID;
+
+      // Encode patch operations (for OpPatch)
+      if (op.opType === OperationType.Patch && op.patchOps) {
+        const patchOpsJSON = JSON.stringify(op.patchOps);
+        const patchOpsBytes = stringToUint8Array(patchOpsJSON);
+        const patchOpsLenBuf = writeLittleEndianUint32(patchOpsBytes.length);
+        buf.set(patchOpsLenBuf, offset);
+        offset += SIZES.PATCH_OPS_LEN;
+        if (patchOpsBytes.length > 0) {
+          buf.set(patchOpsBytes, offset);
+          offset += patchOpsBytes.length;
+        }
+      }
 
       const payloadLen = op.payload ? op.payload.length : 0;
       const payloadLenBuf = writeLittleEndianUint32(payloadLen);
@@ -59,7 +110,7 @@ export class ProtocolEncoder {
     const size = RESPONSE_OVERHEAD + frame.data.length;
 
     if (size > MAX_FRAME_SIZE) {
-      throw new ValidationError('Frame size exceeds maximum');
+      throw new ValidationError("Frame size exceeds maximum");
     }
 
     const buf = new Uint8Array(size);

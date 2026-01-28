@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -68,6 +69,7 @@ type LogicalDB struct {
 	errorTracker   *errors.ErrorTracker   // Error tracking for observability
 	healingService *HealingService        // Automatic document healing service
 	walTrimmer     *wal.Trimmer           // WAL segment trimming
+	collections    *CollectionRegistry    // Collection management
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
@@ -83,6 +85,7 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 		logger:       log,
 		closed:       false,
 		errorTracker: errors.NewErrorTracker(),
+		collections:  NewCollectionRegistry(log),
 	}
 }
 
@@ -147,6 +150,9 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 		db.walTrimmer = wal.NewTrimmer(walDir, db.dbName, db.logger)
 	}
 
+	// Ensure default collection exists
+	db.collections.EnsureDefault()
+
 	if err := db.replayWAL(); err != nil {
 		db.logger.Warn("Failed to replay WAL: %v", err)
 	}
@@ -157,8 +163,238 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 		db.healingService.Start()
 	}
 
+	// Add collection management methods
+	// Collections are initialized in NewLogicalDB and EnsureDefault() called above
+
 	db.logger.Info("Opened database: %s (id=%d)", db.dbName, db.dbID)
 	return nil
+}
+
+// Patch applies path-based updates to a document atomically.
+func (db *LogicalDB) Patch(collection string, docID uint64, ops []types.PatchOperation) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed {
+		return ErrDBNotOpen
+	}
+
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate collection exists
+	if !db.collections.Exists(collection) {
+		return errors.ErrCollectionNotFound
+	}
+
+	if len(ops) == 0 {
+		return errors.ErrInvalidPatch
+	}
+
+	// Read current document
+	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
+	if !exists || version.DeletedTxID != nil {
+		return ErrDocNotFound
+	}
+
+	data, err := db.dataFile.Read(version.Offset, version.Length)
+	if err != nil {
+		return fmt.Errorf("failed to read document: %w", err)
+	}
+
+	// Parse current document as JSON
+	var doc interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return errors.ErrInvalidJSON
+	}
+
+	// Ensure document is a JSON object
+	docMap, ok := doc.(map[string]interface{})
+	if !ok {
+		return errors.ErrNotJSONObject
+	}
+
+	// Apply each patch operation
+	for _, op := range ops {
+		path, err := ParsePath(op.Path)
+		if err != nil {
+			return fmt.Errorf("invalid path '%s': %w", op.Path, err)
+		}
+
+		switch op.Op {
+		case "set":
+			if op.Value == nil {
+				return fmt.Errorf("set operation requires value: %w", errors.ErrInvalidPatch)
+			}
+			if err := SetValue(docMap, path, op.Value); err != nil {
+				return fmt.Errorf("failed to set value at path '%s': %w", op.Path, err)
+			}
+
+		case "delete":
+			if err := DeleteValue(docMap, path); err != nil {
+				return fmt.Errorf("failed to delete value at path '%s': %w", op.Path, err)
+			}
+
+		case "insert":
+			if op.Value == nil {
+				return fmt.Errorf("insert operation requires value: %w", errors.ErrInvalidPatch)
+			}
+			if len(path) == 0 {
+				return fmt.Errorf("insert operation requires array path: %w", errors.ErrInvalidPatch)
+			}
+			// Last segment should be array index
+			indexStr := path[len(path)-1]
+			index, err := strconv.Atoi(indexStr)
+			if err != nil {
+				return fmt.Errorf("insert operation requires numeric index: %w", errors.ErrInvalidPatch)
+			}
+			parentPath := path[:len(path)-1]
+			if err := InsertValue(docMap, parentPath, index, op.Value); err != nil {
+				return fmt.Errorf("failed to insert value at path '%s': %w", op.Path, err)
+			}
+
+		default:
+			return fmt.Errorf("unknown patch operation '%s': %w", op.Op, errors.ErrInvalidPatch)
+		}
+	}
+
+	// Marshal updated document
+	updatedPayload, err := json.Marshal(docMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated document: %w", err)
+	}
+
+	// Validate updated payload
+	if err := validateJSONPayload(updatedPayload); err != nil {
+		return fmt.Errorf("updated document is invalid JSON: %w", err)
+	}
+
+	// Calculate memory change
+	memoryNeeded := uint64(len(updatedPayload))
+	oldMemory := uint64(version.Length)
+
+	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+		return ErrMemoryLimit
+	}
+
+	// Write updated payload to data file
+	offset, err := db.dataFile.Write(updatedPayload)
+	if err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return err
+	}
+
+	txID := db.mvcc.NextTxID()
+	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(updatedPayload)))
+
+	// Phase 1: write WAL record for the patch operation.
+	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpPatch, updatedPayload); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
+		return fmt.Errorf("failed to write WAL: %w", err)
+	}
+
+	// Phase 2: write commit marker.
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
+	db.index.Set(collection, newVersion)
+	if oldMemory > 0 {
+		db.memory.Free(db.dbID, oldMemory)
+	}
+
+	// Check if checkpoint should be created after commit
+	db.maybeCreateCheckpointAndTrim(txID)
+
+	return nil
+}
+
+// CreateCollection creates a new collection.
+func (db *LogicalDB) CreateCollection(name string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed {
+		return ErrDBNotOpen
+	}
+
+	if err := db.collections.CreateCollection(name); err != nil {
+		return err
+	}
+
+	// Write WAL record for collection creation
+	txID := db.mvcc.NextTxID()
+	if err := db.wal.Write(txID, db.dbID, name, 0, types.OpCreateCollection, nil); err != nil {
+		// Rollback collection creation
+		db.collections.mu.Lock()
+		delete(db.collections.collections, name)
+		db.collections.mu.Unlock()
+		return fmt.Errorf("failed to write WAL: %w", err)
+	}
+
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
+	return nil
+}
+
+// DeleteCollection deletes an empty collection.
+func (db *LogicalDB) DeleteCollection(name string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed {
+		return ErrDBNotOpen
+	}
+
+	if err := db.collections.DeleteCollection(name); err != nil {
+		return err
+	}
+
+	// Write WAL record for collection deletion
+	txID := db.mvcc.NextTxID()
+	if err := db.wal.Write(txID, db.dbID, name, 0, types.OpDeleteCollection, nil); err != nil {
+		// Rollback - recreate collection
+		db.collections.mu.Lock()
+		db.collections.collections[name] = &types.CollectionMetadata{
+			Name:      name,
+			CreatedAt: time.Now(),
+			DocCount:  0,
+		}
+		db.collections.mu.Unlock()
+		return fmt.Errorf("failed to write WAL: %w", err)
+	}
+
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
+	return nil
+}
+
+// ListCollections returns all collection names.
+func (db *LogicalDB) ListCollections() []string {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.closed {
+		return nil
+	}
+
+	return db.collections.ListCollections()
 }
 
 // maybeCreateCheckpointAndTrim creates a checkpoint if needed and trims old WAL segments.
@@ -213,12 +449,22 @@ func (db *LogicalDB) Name() string {
 	return db.dbName
 }
 
-func (db *LogicalDB) Create(docID uint64, payload []byte) error {
+func (db *LogicalDB) Create(collection string, docID uint64, payload []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	if db.closed {
 		return ErrDBNotOpen
+	}
+
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate collection exists
+	if !db.collections.Exists(collection) {
+		return errors.ErrCollectionNotFound
 	}
 
 	// Enforce JSON-only payloads at the engine level before any WAL or
@@ -227,7 +473,7 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 		return err
 	}
 
-	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
+	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if exists && version.DeletedTxID == nil {
 		return ErrDocAlreadyExists
 	}
@@ -247,7 +493,7 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	newVersion := db.mvcc.CreateVersion(docID, txID, offset, uint32(len(payload)))
 
 	// Phase 1: write WAL record for the operation.
-	if err := db.wal.Write(txID, db.dbID, docID, types.OpCreate, payload); err != nil {
+	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpCreate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
 		classifier := errors.NewClassifier()
 		category := classifier.Classify(err)
@@ -266,7 +512,8 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	}
 
 	db.txnsCommitted++
-	db.index.Set(newVersion)
+	db.index.Set(collection, newVersion)
+	db.collections.IncrementDocCount(collection)
 
 	// Check if checkpoint should be created after commit
 	db.maybeCreateCheckpointAndTrim(txID)
@@ -274,7 +521,7 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	return nil
 }
 
-func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
+func (db *LogicalDB) Read(collection string, docID uint64) ([]byte, error) {
 	db.mu.RLock()
 
 	if db.closed {
@@ -282,7 +529,12 @@ func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
 		return nil, ErrDBNotOpen
 	}
 
-	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		db.mu.RUnlock()
 		return nil, ErrDocNotFound
@@ -293,18 +545,28 @@ func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
 
 	// Trigger healing on corruption detection
 	if err != nil && db.healingService != nil {
-		db.healingService.HealOnCorruption(docID)
+		db.healingService.HealOnCorruption(collection, docID)
 	}
 
 	return data, err
 }
 
-func (db *LogicalDB) Update(docID uint64, payload []byte) error {
+func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	if db.closed {
 		return ErrDBNotOpen
+	}
+
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate collection exists
+	if !db.collections.Exists(collection) {
+		return errors.ErrCollectionNotFound
 	}
 
 	// Enforce JSON-only payloads at the engine level before any WAL or
@@ -313,7 +575,7 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 		return err
 	}
 
-	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
+	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		return ErrDocNotFound
 	}
@@ -335,7 +597,7 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(payload)))
 
 	// Phase 1: write WAL record for the update.
-	if err := db.wal.Write(txID, db.dbID, docID, types.OpUpdate, payload); err != nil {
+	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpUpdate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
 		classifier := errors.NewClassifier()
 		category := classifier.Classify(err)
@@ -354,7 +616,7 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	}
 
 	db.txnsCommitted++
-	db.index.Set(newVersion)
+	db.index.Set(collection, newVersion)
 	if oldMemory > 0 {
 		db.memory.Free(db.dbID, oldMemory)
 	}
@@ -365,7 +627,7 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	return nil
 }
 
-func (db *LogicalDB) Delete(docID uint64) error {
+func (db *LogicalDB) Delete(collection string, docID uint64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -373,7 +635,17 @@ func (db *LogicalDB) Delete(docID uint64) error {
 		return ErrDBNotOpen
 	}
 
-	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate collection exists
+	if !db.collections.Exists(collection) {
+		return errors.ErrCollectionNotFound
+	}
+
+	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		return ErrDocNotFound
 	}
@@ -382,7 +654,7 @@ func (db *LogicalDB) Delete(docID uint64) error {
 	deleteVersion := db.mvcc.DeleteVersion(docID, txID)
 
 	// Phase 1: write WAL record for the delete.
-	if err := db.wal.Write(txID, db.dbID, docID, types.OpDelete, nil); err != nil {
+	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpDelete, nil); err != nil {
 		classifier := errors.NewClassifier()
 		category := classifier.Classify(err)
 		db.errorTracker.RecordError(err, category)
@@ -399,7 +671,8 @@ func (db *LogicalDB) Delete(docID uint64) error {
 	}
 
 	db.txnsCommitted++
-	db.index.Set(deleteVersion)
+	db.index.Set(collection, deleteVersion)
+	db.collections.DecrementDocCount(collection)
 	if version.Length > 0 {
 		db.memory.Free(db.dbID, uint64(version.Length))
 	}
@@ -441,7 +714,11 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 
 	// Phase 1: write all WAL records for this transaction.
 	for _, record := range records {
-		if err := db.wal.Write(record.TxID, record.DBID, record.DocID, record.OpType, record.Payload); err != nil {
+		collection := record.Collection
+		if collection == "" {
+			collection = DefaultCollection
+		}
+		if err := db.wal.Write(record.TxID, record.DBID, collection, record.DocID, record.OpType, record.Payload); err != nil {
 			return fmt.Errorf("failed to write WAL: %w", err)
 		}
 	}
@@ -457,19 +734,26 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 	// Apply changes to MVCC/index using the transaction's ID so that
 	// visibility matches the WAL records.
 	for _, record := range records {
+		collection := record.Collection
+		if collection == "" {
+			collection = DefaultCollection
+		}
+
 		switch record.OpType {
 		case types.OpCreate:
 			version := db.mvcc.CreateVersion(record.DocID, tx.ID, 0, record.PayloadLen)
-			db.index.Set(version)
-		case types.OpUpdate:
-			existing, exists := db.index.Get(record.DocID, db.mvcc.CurrentSnapshot())
+			db.index.Set(collection, version)
+			db.collections.IncrementDocCount(collection)
+		case types.OpUpdate, types.OpPatch:
+			existing, exists := db.index.Get(collection, record.DocID, db.mvcc.CurrentSnapshot())
 			if exists {
 				version := db.mvcc.UpdateVersion(existing, tx.ID, 0, record.PayloadLen)
-				db.index.Set(version)
+				db.index.Set(collection, version)
 			}
 		case types.OpDelete:
 			version := db.mvcc.DeleteVersion(record.DocID, tx.ID)
-			db.index.Set(version)
+			db.index.Set(collection, version)
+			db.collections.DecrementDocCount(collection)
 		}
 	}
 
@@ -487,8 +771,8 @@ func (db *LogicalDB) Stats() *types.Stats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	live := db.index.LiveCount()
-	tombstoned := db.index.TombstonedCount()
+	live := db.index.TotalLiveCount()
+	tombstoned := db.index.TotalTombstonedCount()
 
 	return &types.Stats{
 		TotalDBs:       1,
@@ -589,7 +873,31 @@ func (db *LogicalDB) replayWAL() error {
 		}
 
 		for _, rec := range recs {
+			collection := rec.Collection
+			if collection == "" {
+				collection = DefaultCollection
+			}
+
+			// Ensure collection exists (create if needed during recovery)
+			if !db.collections.Exists(collection) {
+				db.collections.mu.Lock()
+				db.collections.collections[collection] = &types.CollectionMetadata{
+					Name:      collection,
+					CreatedAt: time.Now(),
+					DocCount:  0,
+				}
+				db.collections.mu.Unlock()
+			}
+
 			switch rec.OpType {
+			case types.OpCreateCollection:
+				// Collection creation - already handled above
+				continue
+
+			case types.OpDeleteCollection:
+				// Collection deletion - skip during recovery (collections recreated from WAL)
+				continue
+
 			case types.OpCreate:
 				// Write payload to data file to get the actual offset
 				offset, err := db.dataFile.Write(rec.Payload)
@@ -607,10 +915,11 @@ func (db *LogicalDB) replayWAL() error {
 
 				// Create version with correct offset
 				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-				db.index.Set(version)
+				db.index.Set(collection, version)
+				db.collections.IncrementDocCount(collection)
 
-			case types.OpUpdate:
-				existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
+			case types.OpUpdate, types.OpPatch:
+				existing, exists := db.index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
 				if !exists {
 					// If document doesn't exist, treat as create
 					offset, err := db.dataFile.Write(rec.Payload)
@@ -626,7 +935,8 @@ func (db *LogicalDB) replayWAL() error {
 					}
 
 					version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-					db.index.Set(version)
+					db.index.Set(collection, version)
+					db.collections.IncrementDocCount(collection)
 				} else {
 					// Write new payload to data file
 					offset, err := db.dataFile.Write(rec.Payload)
@@ -652,11 +962,11 @@ func (db *LogicalDB) replayWAL() error {
 
 					// Update version with correct offset
 					version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
-					db.index.Set(version)
+					db.index.Set(collection, version)
 				}
 
 			case types.OpDelete:
-				existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
+				existing, exists := db.index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
 				if exists {
 					// Free memory for deleted document
 					if existing.Length > 0 {
@@ -664,7 +974,8 @@ func (db *LogicalDB) replayWAL() error {
 					}
 				}
 				version := db.mvcc.DeleteVersion(rec.DocID, txID)
-				db.index.Set(version)
+				db.index.Set(collection, version)
+				db.collections.DecrementDocCount(collection)
 			}
 		}
 	}

@@ -83,7 +83,7 @@ func getWalSize(file *os.File) uint64 {
 // Write encodes and appends a single WAL record.
 //
 // The on-disk format is defined in format.go and ondisk_format.md.
-func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, payload []byte) error {
+func (w *Writer) Write(txID, dbID uint64, collection string, docID uint64, opType types.OperationType, payload []byte) error {
 	return w.retryCtrl.Retry(func() error {
 		w.mu.Lock()
 		defer w.mu.Unlock()
@@ -95,7 +95,7 @@ func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, pay
 			return err
 		}
 
-		record, err := EncodeRecord(txID, dbID, docID, opType, payload)
+		record, err := EncodeRecordV2(txID, dbID, collection, docID, opType, payload)
 		if err != nil {
 			category := w.classifier.Classify(err)
 			w.errorTracker.RecordError(err, category)

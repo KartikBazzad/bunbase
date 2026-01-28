@@ -48,11 +48,13 @@ var (
 //  4. Result sent on Response channel
 //  5. Response sent back to client
 type Request struct {
-	DBID     uint64
-	DocID    uint64
-	OpType   types.OperationType
-	Payload  []byte
-	Response chan Response
+	DBID       uint64
+	Collection string // v0.2: collection name
+	DocID      uint64
+	OpType     types.OperationType
+	Payload    []byte                 // For OpCreate, OpUpdate
+	PatchOps   []types.PatchOperation // For OpPatch
+	Response   chan Response
 }
 
 // Response represents result of database operation.
@@ -292,13 +294,15 @@ func (p *Pool) handleRequest(req *Request) {
 
 	switch req.OpType {
 	case types.OpCreate:
-		err = db.Create(req.DocID, req.Payload)
+		err = db.Create(req.Collection, req.DocID, req.Payload)
 	case types.OpRead:
-		data, err = db.Read(req.DocID)
+		data, err = db.Read(req.Collection, req.DocID)
 	case types.OpUpdate:
-		err = db.Update(req.DocID, req.Payload)
+		err = db.Update(req.Collection, req.DocID, req.Payload)
 	case types.OpDelete:
-		err = db.Delete(req.DocID)
+		err = db.Delete(req.Collection, req.DocID)
+	case types.OpPatch:
+		err = db.Patch(req.Collection, req.DocID, req.PatchOps)
 	default:
 		err = errors.ErrUnknownOperation
 	}
@@ -320,6 +324,56 @@ func (p *Pool) handleRequest(req *Request) {
 		Data:   data,
 		Error:  err,
 	}
+}
+
+func (p *Pool) CreateCollection(dbID uint64, name string) error {
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return err
+	}
+	return db.CreateCollection(name)
+}
+
+func (p *Pool) DeleteCollection(dbID uint64, name string) error {
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return err
+	}
+	return db.DeleteCollection(name)
+}
+
+func (p *Pool) ListCollections(dbID uint64) ([]string, error) {
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return nil, err
+	}
+	return db.ListCollections(), nil
+}
+
+func (p *Pool) ListDBs() []*types.DBInfo {
+	entries := p.catalog.List()
+	infos := make([]*types.DBInfo, 0, len(entries))
+
+	for _, entry := range entries {
+		info := &types.DBInfo{
+			Name:      entry.DBName,
+			ID:        entry.DBID,
+			CreatedAt: entry.CreatedAt,
+		}
+
+		// Get stats if database is already open
+		if db, exists := p.dbs[entry.DBID]; exists {
+			stats := db.Stats()
+			info.WALSize = stats.WALSize
+			info.MemoryUsed = stats.MemoryUsed
+			info.DocsLive = stats.DocsLive
+		}
+		// If database is not open, stats will remain zero (which is fine)
+
+		infos = append(infos, info)
+	}
+
+	return infos
 }
 
 func (p *Pool) Stats() *types.Stats {

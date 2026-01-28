@@ -10,26 +10,28 @@ import (
 )
 
 type Shell struct {
-	socketPath string
-	dbID       uint64
-	dbName     string
-	txActive   bool
-	pretty     bool
-	history    []string
-	client     *client.Client
-	mu         sync.Mutex
+	socketPath        string
+	dbID              uint64
+	dbName            string
+	currentCollection string // v0.2: current collection context
+	txActive          bool
+	pretty            bool
+	history           []string
+	client            *client.Client
+	mu                sync.Mutex
 }
 
 func NewShell(socketPath string) (*Shell, error) {
 	c := client.New(socketPath)
 	return &Shell{
-		socketPath: socketPath,
-		client:     c,
-		dbID:       0,
-		dbName:     "",
-		txActive:   false,
-		pretty:     false,
-		history:    make([]string, 0, 100),
+		socketPath:        socketPath,
+		client:            c,
+		dbID:              0,
+		dbName:            "",
+		currentCollection: "_default",
+		txActive:          false,
+		pretty:            false,
+		history:           make([]string, 0, 100),
 	}, nil
 }
 
@@ -62,7 +64,24 @@ func (s *Shell) ClearDB() {
 	defer s.mu.Unlock()
 	s.dbID = 0
 	s.dbName = ""
+	s.currentCollection = "_default"
 	s.txActive = false
+}
+
+func (s *Shell) SetCollection(collection string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if collection == "" {
+		s.currentCollection = "_default"
+	} else {
+		s.currentCollection = collection
+	}
+}
+
+func (s *Shell) GetCollection() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentCollection
 }
 
 func (s *Shell) BeginTx() error {
@@ -182,6 +201,16 @@ func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 		return commands.HealAll(s)
 	case ".heal-stats":
 		return commands.HealStats(s)
+	case ".use":
+		return commands.UseCollection(s, cmd)
+	case ".collections":
+		return commands.ListCollections(s)
+	case ".create-collection":
+		return commands.CreateCollection(s, cmd)
+	case ".drop-collection":
+		return commands.DropCollection(s, cmd)
+	case ".patch":
+		return commands.Patch(s, cmd)
 	default:
 		return commands.ErrorResult{Err: fmt.Sprintf("unknown command: %s", cmd.Name)}
 	}

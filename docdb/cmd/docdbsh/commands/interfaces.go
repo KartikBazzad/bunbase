@@ -10,6 +10,10 @@ type Client interface {
 	CloseDB(dbID uint64) error
 	Execute(dbID uint64, ops []ipc.Operation) ([]byte, error)
 	Stats() (*types.Stats, error)
+	CreateCollection(dbID uint64, name string) error
+	DeleteCollection(dbID uint64, name string) error
+	ListCollections(dbID uint64) ([]string, error)
+	ListDBs() ([]*types.DBInfo, error)
 }
 
 type Shell interface {
@@ -22,4 +26,6 @@ type Shell interface {
 	GetPretty() bool
 	SetPretty(pretty bool)
 	GetHistory() []string
+	GetCollection() string
+	SetCollection(collection string)
 }

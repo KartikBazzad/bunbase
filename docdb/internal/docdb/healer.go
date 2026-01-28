@@ -24,12 +24,16 @@ func NewHealer(db *LogicalDB, log *logger.Logger) *Healer {
 
 // HealDocument attempts to heal a corrupted document by finding the latest
 // valid version from WAL records.
-func (h *Healer) HealDocument(docID uint64) error {
+func (h *Healer) HealDocument(collection string, docID uint64) error {
 	h.db.mu.Lock()
 	defer h.db.mu.Unlock()
 
 	if h.db.closed {
 		return ErrDBNotOpen
+	}
+
+	if collection == "" {
+		collection = DefaultCollection
 	}
 
 	// Get all WAL records for this document
@@ -39,16 +43,25 @@ func (h *Healer) HealDocument(docID uint64) error {
 	var latestValidVersion *types.WALRecord
 	maxTxID := uint64(0)
 
-	// Scan WAL for all versions of this document
+	// Scan WAL for all versions of this document in the specified collection
 	err := recovery.Replay(func(rec *types.WALRecord) error {
 		if rec == nil || rec.DocID != docID {
+			return nil
+		}
+
+		recCollection := rec.Collection
+		if recCollection == "" {
+			recCollection = DefaultCollection
+		}
+
+		if recCollection != collection {
 			return nil
 		}
 
 		// Only consider committed transactions
 		// (We'd need to track commit markers, but for simplicity,
 		// we'll check if we can read the payload)
-		if rec.OpType == types.OpCreate || rec.OpType == types.OpUpdate {
+		if rec.OpType == types.OpCreate || rec.OpType == types.OpUpdate || rec.OpType == types.OpPatch {
 			// Try to validate the payload by attempting to read it
 			// For now, we'll use the latest record with valid payload
 			if rec.TxID > maxTxID && len(rec.Payload) > 0 {
@@ -65,7 +78,7 @@ func (h *Healer) HealDocument(docID uint64) error {
 	}
 
 	if latestValidVersion == nil {
-		return fmt.Errorf("no valid version found for document %d", docID)
+		return fmt.Errorf("no valid version found for document %d in collection %s", docID, collection)
 	}
 
 	// Write the valid payload to data file
@@ -76,9 +89,9 @@ func (h *Healer) HealDocument(docID uint64) error {
 
 	// Update index with healed version
 	version := h.db.mvcc.CreateVersion(docID, latestValidVersion.TxID, offset, latestValidVersion.PayloadLen)
-	h.db.index.Set(version)
+	h.db.index.Set(collection, version)
 
-	h.logger.Info("Healed document %d using version from tx_id=%d", docID, latestValidVersion.TxID)
+	h.logger.Info("Healed document %d in collection %s using version from tx_id=%d", docID, collection, latestValidVersion.TxID)
 	return nil
 }
 
@@ -91,13 +104,15 @@ func (h *Healer) HealAllCorruptedDocuments() ([]uint64, error) {
 	}
 
 	healed := make([]uint64, 0)
-	for docID, health := range healthMap {
-		if health == HealthCorrupt {
-			if err := h.HealDocument(docID); err != nil {
-				h.logger.Warn("Failed to heal document %d: %v", docID, err)
-				continue
+	for collection, docs := range healthMap {
+		for docID, health := range docs {
+			if health == HealthCorrupt {
+				if err := h.HealDocument(collection, docID); err != nil {
+					h.logger.Warn("Failed to heal document %d in collection %s: %v", docID, collection, err)
+					continue
+				}
+				healed = append(healed, docID)
 			}
-			healed = append(healed, docID)
 		}
 	}
 

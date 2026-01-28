@@ -59,14 +59,19 @@ func (tm *TransactionManager) Begin() *Tx {
 	return tx
 }
 
-func (tm *TransactionManager) AddOp(tx *Tx, dbID uint64, opType types.OperationType, docID uint64, payload []byte) error {
+func (tm *TransactionManager) AddOp(tx *Tx, dbID uint64, collection string, opType types.OperationType, docID uint64, payload []byte) error {
 	if tx.state != TxOpen {
 		return ErrTxAlreadyCommitted
+	}
+
+	if collection == "" {
+		collection = DefaultCollection
 	}
 
 	record := &types.WALRecord{
 		TxID:       tx.ID,
 		DBID:       dbID,
+		Collection: collection,
 		OpType:     opType,
 		DocID:      docID,
 		PayloadLen: uint32(len(payload)),

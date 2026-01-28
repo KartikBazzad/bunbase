@@ -11,6 +11,9 @@ const (
 	OpDelete
 	OpCommit
 	OpCheckpoint
+	OpPatch
+	OpCreateCollection
+	OpDeleteCollection
 )
 
 type Status byte
@@ -60,11 +63,33 @@ type WALRecord struct {
 	Length     uint64
 	TxID       uint64
 	DBID       uint64
+	Collection string // Collection name (empty for v0.1 records, defaults to "_default")
 	OpType     OperationType
 	DocID      uint64
 	PayloadLen uint32
 	Payload    []byte
 	CRC        uint32
+}
+
+type PatchOperation struct {
+	Op    string      // "set", "delete", "insert"
+	Path  string      // JSON Pointer-like path (e.g., "/name", "/address/city")
+	Value interface{} // JSON value (required for set/insert, nil for delete)
+}
+
+type CollectionMetadata struct {
+	Name      string
+	CreatedAt time.Time
+	DocCount  uint64
+}
+
+type DBInfo struct {
+	Name       string
+	ID         uint64
+	CreatedAt  time.Time
+	WALSize    uint64
+	MemoryUsed uint64
+	DocsLive   uint64
 }
 
 type Stats struct {

@@ -62,4 +62,14 @@ var (
 
 	// ErrUnknownOperation is returned when operation type is invalid
 	ErrUnknownOperation = errors.New("unknown operation type")
+
+	// Collection errors
+	ErrCollectionNotFound = errors.New("collection not found")
+	ErrCollectionExists   = errors.New("collection already exists")
+	ErrCollectionNotEmpty = errors.New("collection is not empty")
+
+	// Path-based update errors
+	ErrInvalidPath   = errors.New("invalid JSON path")
+	ErrNotJSONObject = errors.New("document is not a JSON object")
+	ErrInvalidPatch  = errors.New("invalid patch operations")
 )
