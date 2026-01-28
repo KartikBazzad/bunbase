@@ -17,16 +17,17 @@ import (
 //   - Tracking current WAL size
 //   - Cooperating with Rotator for multi-segment WALs
 type Writer struct {
-	mu       sync.Mutex
-	file     *os.File
-	path     string
-	dbID     uint64
-	size     uint64
-	maxSize  uint64
-	fsync    bool
-	logger   *logger.Logger
-	rotator  *Rotator
-	isClosed bool
+	mu            sync.Mutex
+	file          *os.File
+	path          string
+	dbID          uint64
+	size          uint64
+	maxSize       uint64
+	fsync         bool
+	logger        *logger.Logger
+	rotator       *Rotator
+	isClosed      bool
+	checkpointMgr *CheckpointManager
 }
 
 // NewWriter creates a new WAL writer for a specific database.
@@ -43,6 +44,13 @@ func NewWriter(path string, dbID uint64, maxSize uint64, fsync bool, log *logger
 		logger:  log,
 		rotator: NewRotator(path, maxSize, fsync, log),
 	}
+}
+
+// SetCheckpointManager sets the checkpoint manager for this writer.
+func (w *Writer) SetCheckpointManager(mgr *CheckpointManager) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.checkpointMgr = mgr
 }
 
 func (w *Writer) Open() error {
@@ -101,6 +109,13 @@ func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, pay
 		}
 	}
 
+	// Check if checkpoint should be created (after rotation check)
+	if w.checkpointMgr != nil && w.checkpointMgr.ShouldCreateCheckpoint(w.size) {
+		// Note: Checkpoint creation is handled by the caller (core.go)
+		// after commit markers are written, to ensure checkpoint includes
+		// only committed transactions.
+	}
+
 	return nil
 }
 
@@ -143,6 +158,51 @@ func (w *Writer) WriteCommitMarker(txID uint64) error {
 		if err := w.rotateLocked(); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// WriteCheckpoint writes a checkpoint record to WAL.
+//
+// Checkpoints mark a consistent point in the WAL where recovery can start
+// from, bounding recovery time. The checkpoint record contains:
+//   - OpType = OpCheckpoint
+//   - TxID = highest committed transaction ID at checkpoint time
+//   - DocID = 0
+//   - PayloadLen = 0
+func (w *Writer) WriteCheckpoint(txID uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return errors.ErrFileWrite
+	}
+
+	record, err := EncodeRecord(txID, w.dbID, 0, types.OpCheckpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	offset := w.size
+
+	if _, err := w.file.Write(record); err != nil {
+		return errors.ErrFileWrite
+	}
+
+	w.size += uint64(len(record))
+
+	if w.fsync {
+		if err := w.file.Sync(); err != nil {
+			return errors.ErrFileSync
+		}
+	}
+
+	w.logger.Info("WAL checkpoint written: tx_id=%d, offset=%d, size=%d", txID, offset, w.size)
+
+	// Record checkpoint in manager if available
+	if w.checkpointMgr != nil {
+		w.checkpointMgr.RecordCheckpoint(txID, w.size)
 	}
 
 	return nil

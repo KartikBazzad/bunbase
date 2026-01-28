@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	PayloadLenSize = 4
-	CRCLenSize     = 4
-	MaxPayloadSize = 16 * 1024 * 1024
+	PayloadLenSize    = 4
+	CRCLenSize        = 4
+	VerificationSize  = 1
+	MaxPayloadSize    = 16 * 1024 * 1024
+	VerificationValue = byte(1) // Verified records have this value
 )
 
 type DataFile struct {
@@ -63,23 +65,42 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 	defer df.mu.Unlock()
 
 	payloadLen := uint32(len(payload))
-	crc32 := crc32.ChecksumIEEE(payload)
+	crc32Value := crc32.ChecksumIEEE(payload)
 
 	header := make([]byte, PayloadLenSize+CRCLenSize)
 	binary.LittleEndian.PutUint32(header[0:], payloadLen)
-	binary.LittleEndian.PutUint32(header[4:], crc32)
+	binary.LittleEndian.PutUint32(header[4:], crc32Value)
 
 	offset := df.offset
 
+	// Write header (len + crc32)
 	if _, err := df.file.Write(header); err != nil {
 		return 0, errors.ErrFileWrite
 	}
 
+	// Write payload
 	if _, err := df.file.Write(payload); err != nil {
 		return 0, errors.ErrFileWrite
 	}
 
-	df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload))
+	// Sync before writing verification flag to ensure atomicity
+	if err := df.file.Sync(); err != nil {
+		return 0, errors.ErrFileSync
+	}
+
+	// Write verification flag LAST (after fsync) - this is the critical part
+	// for partial write protection. If crash occurs before this, record is unverified.
+	verificationFlag := []byte{VerificationValue}
+	if _, err := df.file.Write(verificationFlag); err != nil {
+		return 0, errors.ErrFileWrite
+	}
+
+	// Final sync to ensure verification flag is durable
+	if err := df.file.Sync(); err != nil {
+		return 0, errors.ErrFileSync
+	}
+
+	df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
 
 	return offset, nil
 }
@@ -109,6 +130,21 @@ func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
 		return nil, errors.ErrFileRead
 	}
 
+	// Read verification flag
+	verificationFlag := make([]byte, VerificationSize)
+	if _, err := io.ReadFull(df.file, verificationFlag); err != nil {
+		// If we can't read verification flag, record is incomplete/unverified
+		df.logger.Warn("Failed to read verification flag at offset %d: %v", offset, err)
+		return nil, errors.ErrCorruptRecord
+	}
+
+	// Check verification flag - only verified records should be read
+	if verificationFlag[0] != VerificationValue {
+		df.logger.Warn("Unverified record at offset %d (verification flag=%d)", offset, verificationFlag[0])
+		return nil, errors.ErrCorruptRecord
+	}
+
+	// Verify CRC32 checksum
 	computedCRC := crc32.ChecksumIEEE(payload)
 	if storedCRC != computedCRC {
 		df.logger.Error("CRC mismatch at offset %d: stored=%x, computed=%x", offset, storedCRC, computedCRC)

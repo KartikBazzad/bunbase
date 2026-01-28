@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kartikbazzad/docdb/internal/config"
@@ -46,21 +47,24 @@ import (
 // Thread Safety: All public methods are safe for concurrent use.
 // The mu (RWMutex) protects all internal state.
 type LogicalDB struct {
-	mu        sync.RWMutex        // Protects all internal state
-	dbID      uint64              // Unique database identifier
-	dbName    string              // Human-readable database name
-	dataFile  *DataFile           // Append-only file for document payloads
-	wal       *wal.Writer         // Write-ahead log for durability
-	index     *Index              // Sharded in-memory index
-	mvcc      *MVCC               // Multi-version concurrency control
-	txManager *TransactionManager // Transaction lifecycle management
-	memory    *memory.Caps        // Memory limit tracking
-	pool      *memory.BufferPool  // Efficient buffer allocation
-	cfg       *config.Config      // Database configuration
-	logger    *logger.Logger      // Structured logging
-	closed    bool                // True if database is closed
-	dataDir   string              // Directory for data files
-	walDir    string              // Directory for WAL files
+	mu             sync.RWMutex           // Protects all internal state
+	dbID           uint64                 // Unique database identifier
+	dbName         string                 // Human-readable database name
+	dataFile       *DataFile              // Append-only file for document payloads
+	wal            *wal.Writer            // Write-ahead log for durability
+	index          *Index                 // Sharded in-memory index
+	mvcc           *MVCC                  // Multi-version concurrency control
+	txManager      *TransactionManager    // Transaction lifecycle management
+	memory         *memory.Caps           // Memory limit tracking
+	pool           *memory.BufferPool     // Efficient buffer allocation
+	cfg            *config.Config         // Database configuration
+	logger         *logger.Logger         // Structured logging
+	closed         bool                   // True if database is closed
+	dataDir        string                 // Directory for data files
+	walDir         string                 // Directory for WAL files
+	txnsCommitted  uint64                 // Count of committed transactions
+	lastCompaction time.Time              // Timestamp of last compaction
+	checkpointMgr  *wal.CheckpointManager // Checkpoint management for bounded recovery
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
@@ -124,6 +128,15 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	if err := db.wal.Open(); err != nil {
 		return fmt.Errorf("failed to open WAL: %w", err)
 	}
+
+	// Initialize checkpoint manager
+	db.checkpointMgr = wal.NewCheckpointManager(
+		db.cfg.WAL.Checkpoint.IntervalMB,
+		db.cfg.WAL.Checkpoint.AutoCreate,
+		db.cfg.WAL.Checkpoint.MaxCheckpoints,
+		db.logger,
+	)
+	db.wal.SetCheckpointManager(db.checkpointMgr)
 
 	if err := db.replayWAL(); err != nil {
 		db.logger.Warn("Failed to replay WAL: %v", err)
@@ -191,12 +204,30 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	txID := db.mvcc.NextTxID()
 	newVersion := db.mvcc.CreateVersion(docID, txID, offset, uint32(len(payload)))
 
+	// Phase 1: write WAL record for the operation.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpCreate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
+	// Phase 2: write commit marker. Only after this succeeds do we
+	// make the new version visible in the index.
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
 	db.index.Set(newVersion)
+
+	// Check if checkpoint should be created after commit
+	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
+		if err := db.wal.WriteCheckpoint(txID); err != nil {
+			db.logger.Warn("Failed to write checkpoint: %v", err)
+			// Don't fail the operation if checkpoint fails
+		}
+	}
+
 	return nil
 }
 
@@ -251,14 +282,31 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	txID := db.mvcc.NextTxID()
 	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(payload)))
 
+	// Phase 1: write WAL record for the update.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpUpdate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
+	// Phase 2: write commit marker. Only after this succeeds do we
+	// make the updated version visible in the index.
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
 	db.index.Set(newVersion)
 	if oldMemory > 0 {
 		db.memory.Free(db.dbID, oldMemory)
+	}
+
+	// Check if checkpoint should be created after commit
+	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
+		if err := db.wal.WriteCheckpoint(txID); err != nil {
+			db.logger.Warn("Failed to write checkpoint: %v", err)
+			// Don't fail the operation if checkpoint fails
+		}
 	}
 
 	return nil
@@ -280,13 +328,29 @@ func (db *LogicalDB) Delete(docID uint64) error {
 	txID := db.mvcc.NextTxID()
 	deleteVersion := db.mvcc.DeleteVersion(docID, txID)
 
+	// Phase 1: write WAL record for the delete.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpDelete, nil); err != nil {
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
+	// Phase 2: write commit marker. Only after this succeeds do we
+	// make the delete visible in the index.
+	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
 	db.index.Set(deleteVersion)
 	if version.Length > 0 {
 		db.memory.Free(db.dbID, uint64(version.Length))
+	}
+
+	// Check if checkpoint should be created after commit
+	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
+		if err := db.wal.WriteCheckpoint(txID); err != nil {
+			db.logger.Warn("Failed to write checkpoint: %v", err)
+			// Don't fail the operation if checkpoint fails
+		}
 	}
 
 	return nil
@@ -321,27 +385,45 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 		return err
 	}
 
+	// Phase 1: write all WAL records for this transaction.
 	for _, record := range records {
 		if err := db.wal.Write(record.TxID, record.DBID, record.DocID, record.OpType, record.Payload); err != nil {
 			return fmt.Errorf("failed to write WAL: %w", err)
 		}
 	}
 
-	txID := db.mvcc.NextTxID()
+	// Phase 2: write the transaction commit marker. Only after this
+	// succeeds do we make the transaction's changes visible in the index.
+	if err := db.wal.WriteCommitMarker(tx.ID); err != nil {
+		return fmt.Errorf("failed to write WAL commit marker: %w", err)
+	}
+
+	db.txnsCommitted++
+
+	// Apply changes to MVCC/index using the transaction's ID so that
+	// visibility matches the WAL records.
 	for _, record := range records {
 		switch record.OpType {
 		case types.OpCreate:
-			version := db.mvcc.CreateVersion(record.DocID, txID, 0, record.PayloadLen)
+			version := db.mvcc.CreateVersion(record.DocID, tx.ID, 0, record.PayloadLen)
 			db.index.Set(version)
 		case types.OpUpdate:
 			existing, exists := db.index.Get(record.DocID, db.mvcc.CurrentSnapshot())
 			if exists {
-				version := db.mvcc.UpdateVersion(existing, txID, 0, record.PayloadLen)
+				version := db.mvcc.UpdateVersion(existing, tx.ID, 0, record.PayloadLen)
 				db.index.Set(version)
 			}
 		case types.OpDelete:
-			version := db.mvcc.DeleteVersion(record.DocID, txID)
+			version := db.mvcc.DeleteVersion(record.DocID, tx.ID)
 			db.index.Set(version)
+		}
+	}
+
+	// Check if checkpoint should be created after transaction commit
+	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
+		if err := db.wal.WriteCheckpoint(tx.ID); err != nil {
+			db.logger.Warn("Failed to write checkpoint: %v", err)
+			// Don't fail the operation if checkpoint fails
 		}
 	}
 
@@ -363,12 +445,13 @@ func (db *LogicalDB) Stats() *types.Stats {
 		TotalDBs:       1,
 		ActiveDBs:      1,
 		TotalTxns:      db.mvcc.CurrentSnapshot(),
-		TxnsCommitted:  db.mvcc.CurrentSnapshot(),
+		TxnsCommitted:  db.txnsCommitted,
 		WALSize:        db.wal.Size(),
 		MemoryUsed:     db.memory.DBUsage(db.dbID),
 		MemoryCapacity: db.memory.DBLimit(db.dbID),
 		DocsLive:       uint64(live),
 		DocsTombstoned: uint64(tombstoned),
+		LastCompaction: db.lastCompaction,
 	}
 }
 
@@ -383,101 +466,58 @@ func (db *LogicalDB) replayWAL() error {
 	maxTxID := uint64(0)
 	records := 0
 
+	// Buffer WAL records per transaction so that we can apply only
+	// those belonging to transactions that have a corresponding
+	// OpCommit marker.
+	txRecords := make(map[uint64][]*types.WALRecord)
+	committed := make(map[uint64]bool)
+
+	// First, find the last checkpoint by scanning the WAL
+	lastCheckpointTxID := uint64(0)
+	checkpointRecovery := wal.NewRecovery(walBasePath, db.logger)
+	checkpointRecovery.Replay(func(rec *types.WALRecord) error {
+		if rec != nil && rec.OpType == types.OpCheckpoint {
+			if rec.TxID > lastCheckpointTxID {
+				lastCheckpointTxID = rec.TxID
+			}
+		}
+		return nil
+	})
+
+	if lastCheckpointTxID > 0 {
+		db.logger.Info("Found checkpoint at tx_id=%d, recovery will start from there", lastCheckpointTxID)
+	}
+
+	// Now replay from checkpoint (or beginning), buffering committed transactions
 	err := recovery.Replay(func(rec *types.WALRecord) error {
 		if rec == nil {
 			return nil
 		}
 
 		txID := rec.TxID
+
+		// Skip records before checkpoint (they're already applied at checkpoint time)
+		if lastCheckpointTxID > 0 && txID < lastCheckpointTxID {
+			return nil
+		}
+
 		if txID > maxTxID {
 			maxTxID = txID
 		}
 
 		switch rec.OpType {
-		case types.OpCreate:
-			// Write payload to data file to get the actual offset
-			offset, err := db.dataFile.Write(rec.Payload)
-			if err != nil {
-				db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-				return nil
-			}
-
-			// Allocate memory for the payload
-			memoryNeeded := uint64(len(rec.Payload))
-			if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-				db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-				return nil
-			}
-
-			// Create version with correct offset
-			version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-			db.index.Set(version)
-
-		case types.OpUpdate:
-			existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
-			if !exists {
-				// If document doesn't exist, treat as create
-				offset, err := db.dataFile.Write(rec.Payload)
-				if err != nil {
-					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-					return nil
-				}
-
-				memoryNeeded := uint64(len(rec.Payload))
-				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-					return nil
-				}
-
-				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-				db.index.Set(version)
-			} else {
-				// Write new payload to data file
-				offset, err := db.dataFile.Write(rec.Payload)
-				if err != nil {
-					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-					return nil
-				}
-
-				// Calculate memory change
-				oldMemory := uint64(existing.Length)
-				memoryNeeded := uint64(len(rec.Payload))
-
-				// Try to allocate new memory
-				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-					return nil
-				}
-
-				// Free old memory
-				if oldMemory > 0 {
-					db.memory.Free(db.dbID, oldMemory)
-				}
-
-				// Update version with correct offset
-				version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
-				db.index.Set(version)
-			}
-
-		case types.OpDelete:
-			existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
-			if exists {
-				// Free memory for deleted document
-				if existing.Length > 0 {
-					db.memory.Free(db.dbID, uint64(existing.Length))
-				}
-			}
-			version := db.mvcc.DeleteVersion(rec.DocID, txID)
-			db.index.Set(version)
-
+		case types.OpCheckpoint:
+			// Checkpoints are metadata, already processed in first pass
 		case types.OpCommit:
-			// Commit markers are used for write ordering guarantees.
-			// For v0.1 recovery we don't need special handling beyond
-			// tracking maxTxID; index state is reconstructed from
-			// data-bearing records above.
+			// Mark transaction as committed; its buffered records will
+			// be applied after replay completes.
+			committed[txID] = true
+		default:
+			// Buffer data-bearing records by transaction.
+			txRecords[txID] = append(txRecords[txID], rec)
+			records++
 		}
 
-		records++
 		return nil
 	})
 
@@ -490,6 +530,96 @@ func (db *LogicalDB) replayWAL() error {
 		db.mvcc.SetCurrentTxID(maxTxID + 1)
 	}
 
-	db.logger.Info("Replayed %d WAL records", records)
+	// Apply only records from committed transactions, rebuilding the
+	// data file and index state from durable WAL.
+	for txID, recs := range txRecords {
+		if !committed[txID] {
+			// Skip uncommitted transactions: their effects should not
+			// be visible after recovery.
+			continue
+		}
+
+		for _, rec := range recs {
+			switch rec.OpType {
+			case types.OpCreate:
+				// Write payload to data file to get the actual offset
+				offset, err := db.dataFile.Write(rec.Payload)
+				if err != nil {
+					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+					continue
+				}
+
+				// Allocate memory for the payload
+				memoryNeeded := uint64(len(rec.Payload))
+				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+					continue
+				}
+
+				// Create version with correct offset
+				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
+				db.index.Set(version)
+
+			case types.OpUpdate:
+				existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
+				if !exists {
+					// If document doesn't exist, treat as create
+					offset, err := db.dataFile.Write(rec.Payload)
+					if err != nil {
+						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+						continue
+					}
+
+					memoryNeeded := uint64(len(rec.Payload))
+					if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+						db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+						continue
+					}
+
+					version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
+					db.index.Set(version)
+				} else {
+					// Write new payload to data file
+					offset, err := db.dataFile.Write(rec.Payload)
+					if err != nil {
+						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
+						continue
+					}
+
+					// Calculate memory change
+					oldMemory := uint64(existing.Length)
+					memoryNeeded := uint64(len(rec.Payload))
+
+					// Try to allocate new memory
+					if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+						db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
+						continue
+					}
+
+					// Free old memory
+					if oldMemory > 0 {
+						db.memory.Free(db.dbID, oldMemory)
+					}
+
+					// Update version with correct offset
+					version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
+					db.index.Set(version)
+				}
+
+			case types.OpDelete:
+				existing, exists := db.index.Get(rec.DocID, db.mvcc.CurrentSnapshot())
+				if exists {
+					// Free memory for deleted document
+					if existing.Length > 0 {
+						db.memory.Free(db.dbID, uint64(existing.Length))
+					}
+				}
+				version := db.mvcc.DeleteVersion(rec.DocID, txID)
+				db.index.Set(version)
+			}
+		}
+	}
+
+	db.logger.Info("Replayed %d WAL records (committed only)", records)
 	return nil
 }

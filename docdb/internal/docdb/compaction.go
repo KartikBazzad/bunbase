@@ -122,6 +122,9 @@ func (c *Compactor) Compact() error {
 		return err
 	}
 
+	// Update last compaction timestamp
+	c.db.lastCompaction = time.Now()
+
 	c.logger.Info("Compaction complete for db: %s", c.db.Name())
 
 	return nil

@@ -22,6 +22,13 @@ type WALConfig struct {
 	Dir           string
 	MaxFileSizeMB uint64
 	FsyncOnCommit bool
+	Checkpoint    CheckpointConfig
+}
+
+type CheckpointConfig struct {
+	IntervalMB     uint64 // Create checkpoint every X MB
+	AutoCreate     bool   // Automatically create checkpoints
+	MaxCheckpoints int    // Maximum checkpoints to keep (0 = unlimited)
 }
 
 type SchedulerConfig struct {
@@ -54,6 +61,11 @@ func DefaultConfig() *Config {
 			Dir:           "./data/wal",
 			MaxFileSizeMB: 64,
 			FsyncOnCommit: true,
+			Checkpoint: CheckpointConfig{
+				IntervalMB:     64,
+				AutoCreate:     true,
+				MaxCheckpoints: 0, // Unlimited for v0.1
+			},
 		},
 		Sched: SchedulerConfig{
 			QueueDepth:    100,

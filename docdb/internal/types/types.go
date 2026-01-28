@@ -10,6 +10,7 @@ const (
 	OpUpdate
 	OpDelete
 	OpCommit
+	OpCheckpoint
 )
 
 type Status byte
@@ -51,8 +52,8 @@ const (
 type CatalogEntry struct {
 	DBID      uint64
 	DBName    string
-	CreatedAt  time.Time
-	Status     DBStatus
+	CreatedAt time.Time
+	Status    DBStatus
 }
 
 type WALRecord struct {

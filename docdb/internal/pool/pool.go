@@ -83,14 +83,15 @@ type Response struct {
 // Thread Safety: Pool operations are thread-safe.
 // Individual databases have their own locking.
 type Pool struct {
-	dbs     map[uint64]*docdb.LogicalDB // Open databases by ID
-	catalog *catalog.Catalog            // Database metadata catalog
-	sched   *Scheduler                  // Request scheduler
-	memory  *memory.Caps                // Memory limit tracker
-	pool    *memory.BufferPool          // Buffer allocation pool
-	cfg     *config.Config              // Configuration
-	logger  *logger.Logger              // Structured logging
-	stopped bool                        // True if pool is shutting down
+	dbs      map[uint64]*docdb.LogicalDB // Open databases by ID
+	catalog  *catalog.Catalog            // Database metadata catalog
+	sched    *Scheduler                  // Request scheduler
+	memory   *memory.Caps                // Memory limit tracker
+	pool     *memory.BufferPool          // Buffer allocation pool
+	cfg      *config.Config              // Configuration
+	logger   *logger.Logger              // Structured logging
+	stopped  bool                        // True if pool is shutting down
+	shutdown *GracefulShutdown           // Graceful shutdown handler
 }
 
 // NewPool creates a new database pool.
@@ -134,21 +135,28 @@ func (p *Pool) Start() error {
 
 	p.sched.SetPool(p)
 	p.sched.Start()
+
+	// Initialize graceful shutdown handler
+	p.shutdown = NewGracefulShutdown(p, p.logger)
+	p.shutdown.StartSignalHandling()
+
 	p.logger.Info("Pool started")
 	return nil
 }
 
 func (p *Pool) Stop() {
-	p.stopped = true
-
-	p.sched.Stop()
-
-	for _, db := range p.dbs {
-		db.Close()
+	if p.shutdown != nil {
+		p.shutdown.Shutdown()
+	} else {
+		// Fallback to immediate shutdown if graceful shutdown not initialized
+		p.stopped = true
+		p.sched.Stop()
+		for _, db := range p.dbs {
+			db.Close()
+		}
+		p.catalog.Close()
+		p.logger.Info("Pool stopped")
 	}
-
-	p.catalog.Close()
-	p.logger.Info("Pool stopped")
 }
 
 func (p *Pool) CreateDB(name string) (uint64, error) {
