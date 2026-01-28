@@ -52,7 +52,7 @@ func DefaultConfig() *Config {
 		},
 		WAL: WALConfig{
 			Dir:           "./data/wal",
-			MaxFileSizeMB: 100,
+			MaxFileSizeMB: 64,
 			FsyncOnCommit: true,
 		},
 		Sched: SchedulerConfig{

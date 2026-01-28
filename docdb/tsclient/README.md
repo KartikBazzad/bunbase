@@ -116,6 +116,38 @@ const results = await client.batchExecute(dbID, ops);
 console.log(`Created ${results.length} documents`);
 ```
 
+## Document Format
+
+**All documents must be valid JSON.**
+
+The TypeScript client enforces JSON encoding via `JSON.stringify()`.
+Binary data must be encoded within JSON using base64:
+
+```typescript
+import { JSONUtils } from '@docdb/client';
+
+// Regular document
+await client.create(dbID, 1n, { name: "Alice", age: 30 });
+
+// Binary document
+const binaryData = new TextEncoder().encode("Hello");
+await client.create(dbID, 2n, JSONUtils.encodeBytes(binaryData));
+
+// Read back
+const doc = await client.read(dbID, 2n);
+const decoded = JSONUtils.decodeBytes(doc);
+console.log(new TextDecoder().decode(decoded)); // Hello
+```
+
+### Allowed JSON Types
+
+- Objects: `{"key":"value"}`
+- Arrays: `[1,2,3]`
+- Strings: `"text"`
+- Numbers: `42`
+- Booleans: `true` / `false`
+- Null: `null`
+
 ## API Reference
 
 ### DocDBClient

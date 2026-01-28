@@ -29,6 +29,65 @@ This project will NOT support:
 
 If any of these appear, **the project scope has failed**.
 
+## Current Status
+
+**Version**: v0.1 (in progress)
+
+**Status**: Core functionality complete, now in hardening phase.
+
+**What Works**:
+- ✅ ACID transactions with WAL
+- ✅ Sharded in-memory index
+- ✅ MVCC-lite snapshot reads
+- ✅ Multiple isolated databases
+- ✅ Crash recovery via WAL replay
+- ✅ Bounded memory management
+- ✅ Unix socket IPC
+- ✅ Interactive shell
+- ✅ Go and TypeScript clients
+
+**What's Coming (v0.1)**:
+- 🔄 JSON-only enforcement audit
+- 🔄 Frozen error surface
+- ⏳ Shell quality-of-life features
+- ⏳ Shell transcript tests
+- ⏳ WAL rotation
+- ⏳ Data file checksums
+
+**See [ROADMAP.md](ROADMAP.md) for detailed plans.**
+
+## Document Contract
+
+**DocDB stores JSON documents.**
+Every document is a valid UTF-8 encoded JSON value.
+Binary data is supported only as explicitly encoded JSON values.
+
+### Allowed Document Types
+
+- JSON object: `{"key":"value"}`
+- JSON array: `[1,2,3]`
+- JSON string: `"hello"`
+- JSON number: `42`
+- JSON boolean: `true`
+- JSON null: `null`
+
+### Binary Data Encoding
+
+Binary data MUST be encoded within JSON. Recommended format:
+
+```json
+{
+  "_type": "bytes",
+  "encoding": "base64",
+  "data": "SGVsbG8gd29ybGQ="
+}
+```
+
+### Client Helper Utilities
+
+Client libraries MAY provide helper utilities for encoding/decoding binary data
+using canonical JSON wrapper format. The engine and IPC layer remain agnostic.
+
 ## Quick Start
 
 ### Build
@@ -62,19 +121,19 @@ func main() {
         panic(err)
     }
     
-    // Create document
-    err = cli.Create(dbID, 1, []byte("hello world"))
+    // Create document (must be valid JSON)
+    err = cli.Create(dbID, 1, []byte(`{"name":"Alice","age":30}`))
     if err != nil {
         panic(err)
     }
-    
+
     // Read document
     data, err := cli.Read(dbID, 1)
     if err != nil {
         panic(err)
     }
-    
-    fmt.Println(string(data)) // Output: hello world
+
+    fmt.Println(string(data)) // Output: {"name":"Alice","age":30}
     
     // Update document
     err = cli.Update(dbID, 1, []byte("updated"))
@@ -125,7 +184,7 @@ func main() {
 | --------------- | ----------------------------------------- |
 | **DocDB Pool**  | One runtime managing many logical DBs     |
 | **Logical DB**  | Isolated document namespace (per project) |
-| **Document**    | Opaque binary blob identified by `doc_id` |
+| **Document**    | Valid UTF-8 encoded JSON value           |
 | **Transaction** | Short-lived atomic write group            |
 | **WAL**         | Global append-only write-ahead log        |
 | **MVCC-lite**   | Versioned documents, snapshot reads       |
@@ -173,8 +232,10 @@ go test -bench=. ./tests/benchmarks
 - [Configuration Guide](docs/configuration.md) - All configuration options and recommended settings
 - [On-Disk Format](docs/ondisk_format.md) - Binary format specifications
 - [Failure Modes](docs/failure_modes.md) - Failure handling and recovery
+- [Architecture](docs/architecture.md) - System design and component interactions
 - [TypeScript Client](tsclient/README.md) - TypeScript client documentation
 - [TS Implementation](tsclient/IMPLEMENTATION_SUMMARY.md) - Detailed TS client status
+- [Roadmap](ROADMAP.md) - Planned features and evolution path
 - [Progress](PROGRESS.md) - Implementation status and recent fixes
 
 ## License

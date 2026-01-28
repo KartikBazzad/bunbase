@@ -1,13 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/peterh/liner"
 
 	"github.com/kartikbazzad/docdb/cmd/docdbsh/parser"
 	"github.com/kartikbazzad/docdb/cmd/docdbsh/shell"
@@ -38,6 +38,12 @@ func main() {
 
 	fmt.Printf("Connected. Type '.help' for commands.\n\n")
 
+	// Set up interactive line editor with history and arrow-key support.
+	ln := liner.NewLiner()
+	defer ln.Close()
+
+	ln.SetCtrlCAborts(true)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -45,24 +51,21 @@ func main() {
 		<-sigChan
 		fmt.Println("\nInterrupted. Exiting...")
 		sh.Close()
+		ln.Close()
 		os.Exit(0)
 	}()
 
-	reader := bufio.NewReader(os.Stdin)
-
 	for {
-		fmt.Print(prompt)
-		line, err := reader.ReadString('\n')
+		line, err := ln.Prompt(prompt)
 		if err != nil {
-			if err == io.EOF {
+			// Ctrl+D / EOF: exit cleanly.
+			if err == liner.ErrPromptAborted {
 				fmt.Println()
-				return
+				continue
 			}
-			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
-			continue
+			return
 		}
 
-		line = line[:len(line)-1]
 		if line == "" {
 			continue
 		}
@@ -75,6 +78,8 @@ func main() {
 			continue
 		}
 
+		ln.AppendHistory(line)
+		sh.AddToHistory(line)
 		result := sh.Execute(cmd)
 		if result.IsExit() {
 			return

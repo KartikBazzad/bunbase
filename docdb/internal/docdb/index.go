@@ -13,6 +13,7 @@ package docdb
 
 import (
 	"sync"
+	"time"
 
 	"github.com/kartikbazzad/docdb/internal/types"
 )
@@ -88,6 +89,44 @@ func (s *IndexShard) isVisible(version *types.DocumentVersion, snapshotTxID uint
 	return true
 }
 
+// LiveCount returns the number of live (non-deleted) documents in the index.
+func (s *IndexShard) LiveCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, v := range s.data {
+		if v.DeletedTxID == nil {
+			count++
+		}
+	}
+
+	return count
+}
+
+// TombstonedCount returns the number of deleted documents in the index.
+func (s *IndexShard) TombstonedCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, v := range s.data {
+		if v.DeletedTxID != nil {
+			count++
+		}
+	}
+
+	return count
+}
+
+// LastCompaction returns the time of the last compaction.
+func (s *IndexShard) LastCompaction() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return time.Time{}
+}
+
 func (s *IndexShard) Size() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -107,6 +146,7 @@ func (s *IndexShard) Snapshot() map[uint64]*types.DocumentVersion {
 }
 
 type Index struct {
+	mu     sync.RWMutex
 	shards []*IndexShard
 }
 
@@ -145,6 +185,9 @@ func (idx *Index) Delete(docID uint64, txID uint64) {
 }
 
 func (idx *Index) Size() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	total := 0
 	for _, shard := range idx.shards {
 		total += shard.Size()
@@ -153,6 +196,9 @@ func (idx *Index) Size() int {
 }
 
 func (idx *Index) ForEach(fn func(docID uint64, version *types.DocumentVersion)) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	for _, shard := range idx.shards {
 		snapshot := shard.Snapshot()
 		for docID, version := range snapshot {
@@ -160,3 +206,43 @@ func (idx *Index) ForEach(fn func(docID uint64, version *types.DocumentVersion))
 		}
 	}
 }
+
+func (idx *Index) LiveCount() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	count := 0
+	for _, shard := range idx.shards {
+		count += shard.LiveCount()
+	}
+
+	return count
+}
+
+func (idx *Index) TombstonedCount() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	count := 0
+	for _, shard := range idx.shards {
+		count += shard.TombstonedCount()
+	}
+
+	return count
+}
+
+func (idx *Index) LastCompaction() time.Time {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	var latest time.Time
+	for _, shard := range idx.shards {
+		shardLatest := shard.LastCompaction()
+		if shardLatest.After(latest) {
+			latest = shardLatest
+		}
+	}
+
+	return latest
+}
+

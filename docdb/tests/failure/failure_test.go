@@ -45,7 +45,9 @@ func TestCorruptWAL(t *testing.T) {
 	db, tmpDir, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	payload := []byte("test payload")
+	// Use valid JSON payload so engine-level JSON enforcement still allows
+	// us to exercise WAL corruption behavior.
+	payload := []byte(`{"data":"test payload"}`)
 	docID := uint64(1)
 
 	err := db.Create(docID, payload)
@@ -102,7 +104,8 @@ func TestTruncatedWAL(t *testing.T) {
 	db, tmpDir, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	payload := []byte("test payload")
+	// Valid JSON payload for truncated WAL scenario.
+	payload := []byte(`{"data":"test payload"}`)
 
 	for i := 0; i < 10; i++ {
 		err := db.Create(uint64(i+1), payload)
@@ -173,7 +176,8 @@ func TestMissingWAL(t *testing.T) {
 	}
 	defer db.Close()
 
-	payload := []byte("test payload")
+	// Valid JSON payload for missing WAL scenario.
+	payload := []byte(`{"data":"test payload"}`)
 
 	err = db.Create(1, payload)
 	if err != nil {

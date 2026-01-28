@@ -17,4 +17,9 @@ type Shell interface {
 	SetDB(uint64)
 	ClearDB()
 	GetClient() Client
+	GetDBName() string
+	SetDBName(name string)
+	GetPretty() bool
+	SetPretty(pretty bool)
+	GetHistory() []string
 }

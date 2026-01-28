@@ -3,6 +3,7 @@ package integration
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kartikbazzad/docdb/internal/config"
@@ -70,7 +71,8 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
-		payload := []byte("test payload")
+		// Valid JSON payload to satisfy engine-level JSON enforcement.
+		payload := []byte(`{"data":"test payload"}`)
 		docID := uint64(1)
 
 		err = db.Create(docID, payload)
@@ -104,7 +106,7 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
-		payload := []byte("initial payload")
+		payload := []byte(`{"data":"initial payload"}`)
 		docID := uint64(1)
 
 		err = db.Create(docID, payload)
@@ -112,7 +114,7 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to create document: %v", err)
 		}
 
-		newPayload := []byte("updated payload")
+		newPayload := []byte(`{"data":"updated payload"}`)
 		err = db.Update(docID, newPayload)
 		if err != nil {
 			t.Fatalf("Failed to update document: %v", err)
@@ -139,7 +141,7 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
-		payload := []byte("test payload")
+		payload := []byte(`{"data":"test payload"}`)
 		docID := uint64(1)
 
 		err = db.Create(docID, payload)
@@ -171,7 +173,7 @@ func TestDatabaseOperations(t *testing.T) {
 
 		numDocs := 100
 		for i := 1; i <= numDocs; i++ {
-			payload := []byte("payload for doc")
+			payload := []byte(`{"data":"payload for doc"}`)
 			err := db.Create(uint64(i), payload)
 			if err != nil {
 				t.Fatalf("Failed to create document %d: %v", i, err)
@@ -213,7 +215,7 @@ func TestMVCC(t *testing.T) {
 	}
 	defer db.Close()
 
-	payload1 := []byte("version 1")
+	payload1 := []byte(`{"data":"version 1"}`)
 	docID := uint64(1)
 
 	err = db.Create(docID, payload1)
@@ -221,7 +223,7 @@ func TestMVCC(t *testing.T) {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
-	payload2 := []byte("version 2")
+	payload2 := []byte(`{"data":"version 2"}`)
 	err = db.Update(docID, payload2)
 	if err != nil {
 		t.Fatalf("Failed to update document: %v", err)
@@ -261,7 +263,8 @@ func TestMemoryLimits(t *testing.T) {
 	}
 	defer db.Close()
 
-	largePayload := make([]byte, 2*1024*1024)
+	// Large but valid JSON payload exercising memory limits.
+	largePayload := []byte(`{"data":"` + strings.Repeat("x", 2*1024*1024-20) + `"}`)
 	docID := uint64(1)
 
 	err = db.Create(docID, largePayload)
@@ -291,7 +294,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
-	payload := []byte("persistent payload")
+	payload := []byte(`{"data":"persistent payload"}`)
 	docID := uint64(1)
 
 	err = db.Create(docID, payload)

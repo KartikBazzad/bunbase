@@ -87,7 +87,7 @@ func (c *Client) OpenDB(name string) (uint64, error) {
 	}
 
 	if resp.Status != types.StatusOK {
-		return 0, fmt.Errorf(string(resp.Data))
+		return 0, fmt.Errorf("%s", string(resp.Data))
 	}
 
 	if len(resp.Data) != 8 {
@@ -118,7 +118,7 @@ func (c *Client) CloseDB(dbID uint64) error {
 	}
 
 	if resp.Status != types.StatusOK {
-		return fmt.Errorf(string(resp.Data))
+		return fmt.Errorf("%s", string(resp.Data))
 	}
 
 	return nil
@@ -145,7 +145,7 @@ func (c *Client) Execute(dbID uint64, ops []ipc.Operation) ([]byte, error) {
 	}
 
 	if resp.Status != types.StatusOK {
-		return nil, fmt.Errorf(string(resp.Data))
+		return nil, fmt.Errorf("%s", string(resp.Data))
 	}
 
 	return resp.Data, nil
@@ -171,7 +171,7 @@ func (c *Client) Stats() (*types.Stats, error) {
 	}
 
 	if resp.Status != types.StatusOK {
-		return nil, fmt.Errorf(string(resp.Data))
+		return nil, fmt.Errorf("%s", string(resp.Data))
 	}
 
 	return c.parseStats(resp.Data)

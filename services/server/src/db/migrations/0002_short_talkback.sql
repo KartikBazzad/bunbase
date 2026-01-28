@@ -1,1 +1,0 @@
-ALTER TABLE "database" ADD COLUMN "isDefault" boolean DEFAULT false NOT NULL;

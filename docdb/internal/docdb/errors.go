@@ -1,25 +1,13 @@
 package docdb
 
-// Concurrent write to same document: undefined but safe
-// Behavior: "Last commit wins"
-// - No conflict detection
-// - Both versions are persisted in WAL
-// - Index shows last committed version
-// - Non-deterministic across restarts but correct for v0
-//
-// This is safe because:
-// - ACID properties are maintained
-// - Reads see last committed version
-// - No silent data loss (both versions in WAL)
-// - Deterministic if writes are serialized
+import "github.com/kartikbazzad/docdb/internal/errors"
 
-import (
-	"errors"
-)
-
+// Re-export core errors for backward compatibility
+// TODO: Directly import internal/errors in v1.0
 var (
-	ErrDBNotOpen        = errors.New("database not open")
-	ErrDocNotFound      = errors.New("document not found")
-	ErrDocAlreadyExists = errors.New("document already exists")
-	ErrMemoryLimit      = errors.New("memory limit exceeded")
+	ErrDBNotOpen        = errors.ErrDBNotOpen
+	ErrDocNotFound      = errors.ErrDocNotFound
+	ErrDocExists        = errors.ErrDocExists
+	ErrDocAlreadyExists = errors.ErrDocExists
+	ErrMemoryLimit      = errors.ErrMemoryLimit
 )

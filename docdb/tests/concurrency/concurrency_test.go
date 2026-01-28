@@ -1,6 +1,7 @@
 package concurrency
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +65,9 @@ func TestConcurrentWrites(t *testing.T) {
 
 		for i := 1; i <= numDocs; i++ {
 			docID := uint64(workerID*1000 + i)
-			payload := []byte("payload from worker")
+			// Use a simple, valid JSON payload so we exercise the JSON-only
+			// engine invariant under concurrent write load.
+			payload := []byte(fmt.Sprintf(`{"worker":%d,"doc":%d}`, workerID, docID))
 
 			err := db.Create(docID, payload)
 			if err != nil {

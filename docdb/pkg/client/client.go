@@ -1,10 +1,14 @@
 package client
 
 import (
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/kartikbazzad/docdb/internal/ipc"
 	"github.com/kartikbazzad/docdb/internal/types"
@@ -128,6 +132,10 @@ func (c *Client) Create(dbID uint64, docID uint64, payload []byte) error {
 		return err
 	}
 
+	if err := validateJSON(payload); err != nil {
+		return err
+	}
+
 	reqID := c.nextRequestID()
 
 	frame := &ipc.RequestFrame{
@@ -195,6 +203,10 @@ func (c *Client) Read(dbID uint64, docID uint64) ([]byte, error) {
 
 func (c *Client) Update(dbID uint64, docID uint64, payload []byte) error {
 	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	if err := validateJSON(payload); err != nil {
 		return err
 	}
 
@@ -446,4 +458,37 @@ func (c *Client) parseStats(data []byte) (*types.Stats, error) {
 	}
 
 	return stats, nil
+}
+
+func EncodeBytes(data []byte) map[string]any {
+	return map[string]any{
+		"_type":    "bytes",
+		"encoding": "base64",
+		"data":     base64.StdEncoding.EncodeToString(data),
+	}
+}
+
+func DecodeBytes(obj map[string]any) ([]byte, error) {
+	if obj["_type"] != "bytes" {
+		return nil, fmt.Errorf("not a bytes wrapper")
+	}
+	if obj["encoding"] != "base64" {
+		return nil, fmt.Errorf("unsupported encoding: %v", obj["encoding"])
+	}
+	dataStr, ok := obj["data"].(string)
+	if !ok {
+		return nil, fmt.Errorf("data field is not a string")
+	}
+	return base64.StdEncoding.DecodeString(dataStr)
+}
+
+func validateJSON(payload []byte) error {
+	if len(payload) == 0 {
+		return types.ErrInvalidJSON
+	}
+	if !utf8.Valid(payload) {
+		return types.ErrInvalidJSON
+	}
+	var v interface{}
+	return json.Unmarshal(payload, &v)
 }

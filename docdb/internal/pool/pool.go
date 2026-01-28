@@ -16,19 +16,24 @@
 package pool
 
 import (
-	"errors"
-
 	"github.com/kartikbazzad/docdb/internal/catalog"
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/docdb"
+	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
 var (
-	ErrPoolStopped = errors.New("pool is stopped")
-	ErrQueueFull   = errors.New("request queue is full")
+	ErrPoolStopped = errors.ErrPoolStopped
+	ErrQueueFull   = errors.ErrQueueFull
+)
+
+var (
+	// Re-export for backward compatibility
+	ErrDBNotActive      = errors.ErrDBNotActive
+	ErrUnknownOperation = errors.ErrUnknownOperation
 )
 
 // Request represents a database operation to be executed.
@@ -218,7 +223,7 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 	}
 
 	if entry.Status != types.DBActive {
-		return nil, errors.New("database is not active")
+		return nil, errors.ErrDBNotActive
 	}
 
 	if db, exists := p.dbs[dbID]; exists {
@@ -287,16 +292,18 @@ func (p *Pool) handleRequest(req *Request) {
 	case types.OpDelete:
 		err = db.Delete(req.DocID)
 	default:
-		err = errors.New("unknown operation type")
+		err = errors.ErrUnknownOperation
 	}
 
 	status := types.StatusOK
 	if err != nil {
 		status = types.StatusError
-		if err == docdb.ErrDocNotFound {
+		if err == docdb.ErrDocNotFound || err == types.ErrDocNotFound {
 			status = types.StatusNotFound
-		} else if err == docdb.ErrMemoryLimit {
+		} else if err == docdb.ErrMemoryLimit || err == types.ErrMemoryLimit {
 			status = types.StatusMemoryLimit
+		} else if err == docdb.ErrDocExists || err == docdb.ErrDocAlreadyExists || err == types.ErrDocExists {
+			status = types.StatusConflict
 		}
 	}
 

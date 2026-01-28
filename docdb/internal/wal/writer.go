@@ -1,72 +1,47 @@
-// Package wal implements Write-Ahead Log for durability.
-//
-// WAL provides:
-//   - Append-only writes (no overwrites)
-//   - Binary record format with CRC32 checksums
-//   - Optional fsync on every write (durability)
-//   - Size tracking (for rotation warnings)
-//   - Crash recovery (via reader)
-//
-// WAL Format (per record):
-//
-//	[8 bytes: record_len] [8 bytes: tx_id] [8 bytes: db_id]
-//	[1 byte: op_type] [8 bytes: doc_id] [4 bytes: payload_len]
-//	[N bytes: payload] [4 bytes: crc32]
-//
-// Durability Guarantees:
-//   - If fsync enabled: Record is on disk after Write() returns
-//   - If fsync disabled: Record is in OS buffer (may be lost on crash)
-//   - CRC32 detects corruption on replay
-//   - Truncation at first corrupt record (partial recovery)
-//
-// Thread Safety: All methods are thread-safe (mu protects file).
 package wal
 
 import (
 	"os"
 	"sync"
 
+	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
-// Writer manages append-only WAL file.
+// Writer appends WAL records for a single logical database.
 //
-// It provides:
-//   - Atomic record writes (with optional fsync)
-//   - CRC32 checksum calculation
-//   - Size tracking (for rotation warnings)
-//   - Thread-safe file operations
-//
-// Thread Safety: All methods are thread-safe via mu.
+// It is responsible for:
+//   - Encoding records using the canonical on-disk format (see format.go)
+//   - Optional fsync-after-write semantics
+//   - Tracking current WAL size
+//   - Cooperating with Rotator for multi-segment WALs
 type Writer struct {
-	mu      sync.Mutex     // Protects all file operations
-	file    *os.File       // Open WAL file handle (append mode)
-	path    string         // WAL file path
-	size    uint64         // Current file size (in bytes)
-	maxSize uint64         // Maximum size before warning (0 = unlimited)
-	fsync   bool           // If true, fsync after each write
-	logger  *logger.Logger // Structured logging
+	mu       sync.Mutex
+	file     *os.File
+	path     string
+	dbID     uint64
+	size     uint64
+	maxSize  uint64
+	fsync    bool
+	logger   *logger.Logger
+	rotator  *Rotator
+	isClosed bool
 }
 
-// NewWriter creates a new WAL writer.
+// NewWriter creates a new WAL writer for a specific database.
 //
-// Parameters:
-//   - path: WAL file path (will be created if doesn't exist)
-//   - maxSize: Maximum file size before logging warning (0 = no limit)
-//   - fsync: If true, call file.Sync() after each write (slower, more durable)
-//   - log: Logger instance
-//
-// Returns:
-//   - Initialized WAL writer ready for Open()
-//
-// Note: Writer is not opened until Open() is called.
-func NewWriter(path string, maxSize uint64, fsync bool, log *logger.Logger) *Writer {
+// maxSize controls automatic rotation:
+//   - 0 disables rotation
+//   - >0 triggers rotation once the WAL reaches or exceeds this size (bytes)
+func NewWriter(path string, dbID uint64, maxSize uint64, fsync bool, log *logger.Logger) *Writer {
 	return &Writer{
 		path:    path,
+		dbID:    dbID,
 		maxSize: maxSize,
 		fsync:   fsync,
 		logger:  log,
+		rotator: NewRotator(path, maxSize, fsync, log),
 	}
 }
 
@@ -74,48 +49,142 @@ func (w *Writer) Open() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	file, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	file, err := os.OpenFile(w.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		return err
-	}
-
-	info, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return err
+		return errors.ErrFileOpen
 	}
 
 	w.file = file
-	w.size = uint64(info.Size())
+	w.size = getWalSize(file)
+	w.isClosed = false
 
 	return nil
 }
 
+func getWalSize(file *os.File) uint64 {
+	info, _ := file.Stat()
+	return uint64(info.Size())
+}
+
+// Write encodes and appends a single WAL record.
+//
+// The on-disk format is defined in format.go and ondisk_format.md.
 func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, payload []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	encoded, err := EncodeRecord(txID, dbID, docID, opType, payload)
+	if w.file == nil {
+		return errors.ErrFileWrite
+	}
+
+	record, err := EncodeRecord(txID, dbID, docID, opType, payload)
 	if err != nil {
 		return err
 	}
 
-	if w.maxSize > 0 && w.size+uint64(len(encoded)) > w.maxSize {
-		w.logger.Warn("WAL file approaching size limit, rotation not implemented in v0")
+	if _, err := w.file.Write(record); err != nil {
+		return errors.ErrFileWrite
 	}
 
-	n, err := w.file.Write(encoded)
-	if err != nil {
-		return ErrFileWrite
-	}
-
-	w.size += uint64(n)
+	w.size += uint64(len(record))
 
 	if w.fsync {
 		if err := w.file.Sync(); err != nil {
-			return ErrFileSync
+			return errors.ErrFileSync
 		}
 	}
+
+	// Perform rotation if enabled and threshold reached.
+	if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
+		if err := w.rotateLocked(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// WriteCommitMarker writes a transaction commit marker to WAL.
+//
+// This uses the same record format as normal operations, with:
+//   - OpType = OpCommit
+//   - DocID  = 0
+//   - PayloadLen = 0
+func (w *Writer) WriteCommitMarker(txID uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return errors.ErrFileWrite
+	}
+
+	record, err := EncodeRecord(txID, w.dbID, 0, types.OpCommit, nil)
+	if err != nil {
+		return err
+	}
+
+	offset := w.size
+
+	if _, err := w.file.Write(record); err != nil {
+		return errors.ErrFileWrite
+	}
+
+	w.size += uint64(len(record))
+
+	if w.fsync {
+		if err := w.file.Sync(); err != nil {
+			return errors.ErrFileSync
+		}
+	}
+
+	w.logger.Debug("WAL commit marker written: tx_id=%d, offset=%d", txID, offset)
+
+	if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
+		if err := w.rotateLocked(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *Writer) rotateLocked() error {
+	// Assumes w.mu is already held.
+	if w.file == nil || w.maxSize == 0 {
+		return nil
+	}
+
+	// Close the current WAL file before rotating.
+	if err := w.file.Sync(); err != nil {
+		return errors.ErrFileSync
+	}
+	if err := w.file.Close(); err != nil {
+		return errors.ErrFileWrite
+	}
+
+	rotatedPath, err := w.rotator.Rotate()
+	if err != nil {
+		// Best-effort: try to reopen original path even on rotation error.
+		w.logger.Error("WAL rotation failed for %s: %v", w.path, err)
+		file, openErr := os.OpenFile(w.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+		if openErr != nil {
+			return errors.ErrFileOpen
+		}
+		w.file = file
+		w.size = getWalSize(file)
+		return err
+	}
+
+	w.logger.Info("Rotated WAL segment: %s", rotatedPath)
+
+	// Open a fresh active WAL at the base path and reset size counter.
+	file, err := os.OpenFile(w.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return errors.ErrFileOpen
+	}
+
+	w.file = file
+	w.size = getWalSize(file)
 
 	return nil
 }
@@ -135,7 +204,7 @@ func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.file == nil {
+	if w.file == nil || w.isClosed {
 		return nil
 	}
 
@@ -148,6 +217,7 @@ func (w *Writer) Close() error {
 	}
 
 	w.file = nil
+	w.isClosed = true
 	return nil
 }
 

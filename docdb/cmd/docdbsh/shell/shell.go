@@ -12,7 +12,10 @@ import (
 type Shell struct {
 	socketPath string
 	dbID       uint64
+	dbName     string
 	txActive   bool
+	pretty     bool
+	history    []string
 	client     *client.Client
 	mu         sync.Mutex
 }
@@ -23,7 +26,10 @@ func NewShell(socketPath string) (*Shell, error) {
 		socketPath: socketPath,
 		client:     c,
 		dbID:       0,
+		dbName:     "",
 		txActive:   false,
+		pretty:     false,
+		history:    make([]string, 0, 100),
 	}, nil
 }
 
@@ -55,6 +61,7 @@ func (s *Shell) ClearDB() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dbID = 0
+	s.dbName = ""
 	s.txActive = false
 }
 
@@ -94,6 +101,47 @@ func (s *Shell) IsTxActive() bool {
 	return s.txActive
 }
 
+func (s *Shell) SetDBName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dbName = name
+}
+
+func (s *Shell) GetDBName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dbName
+}
+
+func (s *Shell) SetPretty(pretty bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pretty = pretty
+}
+
+func (s *Shell) GetPretty() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pretty
+}
+
+func (s *Shell) AddToHistory(cmd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(s.history, cmd)
+	if len(s.history) > 100 {
+		s.history = s.history[1:]
+	}
+}
+
+func (s *Shell) GetHistory() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hist := make([]string, len(s.history))
+	copy(hist, s.history)
+	return hist
+}
+
 func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 	switch cmd.Name {
 	case ".help":
@@ -102,10 +150,18 @@ func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 		return commands.Exit()
 	case ".clear":
 		return commands.Clear(s)
-	case ".open":
+	case ".open", ".use":
 		return commands.Open(s, cmd)
 	case ".close":
 		return commands.Close(s)
+	case ".ls":
+		return commands.ListDBs(s)
+	case ".pwd":
+		return commands.PWD(s)
+	case ".pretty":
+		return commands.Pretty(s, cmd)
+	case ".history":
+		return commands.History(s)
 	case ".create":
 		return commands.Create(s, cmd)
 	case ".read":

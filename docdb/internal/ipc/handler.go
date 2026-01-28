@@ -2,16 +2,40 @@ package ipc
 
 import (
 	"encoding/binary"
-	"errors"
+	"encoding/json"
 	"io"
+	"unicode/utf8"
 
+	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/pool"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
 var (
-	ErrInvalidRequestID = errors.New("invalid request ID")
+	// Re-export for backward compatibility
+	ErrInvalidRequestID = errors.ErrInvalidRequestID
 )
+
+func validateJSONPayload(payload []byte) error {
+	if payload == nil {
+		return nil
+	}
+
+	if len(payload) == 0 {
+		return errors.ErrInvalidJSON
+	}
+
+	if !utf8.Valid(payload) {
+		return errors.ErrInvalidJSON
+	}
+
+	var v interface{}
+	if err := json.Unmarshal(payload, &v); err != nil {
+		return errors.ErrInvalidJSON
+	}
+
+	return nil
+}
 
 type Handler struct {
 	pool *pool.Pool
@@ -66,11 +90,22 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 	case CmdExecute:
 		if frame.DBID == 0 || len(frame.Ops) == 0 {
 			response.Status = types.StatusError
+			response.Data = []byte("invalid request")
 			return response
 		}
 
 		responses := make([][]byte, len(frame.Ops))
 		for i, op := range frame.Ops {
+			if op.OpType == types.OpCreate || op.OpType == types.OpUpdate {
+				if err := validateJSONPayload(op.Payload); err != nil {
+					responses[i] = []byte(err.Error())
+					if response.Status == types.StatusOK {
+						response.Status = types.StatusError
+					}
+					continue
+				}
+			}
+
 			req := &pool.Request{
 				DBID:     frame.DBID,
 				DocID:    op.DocID,

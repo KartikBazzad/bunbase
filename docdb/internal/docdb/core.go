@@ -23,12 +23,15 @@
 package docdb
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/kartikbazzad/docdb/internal/config"
+	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
 	"github.com/kartikbazzad/docdb/internal/types"
@@ -75,6 +78,26 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 	}
 }
 
+// validateJSONPayload enforces the engine-level JSON-only invariant.
+// It mirrors validation behavior in the IPC layer and client, ensuring
+// that invalid JSON never reaches the WAL or data files.
+func validateJSONPayload(payload []byte) error {
+	if len(payload) == 0 {
+		return errors.ErrInvalidJSON
+	}
+
+	if !utf8.Valid(payload) {
+		return errors.ErrInvalidJSON
+	}
+
+	var v interface{}
+	if err := json.Unmarshal(payload, &v); err != nil {
+		return errors.ErrInvalidJSON
+	}
+
+	return nil
+}
+
 func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -97,7 +120,7 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	}
 
 	walFile := filepath.Join(walDir, fmt.Sprintf("%s.wal", db.dbName))
-	db.wal = wal.NewWriter(walFile, db.cfg.WAL.MaxFileSizeMB*1024*1024, db.cfg.WAL.FsyncOnCommit, db.logger)
+	db.wal = wal.NewWriter(walFile, db.dbID, db.cfg.WAL.MaxFileSizeMB*1024*1024, db.cfg.WAL.FsyncOnCommit, db.logger)
 	if err := db.wal.Open(); err != nil {
 		return fmt.Errorf("failed to open WAL: %w", err)
 	}
@@ -141,6 +164,12 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 
 	if db.closed {
 		return ErrDBNotOpen
+	}
+
+	// Enforce JSON-only payloads at the engine level before any WAL or
+	// data file writes, so invalid inputs cannot corrupt durable state.
+	if err := validateJSONPayload(payload); err != nil {
+		return err
 	}
 
 	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
@@ -193,6 +222,12 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 
 	if db.closed {
 		return ErrDBNotOpen
+	}
+
+	// Enforce JSON-only payloads at the engine level before any WAL or
+	// data file writes, so invalid inputs cannot corrupt durable state.
+	if err := validateJSONPayload(payload); err != nil {
+		return err
 	}
 
 	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
@@ -321,48 +356,38 @@ func (db *LogicalDB) Stats() *types.Stats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
+	live := db.index.LiveCount()
+	tombstoned := db.index.TombstonedCount()
+
 	return &types.Stats{
 		TotalDBs:       1,
 		ActiveDBs:      1,
 		TotalTxns:      db.mvcc.CurrentSnapshot(),
+		TxnsCommitted:  db.mvcc.CurrentSnapshot(),
 		WALSize:        db.wal.Size(),
 		MemoryUsed:     db.memory.DBUsage(db.dbID),
 		MemoryCapacity: db.memory.DBLimit(db.dbID),
+		DocsLive:       uint64(live),
+		DocsTombstoned: uint64(tombstoned),
 	}
 }
 
 func (db *LogicalDB) replayWAL() error {
-	walFile := filepath.Join(db.walDir, fmt.Sprintf("%s.wal", db.dbName))
-	if _, err := os.Stat(walFile); os.IsNotExist(err) {
+	walBasePath := filepath.Join(db.walDir, fmt.Sprintf("%s.wal", db.dbName))
+	if _, err := os.Stat(walBasePath); os.IsNotExist(err) {
 		return nil
 	}
 
-	reader := wal.NewReader(walFile, db.logger)
-	if err := reader.Open(); err != nil {
-		return err
-	}
-	defer reader.Close()
+	recovery := wal.NewRecovery(walBasePath, db.logger)
 
-	var records []*types.WALRecord
-	for {
-		record, err := reader.Next()
-		if err != nil {
-			if err == wal.ErrCorruptRecord || err == wal.ErrFileRead {
-				return fmt.Errorf("corrupt WAL: %w", err)
-			}
-			return err
-		}
-		if record == nil {
-			break
-		}
-		records = append(records, record)
-	}
-
-	// Track the highest transaction ID to update MVCC
 	maxTxID := uint64(0)
+	records := 0
 
-	// Replay records in order, writing payloads to data file
-	for _, rec := range records {
+	err := recovery.Replay(func(rec *types.WALRecord) error {
+		if rec == nil {
+			return nil
+		}
+
 		txID := rec.TxID
 		if txID > maxTxID {
 			maxTxID = txID
@@ -374,14 +399,14 @@ func (db *LogicalDB) replayWAL() error {
 			offset, err := db.dataFile.Write(rec.Payload)
 			if err != nil {
 				db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-				continue
+				return nil
 			}
 
 			// Allocate memory for the payload
 			memoryNeeded := uint64(len(rec.Payload))
 			if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
 				db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-				continue
+				return nil
 			}
 
 			// Create version with correct offset
@@ -395,13 +420,13 @@ func (db *LogicalDB) replayWAL() error {
 				offset, err := db.dataFile.Write(rec.Payload)
 				if err != nil {
 					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-					continue
+					return nil
 				}
 
 				memoryNeeded := uint64(len(rec.Payload))
 				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
 					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-					continue
+					return nil
 				}
 
 				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
@@ -411,7 +436,7 @@ func (db *LogicalDB) replayWAL() error {
 				offset, err := db.dataFile.Write(rec.Payload)
 				if err != nil {
 					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-					continue
+					return nil
 				}
 
 				// Calculate memory change
@@ -421,7 +446,7 @@ func (db *LogicalDB) replayWAL() error {
 				// Try to allocate new memory
 				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
 					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-					continue
+					return nil
 				}
 
 				// Free old memory
@@ -444,7 +469,20 @@ func (db *LogicalDB) replayWAL() error {
 			}
 			version := db.mvcc.DeleteVersion(rec.DocID, txID)
 			db.index.Set(version)
+
+		case types.OpCommit:
+			// Commit markers are used for write ordering guarantees.
+			// For v0.1 recovery we don't need special handling beyond
+			// tracking maxTxID; index state is reconstructed from
+			// data-bearing records above.
 		}
+
+		records++
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("corrupt WAL: %w", err)
 	}
 
 	// Update MVCC to use the next transaction ID after the highest one found
@@ -452,6 +490,6 @@ func (db *LogicalDB) replayWAL() error {
 		db.mvcc.SetCurrentTxID(maxTxID + 1)
 	}
 
-	db.logger.Info("Replayed %d WAL records", len(records))
+	db.logger.Info("Replayed %d WAL records", records)
 	return nil
 }

@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -9,42 +10,84 @@ import (
 )
 
 type Recovery struct {
-	path   string
-	reader *Reader
-	logger *logger.Logger
+	basePath string
+	logger   *logger.Logger
 }
 
-func NewRecovery(path string, log *logger.Logger) *Recovery {
+func NewRecovery(basePath string, log *logger.Logger) *Recovery {
 	return &Recovery{
-		path:   path,
-		logger: log,
+		basePath: basePath,
+		logger:   log,
 	}
 }
 
 type RecoveryHandler func(record *types.WALRecord) error
 
 func (r *Recovery) Replay(handler RecoveryHandler) error {
-	r.reader = NewReader(r.path, r.logger)
+	rotator := NewRotator(r.basePath, 0, false, r.logger)
 
-	if err := r.reader.Open(); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+	walPaths, err := rotator.GetAllWALPaths()
+	if err != nil {
+		return fmt.Errorf("failed to list WAL segments: %w", err)
 	}
-	defer r.reader.Close()
+
+	if len(walPaths) == 0 {
+		r.logger.Info("No WAL segments found")
+		return nil
+	}
+
+	r.logger.Info("Found %d WAL segment(s) to replay", len(walPaths))
+
+	totalRecords := 0
+	var lastError error
+
+	for i, walPath := range walPaths {
+		r.logger.Info("Replaying WAL segment %d/%d: %s", i+1, len(walPaths), walPath)
+
+		segRecords, err := r.replaySegment(walPath, handler, i == len(walPaths)-1)
+		if err != nil {
+			lastError = err
+			r.logger.Error("Failed to replay segment %s: %v", walPath, err)
+			if !r.isActiveWAL(walPath) {
+				continue
+			}
+			break
+		}
+
+		totalRecords += segRecords
+		r.logger.Info("Replayed %d records from segment %s", segRecords, walPath)
+	}
+
+	r.logger.Info("WAL replay complete: %d total records across %d segments", totalRecords, len(walPaths))
+	return lastError
+}
+
+func (r *Recovery) replaySegment(walPath string, handler RecoveryHandler, truncateOnError bool) (int, error) {
+	reader := NewReader(walPath, r.logger)
+
+	if err := reader.Open(); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer reader.Close()
 
 	count := 0
 	var lastError error
 
 	for {
-		record, err := r.reader.Next()
+		record, err := reader.Next()
 		if err != nil {
 			lastError = err
 			r.logger.Error("WAL record error at offset %d: %v", count, err)
-			if err := r.Truncate(); err != nil {
-				r.logger.Error("Failed to truncate WAL: %v", err)
+
+			if truncateOnError {
+				if err := r.truncateSegment(walPath, reader); err != nil {
+					r.logger.Error("Failed to truncate WAL segment %s: %v", walPath, err)
+				}
 			}
+
 			break
 		}
 
@@ -62,28 +105,31 @@ func (r *Recovery) Replay(handler RecoveryHandler) error {
 		count++
 	}
 
-	r.logger.Info("WAL replay complete: %d records", count)
-	return lastError
+	return count, lastError
 }
 
-func (r *Recovery) Truncate() error {
-	if r.reader == nil || r.reader.file == nil {
+func (r *Recovery) truncateSegment(walPath string, reader *Reader) error {
+	if reader == nil || reader.file == nil {
 		return nil
 	}
 
-	offset, err := r.reader.file.Seek(0, io.SeekCurrent)
+	offset, err := reader.file.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
 
-	if err := r.reader.Close(); err != nil {
+	if err := reader.Close(); err != nil {
 		return err
 	}
 
-	if err := os.Truncate(r.path, offset); err != nil {
+	if err := os.Truncate(walPath, offset); err != nil {
 		return err
 	}
 
-	r.logger.Info("WAL truncated to offset: %d", offset)
+	r.logger.Info("WAL segment truncated to offset: %d", offset)
 	return nil
+}
+
+func (r *Recovery) isActiveWAL(walPath string) bool {
+	return walPath == r.basePath
 }

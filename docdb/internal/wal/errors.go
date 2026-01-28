@@ -1,13 +1,15 @@
 package wal
 
-import "errors"
+import "github.com/kartikbazzad/docdb/internal/errors"
 
+// Re-export WAL errors for backward compatibility
+// TODO: Directly import internal/errors in v1.0
 var (
-	ErrPayloadTooLarge = errors.New("payload exceeds maximum size")
-	ErrCorruptRecord   = errors.New("corrupt record: invalid length or format")
-	ErrCRCMismatch     = errors.New("CRC mismatch")
-	ErrFileOpen        = errors.New("failed to open WAL file")
-	ErrFileWrite       = errors.New("failed to write WAL file")
-	ErrFileSync        = errors.New("failed to sync WAL file")
-	ErrFileRead        = errors.New("failed to read WAL file")
+	ErrPayloadTooLarge = errors.ErrPayloadTooLarge
+	ErrCorruptRecord   = errors.ErrCorruptRecord
+	ErrCRCMismatch     = errors.ErrCRCMismatch
+	ErrFileOpen        = errors.ErrFileOpen
+	ErrFileWrite       = errors.ErrFileWrite
+	ErrFileSync        = errors.ErrFileSync
+	ErrFileRead        = errors.ErrFileRead
 )

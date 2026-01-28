@@ -2,7 +2,6 @@ package commands
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +50,14 @@ func (h HelpResult) Print(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Database Lifecycle:")
 	fmt.Fprintln(w, "  .open <db_name>    Open or create database")
-	fmt.Fprintln(w, "  .close             Close current database")
+	fmt.Fprintln(w, "  .use <db_name>      Alias for .open")
+	fmt.Fprintln(w, "  .close               Close current database")
+	fmt.Fprintln(w, "  .ls                  List databases")
+	fmt.Fprintln(w, "  .pwd                 Show current database")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Display Options:")
+	fmt.Fprintln(w, "  .pretty on|off       Toggle JSON formatting")
+	fmt.Fprintln(w, "  .history             Show command history")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "CRUD Operations:")
 	fmt.Fprintln(w, "  .create <doc_id> <payload>      Create document")
@@ -59,10 +65,17 @@ func (h HelpResult) Print(w io.Writer) {
 	fmt.Fprintln(w, "  .update <doc_id> <payload>      Update document")
 	fmt.Fprintln(w, "  .delete <doc_id>                 Delete document")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Payload Formats:")
-	fmt.Fprintln(w, "  raw:\"Hello world\"   Raw string")
-	fmt.Fprintln(w, "  hex:48656c6c6f      Hex bytes")
-	fmt.Fprintln(w, "  json:{\"key\":\"val\"}  JSON object")
+	fmt.Fprintln(w, "Payload Format:")
+	fmt.Fprintln(w, "  Documents must be valid JSON:")
+	fmt.Fprintln(w, "    .create 1 {\"name\":\"Alice\",\"age\":30}")
+	fmt.Fprintln(w, "    .create 2 [1,2,3]")
+	fmt.Fprintln(w, "    .create 3 \"hello world\"")
+	fmt.Fprintln(w, "    .create 4 42")
+	fmt.Fprintln(w, "    .create 5 true")
+	fmt.Fprintln(w, "    .create 6 null")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Binary data (use base64 encoding):")
+	fmt.Fprintln(w, "    .create 7 {\"_type\":\"bytes\",\"encoding\":\"base64\",\"data\":\"SGVsbG8=\"}")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Introspection:")
 	fmt.Fprintln(w, "  .stats    Print pool statistics")
@@ -109,20 +122,22 @@ func (c CloseResult) IsExit() bool {
 
 type ReadResult struct {
 	Data   []byte
-	IsJSON bool
+	Pretty bool
 }
 
 func (r ReadResult) Print(w io.Writer) {
 	fmt.Fprintln(w, "OK")
 	fmt.Fprintf(w, "len=%d\n", len(r.Data))
-	fmt.Fprintf(w, "hex=%s\n", hex.EncodeToString(r.Data))
 
-	if r.IsJSON {
-		var v interface{}
-		if err := json.Unmarshal(r.Data, &v); err == nil {
-			pretty, _ := json.Marshal(v)
-			fmt.Fprintf(w, "json=%s\n", string(pretty))
+	var v interface{}
+	if err := json.Unmarshal(r.Data, &v); err == nil {
+		var jsonOutput []byte
+		if r.Pretty {
+			jsonOutput, _ = json.MarshalIndent(v, "", "  ")
+		} else {
+			jsonOutput, _ = json.Marshal(v)
 		}
+		fmt.Fprintf(w, "json=%s\n", string(jsonOutput))
 	}
 }
 
@@ -213,6 +228,7 @@ func Open(s Shell, cmd *parser.Command) Result {
 	}
 
 	s.SetDB(dbID)
+	s.SetDBName(name)
 	return OpenResult{DBID: dbID}
 }
 
@@ -297,12 +313,7 @@ func Read(s Shell, cmd *parser.Command) Result {
 		return ErrorResult{Err: err.Error()}
 	}
 
-	isJSON := false
-	if len(resultData) > 0 && json.Valid(resultData) {
-		isJSON = true
-	}
-
-	return ReadResult{Data: resultData, IsJSON: isJSON}
+	return ReadResult{Data: resultData, Pretty: s.GetPretty()}
 }
 
 func Update(s Shell, cmd *parser.Command) Result {
@@ -393,6 +404,111 @@ func WAL(s Shell) Result {
 	}
 
 	return WALResult{Stats: stats}
+}
+
+type ListDBsResult struct {
+	Stats *types.Stats
+}
+
+func (l ListDBsResult) Print(w io.Writer) {
+	fmt.Fprintln(w, "OK")
+	fmt.Fprintf(w, "total_dbs=%d\n", l.Stats.TotalDBs)
+	fmt.Fprintf(w, "active_dbs=%d\n", l.Stats.ActiveDBs)
+	fmt.Fprintln(w, "Use '.open <dbname>' or '.use <dbname>' to access a database")
+}
+
+func (l ListDBsResult) IsExit() bool {
+	return false
+}
+
+func ListDBs(s Shell) Result {
+	stats, err := s.GetClient().Stats()
+	if err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return ListDBsResult{Stats: stats}
+}
+
+type PWDResult struct {
+	DBName string
+	DBID   uint64
+}
+
+func (p PWDResult) Print(w io.Writer) {
+	fmt.Fprintln(w, "OK")
+	if p.DBID == 0 {
+		fmt.Fprintln(w, "No database open")
+	} else {
+		fmt.Fprintf(w, "database=%s\n", p.DBName)
+		fmt.Fprintf(w, "db_id=%d\n", p.DBID)
+	}
+}
+
+func (p PWDResult) IsExit() bool {
+	return false
+}
+
+func PWD(s Shell) Result {
+	dbID := s.GetDB()
+	dbName := s.GetDBName()
+
+	return PWDResult{
+		DBName: dbName,
+		DBID:   dbID,
+	}
+}
+
+type PrettyResult struct {
+	Enabled bool
+}
+
+func (p PrettyResult) Print(w io.Writer) {
+	fmt.Fprintln(w, "OK")
+	fmt.Fprintf(w, "pretty=%t\n", p.Enabled)
+}
+
+func (p PrettyResult) IsExit() bool {
+	return false
+}
+
+func Pretty(s Shell, cmd *parser.Command) Result {
+	if len(cmd.Args) == 0 {
+		return PrettyResult{Enabled: s.GetPretty()}
+	}
+
+	arg := strings.ToLower(cmd.Args[0])
+	switch arg {
+	case "on":
+		s.SetPretty(true)
+		return PrettyResult{Enabled: true}
+	case "off":
+		s.SetPretty(false)
+		return PrettyResult{Enabled: false}
+	default:
+		return ErrorResult{Err: "usage: .pretty on|off"}
+	}
+}
+
+type HistoryResult struct {
+	Commands []string
+}
+
+func (h HistoryResult) Print(w io.Writer) {
+	fmt.Fprintln(w, "OK")
+	fmt.Fprintf(w, "total_commands=%d\n", len(h.Commands))
+	for i, cmd := range h.Commands {
+		fmt.Fprintf(w, "%3d: %s\n", i+1, cmd)
+	}
+}
+
+func (h HistoryResult) IsExit() bool {
+	return false
+}
+
+func History(s Shell) Result {
+	hist := s.GetHistory()
+	return HistoryResult{Commands: hist}
 }
 
 func parseReadResponse(data []byte) ([]byte, error) {

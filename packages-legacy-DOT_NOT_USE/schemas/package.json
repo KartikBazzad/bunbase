@@ -1,0 +1,15 @@
+{
+  "name": "@bunbase/schemas",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "typebox": "^1.0.79",
+    "zod": "^4.3.6"
+  }
+}

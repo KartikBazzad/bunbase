@@ -9,6 +9,7 @@ const (
 	OpRead
 	OpUpdate
 	OpDelete
+	OpCommit
 )
 
 type Status byte
@@ -50,9 +51,8 @@ const (
 type CatalogEntry struct {
 	DBID      uint64
 	DBName    string
-	FilePaths []string
-	CreatedAt time.Time
-	Status    DBStatus
+	CreatedAt  time.Time
+	Status     DBStatus
 }
 
 type WALRecord struct {
@@ -70,7 +70,11 @@ type Stats struct {
 	TotalDBs       int
 	ActiveDBs      int
 	TotalTxns      uint64
+	TxnsCommitted  uint64
 	WALSize        uint64
 	MemoryUsed     uint64
 	MemoryCapacity uint64
+	DocsLive       uint64
+	DocsTombstoned uint64
+	LastCompaction time.Time
 }

@@ -74,20 +74,20 @@ func TestDecodePayload(t *testing.T) {
 		{
 			name:    "raw string",
 			input:   `raw:"Hello"`,
-			want:    "Hello",
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 		{
 			name:    "raw unquoted",
 			input:   `raw:Hello`,
-			want:    "Hello",
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 		{
 			name:    "hex valid",
 			input:   `hex:48656c6c6f`,
-			want:    "Hello",
-			wantErr: false,
+			want:    "",
+			wantErr: true,
 		},
 		{
 			name:    "hex invalid",
