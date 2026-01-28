@@ -5,11 +5,12 @@ import "time"
 type Config struct {
 	DataDir string
 
-	Memory MemoryConfig
-	WAL    WALConfig
-	Sched  SchedulerConfig
-	DB     DBConfig
-	IPC    IPCConfig
+	Memory  MemoryConfig
+	WAL     WALConfig
+	Sched   SchedulerConfig
+	DB      DBConfig
+	IPC     IPCConfig
+	Healing HealingConfig
 }
 
 type MemoryConfig struct {
@@ -19,10 +20,12 @@ type MemoryConfig struct {
 }
 
 type WALConfig struct {
-	Dir           string
-	MaxFileSizeMB uint64
-	FsyncOnCommit bool
-	Checkpoint    CheckpointConfig
+	Dir                 string
+	MaxFileSizeMB       uint64
+	FsyncOnCommit       bool
+	Checkpoint          CheckpointConfig
+	TrimAfterCheckpoint bool // Automatically trim WAL segments after checkpoint
+	KeepSegments        int  // Number of segments to keep before checkpoint
 }
 
 type CheckpointConfig struct {
@@ -49,6 +52,13 @@ type IPCConfig struct {
 	TCPPort    int
 }
 
+type HealingConfig struct {
+	Enabled          bool          // Enable automatic healing
+	Interval         time.Duration // Periodic health scan interval
+	OnReadCorruption bool          // Trigger healing on corruption detection during read
+	MaxBatchSize     int           // Maximum documents to heal in one batch
+}
+
 func DefaultConfig() *Config {
 	return &Config{
 		DataDir: "./data",
@@ -58,9 +68,11 @@ func DefaultConfig() *Config {
 			BufferSizes:      []uint64{1024, 4096, 16384, 65536, 262144},
 		},
 		WAL: WALConfig{
-			Dir:           "./data/wal",
-			MaxFileSizeMB: 64,
-			FsyncOnCommit: true,
+			Dir:                 "./data/wal",
+			MaxFileSizeMB:       64,
+			FsyncOnCommit:       true,
+			TrimAfterCheckpoint: true,
+			KeepSegments:        2,
 			Checkpoint: CheckpointConfig{
 				IntervalMB:     64,
 				AutoCreate:     true,
@@ -81,6 +93,12 @@ func DefaultConfig() *Config {
 			SocketPath: "/tmp/docdb.sock",
 			EnableTCP:  false,
 			TCPPort:    0,
+		},
+		Healing: HealingConfig{
+			Enabled:          true,
+			Interval:         1 * time.Hour,
+			OnReadCorruption: true,
+			MaxBatchSize:     100,
 		},
 	}
 }

@@ -176,6 +176,12 @@ func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 		return commands.Mem(s)
 	case ".wal":
 		return commands.WAL(s)
+	case ".heal":
+		return commands.Heal(s, cmd)
+	case ".heal-all":
+		return commands.HealAll(s)
+	case ".heal-stats":
+		return commands.HealStats(s)
 	default:
 		return commands.ErrorResult{Err: fmt.Sprintf("unknown command: %s", cmd.Name)}
 	}

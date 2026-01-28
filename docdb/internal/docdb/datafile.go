@@ -21,17 +21,23 @@ const (
 )
 
 type DataFile struct {
-	mu     sync.Mutex
-	path   string
-	file   *os.File
-	offset uint64
-	logger *logger.Logger
+	mu           sync.Mutex
+	path         string
+	file         *os.File
+	offset       uint64
+	logger       *logger.Logger
+	retryCtrl    *errors.RetryController
+	classifier   *errors.Classifier
+	errorTracker *errors.ErrorTracker
 }
 
 func NewDataFile(path string, log *logger.Logger) *DataFile {
 	return &DataFile{
-		path:   path,
-		logger: log,
+		path:         path,
+		logger:       log,
+		retryCtrl:    errors.NewRetryController(),
+		classifier:   errors.NewClassifier(),
+		errorTracker: errors.NewErrorTracker(),
 	}
 }
 
@@ -58,51 +64,79 @@ func (df *DataFile) Open() error {
 
 func (df *DataFile) Write(payload []byte) (uint64, error) {
 	if uint32(len(payload)) > MaxPayloadSize {
-		return 0, errors.ErrPayloadTooLarge
+		err := errors.ErrPayloadTooLarge
+		category := df.classifier.Classify(err)
+		df.errorTracker.RecordError(err, category)
+		return 0, err
 	}
 
-	df.mu.Lock()
-	defer df.mu.Unlock()
+	var resultOffset uint64
 
-	payloadLen := uint32(len(payload))
-	crc32Value := crc32.ChecksumIEEE(payload)
+	err := df.retryCtrl.Retry(func() error {
+		df.mu.Lock()
+		defer df.mu.Unlock()
 
-	header := make([]byte, PayloadLenSize+CRCLenSize)
-	binary.LittleEndian.PutUint32(header[0:], payloadLen)
-	binary.LittleEndian.PutUint32(header[4:], crc32Value)
+		payloadLen := uint32(len(payload))
+		crc32Value := crc32.ChecksumIEEE(payload)
 
-	offset := df.offset
+		header := make([]byte, PayloadLenSize+CRCLenSize)
+		binary.LittleEndian.PutUint32(header[0:], payloadLen)
+		binary.LittleEndian.PutUint32(header[4:], crc32Value)
 
-	// Write header (len + crc32)
-	if _, err := df.file.Write(header); err != nil {
-		return 0, errors.ErrFileWrite
+		offset := df.offset
+
+		// Write header (len + crc32)
+		if _, err := df.file.Write(header); err != nil {
+			err = errors.ErrFileWrite
+			category := df.classifier.Classify(err)
+			df.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		// Write payload
+		if _, err := df.file.Write(payload); err != nil {
+			err = errors.ErrFileWrite
+			category := df.classifier.Classify(err)
+			df.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		// Sync before writing verification flag to ensure atomicity
+		if err := df.file.Sync(); err != nil {
+			err = errors.ErrFileSync
+			category := df.classifier.Classify(err)
+			df.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		// Write verification flag LAST (after fsync) - this is the critical part
+		// for partial write protection. If crash occurs before this, record is unverified.
+		verificationFlag := []byte{VerificationValue}
+		if _, err := df.file.Write(verificationFlag); err != nil {
+			err = errors.ErrFileWrite
+			category := df.classifier.Classify(err)
+			df.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		// Final sync to ensure verification flag is durable
+		if err := df.file.Sync(); err != nil {
+			err = errors.ErrFileSync
+			category := df.classifier.Classify(err)
+			df.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
+		resultOffset = offset
+		return nil
+	}, df.classifier)
+
+	if err != nil {
+		return 0, err
 	}
 
-	// Write payload
-	if _, err := df.file.Write(payload); err != nil {
-		return 0, errors.ErrFileWrite
-	}
-
-	// Sync before writing verification flag to ensure atomicity
-	if err := df.file.Sync(); err != nil {
-		return 0, errors.ErrFileSync
-	}
-
-	// Write verification flag LAST (after fsync) - this is the critical part
-	// for partial write protection. If crash occurs before this, record is unverified.
-	verificationFlag := []byte{VerificationValue}
-	if _, err := df.file.Write(verificationFlag); err != nil {
-		return 0, errors.ErrFileWrite
-	}
-
-	// Final sync to ensure verification flag is durable
-	if err := df.file.Sync(); err != nil {
-		return 0, errors.ErrFileSync
-	}
-
-	df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
-
-	return offset, nil
+	return resultOffset, nil
 }
 
 func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
@@ -148,7 +182,10 @@ func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
 	computedCRC := crc32.ChecksumIEEE(payload)
 	if storedCRC != computedCRC {
 		df.logger.Error("CRC mismatch at offset %d: stored=%x, computed=%x", offset, storedCRC, computedCRC)
-		return nil, errors.ErrCorruptRecord
+		err := errors.ErrCRCMismatch
+		category := df.classifier.Classify(err)
+		df.errorTracker.RecordError(err, category)
+		return nil, err
 	}
 
 	return payload, nil

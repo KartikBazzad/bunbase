@@ -81,6 +81,11 @@ func (h HelpResult) Print(w io.Writer) {
 	fmt.Fprintln(w, "  .stats    Print pool statistics")
 	fmt.Fprintln(w, "  .mem      Print memory usage")
 	fmt.Fprintln(w, "  .wal      Print WAL info")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Healing:")
+	fmt.Fprintln(w, "  .heal <doc_id>      Heal a specific document")
+	fmt.Fprintln(w, "  .heal-all           Trigger full database healing scan")
+	fmt.Fprintln(w, "  .heal-stats         Show healing statistics")
 }
 
 func (h HelpResult) IsExit() bool {
@@ -530,4 +535,98 @@ func parseReadResponse(data []byte) ([]byte, error) {
 	}
 
 	return data[offset : offset+int(payloadLen)], nil
+}
+
+type HealResult struct {
+	DocID   uint64
+	Success bool
+	Error   string
+}
+
+func (h HealResult) Print(w io.Writer) {
+	if h.Success {
+		fmt.Fprintln(w, "OK")
+		fmt.Fprintf(w, "healed_doc_id=%d\n", h.DocID)
+	} else {
+		fmt.Fprintln(w, "ERROR")
+		fmt.Fprintln(w, h.Error)
+	}
+}
+
+func (h HealResult) IsExit() bool {
+	return false
+}
+
+func Heal(s Shell, cmd *parser.Command) Result {
+	if len(cmd.Args) == 0 {
+		return ErrorResult{Err: "usage: .heal <doc_id>"}
+	}
+
+	// Parse doc_id
+	var docID uint64
+	if _, err := fmt.Sscanf(cmd.Args[0], "%d", &docID); err != nil {
+		return ErrorResult{Err: fmt.Sprintf("invalid doc_id: %s", cmd.Args[0])}
+	}
+
+	// TODO: Implement IPC protocol support for healing
+	// For now, return not implemented
+	return ErrorResult{Err: "healing not yet implemented in IPC protocol"}
+}
+
+type HealAllResult struct {
+	HealedCount int
+	Error       string
+}
+
+func (h HealAllResult) Print(w io.Writer) {
+	if h.Error != "" {
+		fmt.Fprintln(w, "ERROR")
+		fmt.Fprintln(w, h.Error)
+	} else {
+		fmt.Fprintln(w, "OK")
+		fmt.Fprintf(w, "healed_count=%d\n", h.HealedCount)
+	}
+}
+
+func (h HealAllResult) IsExit() bool {
+	return false
+}
+
+func HealAll(s Shell) Result {
+	// TODO: Implement IPC protocol support for healing
+	// For now, return not implemented
+	return HealAllResult{Error: "healing not yet implemented in IPC protocol"}
+}
+
+type HealStatsResult struct {
+	TotalScans         uint64
+	DocumentsHealed    uint64
+	DocumentsCorrupted uint64
+	LastScanTime       string
+	LastHealingTime    string
+	Error              string
+}
+
+func (h HealStatsResult) Print(w io.Writer) {
+	if h.Error != "" {
+		fmt.Fprintln(w, "ERROR")
+		fmt.Fprintln(w, h.Error)
+	} else {
+		fmt.Fprintln(w, "OK")
+		fmt.Fprintf(w, "total_scans=%d\n", h.TotalScans)
+		fmt.Fprintf(w, "documents_healed=%d\n", h.DocumentsHealed)
+		fmt.Fprintf(w, "documents_corrupted=%d\n", h.DocumentsCorrupted)
+		fmt.Fprintf(w, "last_scan_time=%s\n", h.LastScanTime)
+		fmt.Fprintf(w, "last_healing_time=%s\n", h.LastHealingTime)
+	}
+}
+
+func (h HealStatsResult) IsExit() bool {
+	return false
+}
+
+func HealStats(s Shell) Result {
+	// TODO: Implement IPC protocol support for healing stats
+	// For now, return not implemented
+	return HealStatsResult{Error: "healing stats not yet implemented in IPC protocol"}
 }

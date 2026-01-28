@@ -65,20 +65,24 @@ type LogicalDB struct {
 	txnsCommitted  uint64                 // Count of committed transactions
 	lastCompaction time.Time              // Timestamp of last compaction
 	checkpointMgr  *wal.CheckpointManager // Checkpoint management for bounded recovery
+	errorTracker   *errors.ErrorTracker   // Error tracking for observability
+	healingService *HealingService        // Automatic document healing service
+	walTrimmer     *wal.Trimmer           // WAL segment trimming
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
 	return &LogicalDB{
-		dbID:      dbID,
-		dbName:    dbName,
-		index:     NewIndex(),
-		mvcc:      NewMVCC(),
-		txManager: NewTransactionManager(NewMVCC()),
-		memory:    memCaps,
-		pool:      pool,
-		cfg:       cfg,
-		logger:    log,
-		closed:    false,
+		dbID:         dbID,
+		dbName:       dbName,
+		index:        NewIndex(),
+		mvcc:         NewMVCC(),
+		txManager:    NewTransactionManager(NewMVCC()),
+		memory:       memCaps,
+		pool:         pool,
+		cfg:          cfg,
+		logger:       log,
+		closed:       false,
+		errorTracker: errors.NewErrorTracker(),
 	}
 }
 
@@ -138,12 +142,44 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	)
 	db.wal.SetCheckpointManager(db.checkpointMgr)
 
+	// Initialize WAL trimmer if enabled
+	if db.cfg.WAL.TrimAfterCheckpoint {
+		db.walTrimmer = wal.NewTrimmer(walDir, db.dbName, db.logger)
+	}
+
 	if err := db.replayWAL(); err != nil {
 		db.logger.Warn("Failed to replay WAL: %v", err)
 	}
 
+	// Start healing service if enabled
+	if db.cfg.Healing.Enabled {
+		db.healingService = NewHealingService(db, &db.cfg.Healing, db.logger)
+		db.healingService.Start()
+	}
+
 	db.logger.Info("Opened database: %s (id=%d)", db.dbName, db.dbID)
 	return nil
+}
+
+// maybeCreateCheckpointAndTrim creates a checkpoint if needed and trims old WAL segments.
+func (db *LogicalDB) maybeCreateCheckpointAndTrim(txID uint64) {
+	if db.checkpointMgr == nil || !db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
+		return
+	}
+
+	if err := db.wal.WriteCheckpoint(txID); err != nil {
+		db.logger.Warn("Failed to write checkpoint: %v", err)
+		// Don't fail the operation if checkpoint fails
+		return
+	}
+
+	// Trim old WAL segments after checkpoint
+	if db.walTrimmer != nil && db.cfg.WAL.TrimAfterCheckpoint {
+		if err := db.walTrimmer.TrimSegmentsBeforeCheckpoint(txID, db.cfg.WAL.KeepSegments); err != nil {
+			db.logger.Warn("Failed to trim WAL segments: %v", err)
+			// Don't fail the operation if trimming fails
+		}
+	}
 }
 
 func (db *LogicalDB) Close() error {
@@ -152,6 +188,12 @@ func (db *LogicalDB) Close() error {
 
 	if db.closed {
 		return nil
+	}
+
+	// Stop healing service
+	if db.healingService != nil {
+		db.healingService.Stop()
+		db.healingService = nil
 	}
 
 	if db.wal != nil {
@@ -207,6 +249,9 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	// Phase 1: write WAL record for the operation.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpCreate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
@@ -214,6 +259,9 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	// make the new version visible in the index.
 	if err := db.wal.WriteCommitMarker(txID); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL commit marker: %w", err)
 	}
 
@@ -221,30 +269,34 @@ func (db *LogicalDB) Create(docID uint64, payload []byte) error {
 	db.index.Set(newVersion)
 
 	// Check if checkpoint should be created after commit
-	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
-		if err := db.wal.WriteCheckpoint(txID); err != nil {
-			db.logger.Warn("Failed to write checkpoint: %v", err)
-			// Don't fail the operation if checkpoint fails
-		}
-	}
+	db.maybeCreateCheckpointAndTrim(txID)
 
 	return nil
 }
 
 func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
 	db.mu.RLock()
-	defer db.mu.RUnlock()
 
 	if db.closed {
+		db.mu.RUnlock()
 		return nil, ErrDBNotOpen
 	}
 
 	version, exists := db.index.Get(docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
+		db.mu.RUnlock()
 		return nil, ErrDocNotFound
 	}
 
-	return db.dataFile.Read(version.Offset, version.Length)
+	data, err := db.dataFile.Read(version.Offset, version.Length)
+	db.mu.RUnlock()
+
+	// Trigger healing on corruption detection
+	if err != nil && db.healingService != nil {
+		db.healingService.HealOnCorruption(docID)
+	}
+
+	return data, err
 }
 
 func (db *LogicalDB) Update(docID uint64, payload []byte) error {
@@ -285,6 +337,9 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	// Phase 1: write WAL record for the update.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpUpdate, payload); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
@@ -292,6 +347,9 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	// make the updated version visible in the index.
 	if err := db.wal.WriteCommitMarker(txID); err != nil {
 		db.memory.Free(db.dbID, memoryNeeded)
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL commit marker: %w", err)
 	}
 
@@ -302,12 +360,7 @@ func (db *LogicalDB) Update(docID uint64, payload []byte) error {
 	}
 
 	// Check if checkpoint should be created after commit
-	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
-		if err := db.wal.WriteCheckpoint(txID); err != nil {
-			db.logger.Warn("Failed to write checkpoint: %v", err)
-			// Don't fail the operation if checkpoint fails
-		}
-	}
+	db.maybeCreateCheckpointAndTrim(txID)
 
 	return nil
 }
@@ -330,12 +383,18 @@ func (db *LogicalDB) Delete(docID uint64) error {
 
 	// Phase 1: write WAL record for the delete.
 	if err := db.wal.Write(txID, db.dbID, docID, types.OpDelete, nil); err != nil {
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
 
 	// Phase 2: write commit marker. Only after this succeeds do we
 	// make the delete visible in the index.
 	if err := db.wal.WriteCommitMarker(txID); err != nil {
+		classifier := errors.NewClassifier()
+		category := classifier.Classify(err)
+		db.errorTracker.RecordError(err, category)
 		return fmt.Errorf("failed to write WAL commit marker: %w", err)
 	}
 
@@ -346,12 +405,7 @@ func (db *LogicalDB) Delete(docID uint64) error {
 	}
 
 	// Check if checkpoint should be created after commit
-	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
-		if err := db.wal.WriteCheckpoint(txID); err != nil {
-			db.logger.Warn("Failed to write checkpoint: %v", err)
-			// Don't fail the operation if checkpoint fails
-		}
-	}
+	db.maybeCreateCheckpointAndTrim(txID)
 
 	return nil
 }
@@ -420,12 +474,7 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 	}
 
 	// Check if checkpoint should be created after transaction commit
-	if db.checkpointMgr != nil && db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
-		if err := db.wal.WriteCheckpoint(tx.ID); err != nil {
-			db.logger.Warn("Failed to write checkpoint: %v", err)
-			// Don't fail the operation if checkpoint fails
-		}
-	}
+	db.maybeCreateCheckpointAndTrim(tx.ID)
 
 	return nil
 }

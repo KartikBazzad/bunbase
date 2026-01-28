@@ -28,6 +28,9 @@ type Writer struct {
 	rotator       *Rotator
 	isClosed      bool
 	checkpointMgr *CheckpointManager
+	retryCtrl     *errors.RetryController
+	classifier    *errors.Classifier
+	errorTracker  *errors.ErrorTracker
 }
 
 // NewWriter creates a new WAL writer for a specific database.
@@ -37,12 +40,15 @@ type Writer struct {
 //   - >0 triggers rotation once the WAL reaches or exceeds this size (bytes)
 func NewWriter(path string, dbID uint64, maxSize uint64, fsync bool, log *logger.Logger) *Writer {
 	return &Writer{
-		path:    path,
-		dbID:    dbID,
-		maxSize: maxSize,
-		fsync:   fsync,
-		logger:  log,
-		rotator: NewRotator(path, maxSize, fsync, log),
+		path:         path,
+		dbID:         dbID,
+		maxSize:      maxSize,
+		fsync:        fsync,
+		logger:       log,
+		rotator:      NewRotator(path, maxSize, fsync, log),
+		retryCtrl:    errors.NewRetryController(),
+		classifier:   errors.NewClassifier(),
+		errorTracker: errors.NewErrorTracker(),
 	}
 }
 
@@ -78,45 +84,60 @@ func getWalSize(file *os.File) uint64 {
 //
 // The on-disk format is defined in format.go and ondisk_format.md.
 func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, payload []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	return w.retryCtrl.Retry(func() error {
+		w.mu.Lock()
+		defer w.mu.Unlock()
 
-	if w.file == nil {
-		return errors.ErrFileWrite
-	}
-
-	record, err := EncodeRecord(txID, dbID, docID, opType, payload)
-	if err != nil {
-		return err
-	}
-
-	if _, err := w.file.Write(record); err != nil {
-		return errors.ErrFileWrite
-	}
-
-	w.size += uint64(len(record))
-
-	if w.fsync {
-		if err := w.file.Sync(); err != nil {
-			return errors.ErrFileSync
-		}
-	}
-
-	// Perform rotation if enabled and threshold reached.
-	if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
-		if err := w.rotateLocked(); err != nil {
+		if w.file == nil {
+			err := errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
 			return err
 		}
-	}
 
-	// Check if checkpoint should be created (after rotation check)
-	if w.checkpointMgr != nil && w.checkpointMgr.ShouldCreateCheckpoint(w.size) {
-		// Note: Checkpoint creation is handled by the caller (core.go)
-		// after commit markers are written, to ensure checkpoint includes
-		// only committed transactions.
-	}
+		record, err := EncodeRecord(txID, dbID, docID, opType, payload)
+		if err != nil {
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
 
-	return nil
+		if _, err := w.file.Write(record); err != nil {
+			err = errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		w.size += uint64(len(record))
+
+		if w.fsync {
+			if err := w.file.Sync(); err != nil {
+				err = errors.ErrFileSync
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+		}
+
+		// Perform rotation if enabled and threshold reached.
+		if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
+			if err := w.rotateLocked(); err != nil {
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+		}
+
+		// Check if checkpoint should be created (after rotation check)
+		if w.checkpointMgr != nil && w.checkpointMgr.ShouldCreateCheckpoint(w.size) {
+			// Note: Checkpoint creation is handled by the caller (core.go)
+			// after commit markers are written, to ensure checkpoint includes
+			// only committed transactions.
+		}
+
+		return nil
+	}, w.classifier)
 }
 
 // WriteCommitMarker writes a transaction commit marker to WAL.
@@ -126,41 +147,56 @@ func (w *Writer) Write(txID, dbID, docID uint64, opType types.OperationType, pay
 //   - DocID  = 0
 //   - PayloadLen = 0
 func (w *Writer) WriteCommitMarker(txID uint64) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	return w.retryCtrl.Retry(func() error {
+		w.mu.Lock()
+		defer w.mu.Unlock()
 
-	if w.file == nil {
-		return errors.ErrFileWrite
-	}
-
-	record, err := EncodeRecord(txID, w.dbID, 0, types.OpCommit, nil)
-	if err != nil {
-		return err
-	}
-
-	offset := w.size
-
-	if _, err := w.file.Write(record); err != nil {
-		return errors.ErrFileWrite
-	}
-
-	w.size += uint64(len(record))
-
-	if w.fsync {
-		if err := w.file.Sync(); err != nil {
-			return errors.ErrFileSync
-		}
-	}
-
-	w.logger.Debug("WAL commit marker written: tx_id=%d, offset=%d", txID, offset)
-
-	if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
-		if err := w.rotateLocked(); err != nil {
+		if w.file == nil {
+			err := errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
 			return err
 		}
-	}
 
-	return nil
+		record, err := EncodeRecord(txID, w.dbID, 0, types.OpCommit, nil)
+		if err != nil {
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		offset := w.size
+
+		if _, err := w.file.Write(record); err != nil {
+			err = errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		w.size += uint64(len(record))
+
+		if w.fsync {
+			if err := w.file.Sync(); err != nil {
+				err = errors.ErrFileSync
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+		}
+
+		w.logger.Debug("WAL commit marker written: tx_id=%d, offset=%d", txID, offset)
+
+		if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
+			if err := w.rotateLocked(); err != nil {
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+		}
+
+		return nil
+	}, w.classifier)
 }
 
 // WriteCheckpoint writes a checkpoint record to WAL.
@@ -172,40 +208,53 @@ func (w *Writer) WriteCommitMarker(txID uint64) error {
 //   - DocID = 0
 //   - PayloadLen = 0
 func (w *Writer) WriteCheckpoint(txID uint64) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	return w.retryCtrl.Retry(func() error {
+		w.mu.Lock()
+		defer w.mu.Unlock()
 
-	if w.file == nil {
-		return errors.ErrFileWrite
-	}
-
-	record, err := EncodeRecord(txID, w.dbID, 0, types.OpCheckpoint, nil)
-	if err != nil {
-		return err
-	}
-
-	offset := w.size
-
-	if _, err := w.file.Write(record); err != nil {
-		return errors.ErrFileWrite
-	}
-
-	w.size += uint64(len(record))
-
-	if w.fsync {
-		if err := w.file.Sync(); err != nil {
-			return errors.ErrFileSync
+		if w.file == nil {
+			err := errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
 		}
-	}
 
-	w.logger.Info("WAL checkpoint written: tx_id=%d, offset=%d, size=%d", txID, offset, w.size)
+		record, err := EncodeRecord(txID, w.dbID, 0, types.OpCheckpoint, nil)
+		if err != nil {
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
 
-	// Record checkpoint in manager if available
-	if w.checkpointMgr != nil {
-		w.checkpointMgr.RecordCheckpoint(txID, w.size)
-	}
+		offset := w.size
 
-	return nil
+		if _, err := w.file.Write(record); err != nil {
+			err = errors.ErrFileWrite
+			category := w.classifier.Classify(err)
+			w.errorTracker.RecordError(err, category)
+			return err
+		}
+
+		w.size += uint64(len(record))
+
+		if w.fsync {
+			if err := w.file.Sync(); err != nil {
+				err = errors.ErrFileSync
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+		}
+
+		w.logger.Info("WAL checkpoint written: tx_id=%d, offset=%d, size=%d", txID, offset, w.size)
+
+		// Record checkpoint in manager if available
+		if w.checkpointMgr != nil {
+			w.checkpointMgr.RecordCheckpoint(txID, w.size)
+		}
+
+		return nil
+	}, w.classifier)
 }
 
 func (w *Writer) rotateLocked() error {
