@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/functions/internal/capabilities"
-	"github.com/kartikbazzad/bunbase/functions/internal/config"
 	"github.com/kartikbazzad/bunbase/functions/internal/logger"
 	"github.com/kartikbazzad/bunbase/functions/internal/metadata"
 )

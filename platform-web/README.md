@@ -14,14 +14,16 @@ React + Vite frontend for the BunBase Platform with Tailwind CSS design system.
 
 ### Install Dependencies
 
+We use **Bun** as the default package manager and script runner for this project.
+
 ```bash
-npm install
+bun install
 ```
 
 ### Development
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 The app will be available at `http://localhost:5173`
@@ -29,13 +31,13 @@ The app will be available at `http://localhost:5173`
 ### Build
 
 ```bash
-npm run build
+bun run build
 ```
 
 ### Preview Production Build
 
 ```bash
-npm run preview
+bun run preview
 ```
 
 ## Design System
@@ -69,6 +71,7 @@ platform-web/
 ## Available Component Classes
 
 ### Buttons
+
 - `btn-primary` - Primary action button
 - `btn-secondary` - Secondary button
 - `btn-outline` - Outlined button
@@ -77,19 +80,23 @@ platform-web/
 - `btn-sm`, `btn-lg` - Size variants
 
 ### Cards
+
 - `card` - Card container
 - `card-header` - Card header section
 - `card-body` - Card content section
 - `card-footer` - Card footer section
 
 ### Badges
+
 - `badge-primary`, `badge-success`, `badge-warning`, `badge-error`, `badge-gray`
 
 ### Inputs
+
 - `input` - Standard input field
 - `input-error` - Error state input
 
 ### Other
+
 - `link` - Styled link
 - `spinner` - Loading spinner
 - `container-custom` - Responsive container
