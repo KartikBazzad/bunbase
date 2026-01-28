@@ -10,13 +10,14 @@ This directory contains historical implementation status, progress reports, and 
 
 ## DocDB Files
 
-- `IMPLEMENTATION_STATUS.md` - Current implementation status
+- `V0.2_STATUS.md` - **Current** - Version 0.2 implementation status (latest)
+- `V0.1_CURRENT_STATUS.md` - Version 0.1 status snapshot
+- `V0.1_STATUS.md` - Version 0.1 status
+- `IMPLEMENTATION_STATUS.md` - Historical implementation status
 - `IMPLEMENTATION_COMPLETE.md` - Completion report
 - `FINAL_IMPLEMENTATION_REPORT.md` - Final implementation summary
 - `PROGRESS.md` - Development progress tracking
 - `ROADMAP.md` - Future roadmap and plans
-- `V0.1_CURRENT_STATUS.md` - Version 0.1 status snapshot
-- `V0.1_STATUS.md` - Version 0.1 status
 - `README_STATUS.md` - README status updates
 - `DOCDBSH_UPDATE.md` - DocDB shell update notes
 - `DOCS_COMPLETION_SUMMARY.md` - Documentation completion summary

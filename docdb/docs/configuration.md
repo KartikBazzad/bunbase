@@ -56,6 +56,22 @@ Config{
         EnableTCP: false,              // TCP not supported in v0
         TCPPort: 0,
     },
+    Healing: HealingConfig{
+        Enabled:          true,              // Enable automatic healing
+        Interval:         1 * time.Hour,    // Periodic health scan interval
+        OnReadCorruption: true,              // Trigger healing on corruption detection
+        MaxBatchSize:     100,               // Maximum documents to heal per batch
+    },
+    WAL: WALConfig{
+        // ... existing WAL config ...
+        Checkpoint: CheckpointConfig{
+            IntervalMB:     64,    // Create checkpoint every 64 MB
+            AutoCreate:     true,  // Automatically create checkpoints
+            MaxCheckpoints: 0,     // Unlimited checkpoints
+        },
+        TrimAfterCheckpoint: true,  // Automatically trim old segments
+        KeepSegments:        2,     // Keep 2 segments before checkpoint
+    },
 }
 ```
 
@@ -72,16 +88,19 @@ Config{
 **Range:** 1 - 16384 MB (1 MB - 16 GB)
 
 **Recommended Settings:**
+
 - **Development:** 256 MB (enough for testing)
 - **Production Small:** 1 GB (1000 small documents or 100 medium)
 - **Production Large:** 4 GB (10000 small documents or 1000 medium)
 - **Stress Testing:** 8 GB+ (push memory limits)
 
 **Trade-offs:**
+
 - **Lower:** Less memory usage, faster recovery, but more OOM errors
 - **Higher:** More documents in memory, but slower recovery and higher OS pressure
 
 **Example:**
+
 ```go
 cfg.Memory.GlobalCapacityMB = 2048 // 2 GB total
 ```
@@ -95,15 +114,18 @@ cfg.Memory.GlobalCapacityMB = 2048 // 2 GB total
 **Range:** 1 - GlobalCapacityMB
 
 **Recommended Settings:**
+
 - **Single Database:** Set equal to GlobalCapacityMB
 - **Few Databases (< 10):** 1/4 of GlobalCapacityMB
 - **Many Databases (10-100):** 1/20 of GlobalCapacityMB
 
 **Trade-offs:**
+
 - **Lower:** Prevents one DB from using all memory, fair sharing
 - **Higher:** Allows large documents in single DB, but risk OOM
 
 **Example:**
+
 ```go
 // Allow each database up to 512 MB
 cfg.Memory.PerDBLimitMB = 512
@@ -116,15 +138,18 @@ cfg.Memory.PerDBLimitMB = 512
 **Default:** `[1024, 4096, 16384, 65536, 262144]` (1KB, 4KB, 16KB, 64KB, 256KB)
 
 **Recommended Settings:**
+
 - **Default:** Works well for most use cases
 - **Small Documents:** Focus on smaller sizes `[512, 1024, 2048, 4096]`
 - **Large Documents:** Add larger sizes `[..., 524288, 1048576]`
 
 **Trade-offs:**
+
 - **Smaller:** Less memory waste, more allocations
 - **Larger:** Fewer allocations, but more memory overhead
 
 **Example:**
+
 ```go
 // Optimize for medium-sized documents (4-32 KB)
 cfg.Memory.BufferSizes = []uint64{4096, 8192, 16384, 32768}
@@ -141,11 +166,13 @@ cfg.Memory.BufferSizes = []uint64{4096, 8192, 16384, 32768}
 **Default:** `"./data/wal"`
 
 **Recommended Settings:**
+
 - **Same Volume:** Keep WAL and data files on same storage volume
 - **Fast Storage:** Use SSD if available
 - **Separate Partition:** Optional - can improve performance
 
 **Example:**
+
 ```go
 cfg.WAL.Dir = "/fastssd/docdb/wal"
 ```
@@ -159,17 +186,20 @@ cfg.WAL.Dir = "/fastssd/docdb/wal"
 **Range:** 10 - 10240 MB (10 MB - 10 GB)
 
 **Recommended Settings:**
+
 - **Development:** 10 MB (fast rotation)
 - **Production:** 100 MB (balance rotation speed vs overhead)
 - **High Write Volume:** 500 MB (reduce rotation frequency)
 
 **Trade-offs:**
+
 - **Lower:** More frequent rotation, faster recovery
 - **Higher:** Less rotation overhead, but slower recovery
 
 **Note:** v0 doesn't automatically rotate WAL, this is just a warning.
 
 **Example:**
+
 ```go
 cfg.WAL.MaxFileSizeMB = 500 // 500 MB before warning
 ```
@@ -181,22 +211,160 @@ cfg.WAL.MaxFileSizeMB = 500 // 500 MB before warning
 **Default:** `true`
 
 **Options:**
+
 - `true`: Maximum durability, slower writes (fsync on every write)
 - `false`: Faster writes, risk of losing last ~100ms data on crash
 
 **Recommended Settings:**
+
 - **Production:** `true` (durability is critical)
 - **Testing/Benchmarks:** `false` (performance is critical)
 - **Caching Layer:** `false` if you have external caching
 
 **Trade-offs:**
+
 - **true:** Durable but slow (100-1000x slower than buffered writes)
 - **false:** Fast but less durable (risk losing last ~100ms data)
 
 **Example:**
+
 ```go
 // Disable fsync for maximum performance (not recommended for production)
 cfg.WAL.FsyncOnCommit = false
+```
+
+### Checkpoint Configuration
+
+**Description:** Controls checkpoint creation for bounded recovery time.
+
+**Default Configuration:**
+
+```go
+Checkpoint: CheckpointConfig{
+    IntervalMB:     64,    // Create checkpoint every 64 MB
+    AutoCreate:     true,  // Automatically create checkpoints
+    MaxCheckpoints: 0,     // Unlimited checkpoints (0 = unlimited)
+}
+```
+
+#### IntervalMB
+
+**Description:** WAL size threshold (in MB) that triggers checkpoint creation.
+
+**Default:** `64` MB
+
+**Range:** 1 - 10240 MB
+
+**Recommended Settings:**
+
+- **Development:** 1-10 MB (frequent checkpoints, faster recovery)
+- **Production:** 64 MB (balanced recovery time vs overhead)
+- **High Write Volume:** 128-256 MB (less frequent checkpoints)
+
+**Trade-offs:**
+
+- **Lower:** Faster recovery (less WAL to replay), more checkpoint overhead
+- **Higher:** Slower recovery (more WAL to replay), less checkpoint overhead
+
+**Example:**
+
+```go
+cfg.WAL.Checkpoint.IntervalMB = 128 // Checkpoint every 128 MB
+```
+
+#### AutoCreate
+
+**Description:** Whether to automatically create checkpoints at the configured interval.
+
+**Default:** `true`
+
+**Options:**
+
+- `true`: Checkpoints created automatically during normal operation
+- `false`: Checkpoints must be created manually (not recommended)
+
+**Example:**
+
+```go
+cfg.WAL.Checkpoint.AutoCreate = true
+```
+
+#### MaxCheckpoints
+
+**Description:** Maximum number of checkpoints to keep (0 = unlimited).
+
+**Default:** `0` (unlimited)
+
+**Range:** 0 - 1000
+
+**Recommended Settings:**
+
+- **Development:** 0 (unlimited, simpler)
+- **Production:** 0-10 (keep recent checkpoints for recovery)
+
+**Note:** Old checkpoints are automatically cleaned up when limit is reached.
+
+**Example:**
+
+```go
+cfg.WAL.Checkpoint.MaxCheckpoints = 5 // Keep last 5 checkpoints
+```
+
+### WAL Trimming Configuration
+
+**Description:** Controls automatic cleanup of old WAL segments after checkpoints.
+
+#### TrimAfterCheckpoint
+
+**Description:** Whether to automatically trim WAL segments that are before the last checkpoint.
+
+**Default:** `true`
+
+**Options:**
+
+- `true`: Old segments trimmed automatically after checkpoint
+- `false`: WAL segments persist until manual cleanup
+
+**Recommended Settings:**
+
+- **Production:** `true` (prevents unbounded disk usage)
+- **Debugging:** `false` (preserve WAL history for analysis)
+
+**Trade-offs:**
+
+- **true:** Reduces disk usage, but requires checkpoint coordination
+- **false:** Preserves full WAL history, but disk usage grows unbounded
+
+**Example:**
+
+```go
+cfg.WAL.TrimAfterCheckpoint = true
+```
+
+#### KeepSegments
+
+**Description:** Number of WAL segments to keep before the checkpoint (safety margin).
+
+**Default:** `2`
+
+**Range:** 0 - 100
+
+**Recommended Settings:**
+
+- **Production:** 2-5 (safety margin for recovery)
+- **Development:** 1 (minimal safety margin)
+
+**Trade-offs:**
+
+- **Lower:** Less disk usage, but smaller safety margin
+- **Higher:** More disk usage, but larger safety margin for recovery
+
+**Note:** The active WAL segment is always kept, regardless of this setting.
+
+**Example:**
+
+```go
+cfg.WAL.KeepSegments = 3 // Keep 3 segments before checkpoint
 ```
 
 ---
@@ -212,15 +380,18 @@ cfg.WAL.FsyncOnCommit = false
 **Range:** 10 - 10000
 
 **Recommended Settings:**
+
 - **Low Latency:** 10 (small queues, fast backpressure)
 - **Balanced:** 100 (default)
 - **High Throughput:** 1000 (large queues, accept bursts)
 
 **Trade-offs:**
+
 - **Lower:** Faster backpressure signaling, but more queue-full errors
 - **Higher:** Fewer queue-full errors, but higher tail latency
 
 **Example:**
+
 ```go
 cfg.Sched.QueueDepth = 1000 // Accept bursts of 1000 requests
 ```
@@ -232,14 +403,17 @@ cfg.Sched.QueueDepth = 1000 // Accept bursts of 1000 requests
 **Default:** `true`
 
 **Options:**
+
 - `true`: Fair round-robin across all databases
 - `false`: Process databases in order they're created (not recommended)
 
 **Recommended Settings:**
+
 - **Production:** `true` (fairness is important)
 - **Testing:** `false` (deterministic ordering for reproducibility)
 
 **Example:**
+
 ```go
 cfg.Sched.RoundRobinDBs = false // Deterministic ordering (testing only)
 ```
@@ -257,15 +431,18 @@ cfg.Sched.RoundRobinDBs = false // Deterministic ordering (testing only)
 **Range:** 10 - 10240 MB
 
 **Recommended Settings:**
+
 - **Small Databases:** 10 MB (frequent compaction, smaller files)
 - **Balanced:** 100 MB (default)
 - **Large Databases:** 500 MB (reduce compaction overhead)
 
 **Trade-offs:**
+
 - **Lower:** More frequent compaction, smaller data files
 - **Higher:** Less compaction overhead, but larger data files
 
 **Example:**
+
 ```go
 cfg.DB.CompactionSizeThresholdMB = 500 // Compact at 500 MB
 ```
@@ -279,15 +456,18 @@ cfg.DB.CompactionSizeThresholdMB = 500 // Compact at 500 MB
 **Range:** 0.1 - 0.9 (10% - 90%)
 
 **Recommended Settings:**
+
 - **High Delete Volume:** 0.2 (compact when 20% are tombstones)
 - **Balanced:** 0.3 (default)
 - **Low Delete Volume:** 0.7 (compact only when many tombstones)
 
 **Trade-offs:**
+
 - **Lower:** Frequent compaction, less dead data on disk
 - **Higher:** Less compaction overhead, but more wasted space
 
 **Example:**
+
 ```go
 cfg.DB.CompactionTombstoneRatio = 0.2 // Compact at 20% tombstones
 ```
@@ -301,15 +481,18 @@ cfg.DB.CompactionTombstoneRatio = 0.2 // Compact at 20% tombstones
 **Range:** 1 - 10000
 
 **Recommended Settings:**
+
 - **Small Applications:** 10 (few databases)
 - **Balanced:** 100 (default)
 - **Large Applications:** 1000 (many databases)
 
 **Trade-offs:**
+
 - **Lower:** Fewer file descriptors, faster startup
 - **Higher:** More concurrent databases, more resource usage
 
 **Example:**
+
 ```go
 cfg.DB.MaxOpenDBs = 1000 // Allow up to 1000 databases
 ```
@@ -320,18 +503,21 @@ cfg.DB.MaxOpenDBs = 1000 // Allow up to 1000 databases
 
 **Default:** `5 * time.Minute` (5 minutes)
 
-**Range:** 1 * time.Second - 1 * time.Hour
+**Range:** 1 _ time.Second - 1 _ time.Hour
 
 **Recommended Settings:**
-- **Frequently Accessed Databases:** 1 * time.Hour (keep open)
-- **Infrequently Accessed:** 1 * time.Minute (close quickly)
-- **Balanced:** 5 * time.Minute (default)
+
+- **Frequently Accessed Databases:** 1 \* time.Hour (keep open)
+- **Infrequently Accessed:** 1 \* time.Minute (close quickly)
+- **Balanced:** 5 \* time.Minute (default)
 
 **Trade-offs:**
+
 - **Lower:** Faster resource cleanup, more reopens
 - **Higher:** Fewer reopens, more memory usage
 
 **Example:**
+
 ```go
 cfg.DB.IdleTimeout = 30 * time.Minute // Keep open for 30 minutes
 ```
@@ -347,11 +533,13 @@ cfg.DB.IdleTimeout = 30 * time.Minute // Keep open for 30 minutes
 **Default:** `"/tmp/docdb.sock"`
 
 **Recommended Settings:**
+
 - **Linux/Mac:** `/tmp/docdb.sock` (default)
 - **Production:** `/var/run/docdb.sock` (persistent across reboots)
 - **Development:** `/tmp/docdb-dev.sock` (isolated)
 
 **Example:**
+
 ```go
 cfg.IPC.SocketPath = "/var/run/docdb.sock"
 ```
@@ -366,6 +554,122 @@ cfg.IPC.SocketPath = "/var/run/docdb.sock"
 
 ---
 
+## Healing Configuration
+
+**Description:** Controls automatic document healing and corruption detection.
+
+**Default Configuration:**
+
+```go
+Healing: HealingConfig{
+    Enabled:          true,              // Enable automatic healing
+    Interval:         1 * time.Hour,    // Periodic health scan interval
+    OnReadCorruption: true,              // Trigger healing on corruption detection during read
+    MaxBatchSize:     100,               // Maximum documents to heal in one batch
+}
+```
+
+### Enabled
+
+**Description:** Whether to enable the automatic healing service.
+
+**Default:** `true`
+
+**Options:**
+
+- `true`: Background healing service runs periodic health scans
+- `false`: Healing service disabled (manual healing still available)
+
+**Recommended Settings:**
+
+- **Production:** `true` (automatic corruption recovery)
+- **Development:** `false` (manual control, less overhead)
+
+**Example:**
+
+```go
+cfg.Healing.Enabled = true
+```
+
+### Interval
+
+**Description:** Time interval between periodic health scans.
+
+**Default:** `1 * time.Hour`
+
+**Range:** 1 _ time.Minute - 24 _ time.Hour
+
+**Recommended Settings:**
+
+- **Production:** 1 hour (balanced detection vs overhead)
+- **High-Value Data:** 15-30 minutes (faster detection)
+- **Low-Priority:** 6-24 hours (less overhead)
+
+**Trade-offs:**
+
+- **Lower:** Faster corruption detection, more CPU overhead
+- **Higher:** Slower detection, less CPU overhead
+
+**Example:**
+
+```go
+cfg.Healing.Interval = 30 * time.Minute // Scan every 30 minutes
+```
+
+### OnReadCorruption
+
+**Description:** Whether to trigger healing immediately when corruption is detected during read operations.
+
+**Default:** `true`
+
+**Options:**
+
+- `true`: Heal document immediately on corruption detection
+- `false`: Only heal during periodic scans
+
+**Recommended Settings:**
+
+- **Production:** `true` (immediate recovery)
+- **High-Load:** `false` (defer to periodic scans to avoid read latency)
+
+**Trade-offs:**
+
+- **true:** Immediate recovery, but may add latency to read operations
+- **false:** No read latency impact, but corruption persists until next scan
+
+**Example:**
+
+```go
+cfg.Healing.OnReadCorruption = true
+```
+
+### MaxBatchSize
+
+**Description:** Maximum number of documents to heal in a single batch operation.
+
+**Default:** `100`
+
+**Range:** 1 - 10000
+
+**Recommended Settings:**
+
+- **Small Databases:** 10-50 (smaller batches)
+- **Large Databases:** 100-500 (larger batches for efficiency)
+- **Memory-Constrained:** 10-50 (lower memory usage)
+
+**Trade-offs:**
+
+- **Lower:** Less memory usage, more operations
+- **Higher:** More efficient, but higher memory usage
+
+**Example:**
+
+```go
+cfg.Healing.MaxBatchSize = 200 // Heal up to 200 documents per batch
+```
+
+---
+
 ## Command-Line Flags
 
 ### Available Flags
@@ -374,22 +678,23 @@ cfg.IPC.SocketPath = "/var/run/docdb.sock"
 ./docdb --help
 ```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--data-dir` | Directory for data files | ./data |
-| `--socket` | Unix socket path | /tmp/docdb.sock |
-| `--memory-global` | Global memory limit in MB | 1024 |
-| `--memory-per-db` | Per-database memory limit in MB | 256 |
-| `--wal-dir` | Directory for WAL files | ./data/wal |
-| `--wal-fsync` | Enable fsync on WAL writes | true |
-| `--wal-max-size` | WAL max file size in MB | 100 |
-| `--queue-depth` | Request queue depth | 100 |
-| `--compact-size` | Compaction size threshold in MB | 100 |
-| `--compact-ratio` | Compaction tombstone ratio | 0.3 |
+| Flag              | Description                     | Default         |
+| ----------------- | ------------------------------- | --------------- |
+| `--data-dir`      | Directory for data files        | ./data          |
+| `--socket`        | Unix socket path                | /tmp/docdb.sock |
+| `--memory-global` | Global memory limit in MB       | 1024            |
+| `--memory-per-db` | Per-database memory limit in MB | 256             |
+| `--wal-dir`       | Directory for WAL files         | ./data/wal      |
+| `--wal-fsync`     | Enable fsync on WAL writes      | true            |
+| `--wal-max-size`  | WAL max file size in MB         | 100             |
+| `--queue-depth`   | Request queue depth             | 100             |
+| `--compact-size`  | Compaction size threshold in MB | 100             |
+| `--compact-ratio` | Compaction tombstone ratio      | 0.3             |
 
 ### Examples
 
 **Development:**
+
 ```bash
 ./docdb \
   --data-dir ./dev-data \
@@ -399,6 +704,7 @@ cfg.IPC.SocketPath = "/var/run/docdb.sock"
 ```
 
 **Production:**
+
 ```bash
 ./docdb \
   --data-dir /var/lib/docdb \
@@ -410,6 +716,7 @@ cfg.IPC.SocketPath = "/var/run/docdb.sock"
 ```
 
 **Benchmarks:**
+
 ```bash
 ./docdb \
   --data-dir /tmp/docdb-bench \
@@ -513,6 +820,7 @@ cfg.DB.CompactionTombstoneRatio = 0.5
 ### 1. Memory Tuning
 
 **Monitor Usage:**
+
 ```go
 stats, _ := cli.Stats()
 usedPercent := float64(stats.MemoryUsed) / float64(stats.MemoryCapacity) * 100
@@ -523,6 +831,7 @@ if usedPercent > 80 {
 ```
 
 **Tune for Workload:**
+
 - **Many Small Documents:** Increase buffer pool small sizes
 - **Few Large Documents:** Increase PerDBLimitMB
 - **High Concurrency:** Increase GlobalCapacityMB
@@ -530,6 +839,7 @@ if usedPercent > 80 {
 ### 2. WAL Tuning
 
 **Durability vs Performance:**
+
 ```go
 // Maximum durability (slowest)
 cfg.WAL.FsyncOnCommit = true
@@ -542,6 +852,7 @@ cfg.WAL.FsyncOnCommit = true  // But mount with noatime
 ```
 
 **Rotation Frequency:**
+
 ```go
 // Frequent rotation (fast recovery)
 cfg.WAL.MaxFileSizeMB = 10
@@ -553,6 +864,7 @@ cfg.WAL.MaxFileSizeMB = 1000
 ### 3. Scheduler Tuning
 
 **Latency vs Throughput:**
+
 ```go
 // Low latency (small queues)
 cfg.Sched.QueueDepth = 10
@@ -567,6 +879,7 @@ cfg.Sched.QueueDepth = 100
 ### 4. Database Tuning
 
 **Compaction Strategy:**
+
 ```go
 // Aggressive compaction (more CPU, less disk)
 cfg.DB.CompactionSizeThresholdMB = 10
@@ -578,6 +891,7 @@ cfg.DB.CompactionTombstoneRatio = 0.7
 ```
 
 **Idle Timeout:**
+
 ```go
 // Close quickly (save resources)
 cfg.DB.IdleTimeout = 1 * time.Minute
@@ -589,11 +903,13 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 ### 5. Storage Tuning
 
 **File System:**
+
 - Use SSD for data directory if possible
 - Mount with `noatime` (no access time updates)
 - Use ext4, XFS, or ZFS (journaling file systems)
 
 **Directory Layout:**
+
 ```
 /fastssd/docdb/
 ├── data/           # Data files
@@ -609,6 +925,7 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 **Symptom:** "memory limit exceeded" errors
 
 **Solutions:**
+
 1. Increase `Memory.GlobalCapacityMB`
 2. Increase `Memory.PerDBLimitMB`
 3. Reduce document size
@@ -619,6 +936,7 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 **Symptom:** Slow writes
 
 **Solutions:**
+
 1. Set `WAL.FsyncOnCommit = false` (testing only)
 2. Move WAL to faster storage
 3. Increase `WAL.MaxFileSizeMB` (less rotation)
@@ -626,6 +944,7 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 **Symptom:** Slow recovery
 
 **Solutions:**
+
 1. Decrease `WAL.MaxFileSizeMB` (more frequent rotation)
 2. Enable `WAL.FsyncOnCommit` (faster recovery with less corruption)
 3. Reduce number of WAL records (batch operations)
@@ -635,6 +954,7 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 **Symptom:** High latency
 
 **Solutions:**
+
 1. Reduce `Sched.QueueDepth` (faster backpressure)
 2. Increase `Memory.GlobalCapacityMB` (more cache)
 3. Use batch operations
@@ -643,6 +963,7 @@ cfg.DB.IdleTimeout = 30 * time.Minute
 **Symptom:** Low throughput
 
 **Solutions:**
+
 1. Increase `Sched.QueueDepth` (accept bursts)
 2. Disable `WAL.FsyncOnCommit` (testing only)
 3. Increase buffer pool sizes

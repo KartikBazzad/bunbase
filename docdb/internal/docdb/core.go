@@ -788,6 +788,13 @@ func (db *LogicalDB) Stats() *types.Stats {
 	}
 }
 
+// HealingService returns the healing service for this database.
+func (db *LogicalDB) HealingService() *HealingService {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.healingService
+}
+
 func (db *LogicalDB) replayWAL() error {
 	walBasePath := filepath.Join(db.walDir, fmt.Sprintf("%s.wal", db.dbName))
 	if _, err := os.Stat(walBasePath); os.IsNotExist(err) {

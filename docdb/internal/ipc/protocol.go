@@ -36,6 +36,10 @@ const (
 	CmdDeleteCollection = 6
 	CmdListCollections  = 7
 	CmdListDBs          = 8
+	CmdHeal             = 9
+	CmdHealAll          = 10
+	CmdHealStats        = 11
+	CmdMetrics          = 12
 )
 
 type RequestFrame struct {

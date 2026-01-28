@@ -377,6 +377,105 @@ func (c *Client) ListDBs() ([]*types.DBInfo, error) {
 	return dbInfos, nil
 }
 
+// HealDocument heals a specific document.
+func (c *Client) HealDocument(dbID uint64, collection string, docID uint64) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdHeal,
+		DBID:      dbID,
+		OpCount:   1,
+		Ops: []ipc.Operation{
+			{
+				OpType:     types.OpRead, // Reuse OpRead as placeholder
+				Collection: collection,
+				DocID:      docID,
+				Payload:    nil,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return err
+	}
+
+	if resp.Status != types.StatusOK {
+		return fmt.Errorf("%s", string(resp.Data))
+	}
+
+	return nil
+}
+
+// HealAll triggers a full database healing scan.
+func (c *Client) HealAll(dbID uint64) ([]uint64, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdHealAll,
+		DBID:      dbID,
+		OpCount:   0,
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != types.StatusOK {
+		return nil, fmt.Errorf("%s", string(resp.Data))
+	}
+
+	var healed []uint64
+	if err := json.Unmarshal(resp.Data, &healed); err != nil {
+		return nil, fmt.Errorf("failed to parse healed documents: %w", err)
+	}
+
+	return healed, nil
+}
+
+// HealStats returns healing statistics for a database.
+func (c *Client) HealStats(dbID uint64) (map[string]interface{}, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	reqID := c.nextRequestID()
+
+	frame := &ipc.RequestFrame{
+		RequestID: reqID,
+		Command:   ipc.CmdHealStats,
+		DBID:      dbID,
+		OpCount:   0,
+	}
+
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != types.StatusOK {
+		return nil, fmt.Errorf("%s", string(resp.Data))
+	}
+
+	var stats map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &stats); err != nil {
+		return nil, fmt.Errorf("failed to parse healing stats: %w", err)
+	}
+
+	return stats, nil
+}
+
 func (c *Client) parseStats(data []byte) (*types.Stats, error) {
 	if len(data) != 40 {
 		return nil, ErrInvalidResponse

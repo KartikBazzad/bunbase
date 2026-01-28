@@ -18,6 +18,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ## Non-Goals (Explicitly Out of Scope)
 
 This project will NOT support:
+
 - SQL
 - Joins
 - Arbitrary queries
@@ -31,11 +32,12 @@ If any of these appear, **the project scope has failed**.
 
 ## Current Status
 
-**Version**: v0.1 (in progress)
+**Version**: v0.2
 
-**Status**: Core functionality complete, now in hardening phase.
+**Status**: v0.2 features complete. Production-ready with automatic healing, WAL trimming, error classification, and observability.
 
 **What Works**:
+
 - ✅ ACID transactions with WAL
 - ✅ Sharded in-memory index
 - ✅ MVCC-lite snapshot reads
@@ -45,16 +47,25 @@ If any of these appear, **the project scope has failed**.
 - ✅ Unix socket IPC
 - ✅ Interactive shell
 - ✅ Go and TypeScript clients
+- ✅ **v0.2:** Collections support (create, delete, list)
+- ✅ **v0.2:** Path-based updates (patch operations)
+- ✅ **v0.2:** Automatic document healing
+- ✅ **v0.2:** WAL rotation and trimming
+- ✅ **v0.2:** Checkpoint-based recovery
+- ✅ **v0.2:** Error classification and retry
+- ✅ **v0.2:** Prometheus/OpenMetrics metrics
+- ✅ **v0.2:** Enhanced observability
 
-**What's Coming (v0.1)**:
-- 🔄 JSON-only enforcement audit
-- 🔄 Frozen error surface
-- ⏳ Shell quality-of-life features
-- ⏳ Shell transcript tests
-- ⏳ WAL rotation
-- ⏳ Data file checksums
+**v0.2 Features**:
 
-**See [ROADMAP.md](ROADMAP.md) for detailed plans.**
+- ✅ Automatic document healing with background scans
+- ✅ WAL trimming after checkpoints
+- ✅ Checkpoint-based bounded recovery
+- ✅ Error classification and intelligent retry
+- ✅ Prometheus metrics export
+- ✅ Healing IPC commands (`.heal`, `.heal-all`, `.heal-stats`)
+
+**See [ROADMAP.md](docs/implementation-status/docdb/ROADMAP.md) for detailed plans.**
 
 ## Document Contract
 
@@ -114,13 +125,13 @@ import (
 
 func main() {
     cli := client.New("/tmp/docdb.sock")
-    
+
     // Open database
     dbID, err := cli.OpenDB("mydb")
     if err != nil {
         panic(err)
     }
-    
+
     // Create document (must be valid JSON)
     err = cli.Create(dbID, 1, []byte(`{"name":"Alice","age":30}`))
     if err != nil {
@@ -134,19 +145,19 @@ func main() {
     }
 
     fmt.Println(string(data)) // Output: {"name":"Alice","age":30}
-    
+
     // Update document
     err = cli.Update(dbID, 1, []byte("updated"))
     if err != nil {
         panic(err)
     }
-    
+
     // Delete document
     err = cli.Delete(dbID, 1)
     if err != nil {
         panic(err)
     }
-    
+
     // Close database
     err = cli.CloseDB(dbID)
     if err != nil {
@@ -184,7 +195,7 @@ func main() {
 | --------------- | ----------------------------------------- |
 | **DocDB Pool**  | One runtime managing many logical DBs     |
 | **Logical DB**  | Isolated document namespace (per project) |
-| **Document**    | Valid UTF-8 encoded JSON value           |
+| **Document**    | Valid UTF-8 encoded JSON value            |
 | **Transaction** | Short-lived atomic write group            |
 | **WAL**         | Global append-only write-ahead log        |
 | **MVCC-lite**   | Versioned documents, snapshot reads       |

@@ -600,6 +600,10 @@ func (h HealResult) IsExit() bool {
 }
 
 func Heal(s Shell, cmd *parser.Command) Result {
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
 	if len(cmd.Args) == 0 {
 		return ErrorResult{Err: "usage: .heal <doc_id>"}
 	}
@@ -610,9 +614,20 @@ func Heal(s Shell, cmd *parser.Command) Result {
 		return ErrorResult{Err: fmt.Sprintf("invalid doc_id: %s", cmd.Args[0])}
 	}
 
-	// TODO: Implement IPC protocol support for healing
-	// For now, return not implemented
-	return ErrorResult{Err: "healing not yet implemented in IPC protocol"}
+	collection := s.GetCollection()
+	if collection == "" {
+		collection = "default"
+	}
+
+	err := s.GetClient().HealDocument(s.GetDB(), collection, docID)
+	if err != nil {
+		return ErrorResult{Err: err.Error()}
+	}
+
+	return HealResult{
+		DocID:   docID,
+		Success: true,
+	}
 }
 
 type HealAllResult struct {
@@ -635,9 +650,19 @@ func (h HealAllResult) IsExit() bool {
 }
 
 func HealAll(s Shell) Result {
-	// TODO: Implement IPC protocol support for healing
-	// For now, return not implemented
-	return HealAllResult{Error: "healing not yet implemented in IPC protocol"}
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return HealAllResult{Error: err.Error()}
+	}
+
+	healed, err := s.GetClient().HealAll(s.GetDB())
+	if err != nil {
+		return HealAllResult{Error: err.Error()}
+	}
+
+	return HealAllResult{
+		HealedCount: len(healed),
+		Error:       "",
+	}
 }
 
 type HealStatsResult struct {
@@ -668,9 +693,37 @@ func (h HealStatsResult) IsExit() bool {
 }
 
 func HealStats(s Shell) Result {
-	// TODO: Implement IPC protocol support for healing stats
-	// For now, return not implemented
-	return HealStatsResult{Error: "healing stats not yet implemented in IPC protocol"}
+	if err := parser.ValidateDB(s.GetDB()); err != nil {
+		return HealStatsResult{Error: err.Error()}
+	}
+
+	stats, err := s.GetClient().HealStats(s.GetDB())
+	if err != nil {
+		return HealStatsResult{Error: err.Error()}
+	}
+
+	result := HealStatsResult{
+		Error: "",
+	}
+
+	// Extract stats from map
+	if val, ok := stats["TotalScans"].(float64); ok {
+		result.TotalScans = uint64(val)
+	}
+	if val, ok := stats["DocumentsHealed"].(float64); ok {
+		result.DocumentsHealed = uint64(val)
+	}
+	if val, ok := stats["DocumentsCorrupted"].(float64); ok {
+		result.DocumentsCorrupted = uint64(val)
+	}
+	if val, ok := stats["LastScanTime"].(string); ok {
+		result.LastScanTime = val
+	}
+	if val, ok := stats["LastHealingTime"].(string); ok {
+		result.LastHealingTime = val
+	}
+
+	return result
 }
 
 // Collection management commands

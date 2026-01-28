@@ -16,24 +16,26 @@
 package pool
 
 import (
+	"errors"
+
 	"github.com/kartikbazzad/docdb/internal/catalog"
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/docdb"
-	"github.com/kartikbazzad/docdb/internal/errors"
+	docdberrors "github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
 var (
-	ErrPoolStopped = errors.ErrPoolStopped
-	ErrQueueFull   = errors.ErrQueueFull
+	ErrPoolStopped = docdberrors.ErrPoolStopped
+	ErrQueueFull   = docdberrors.ErrQueueFull
 )
 
 var (
 	// Re-export for backward compatibility
-	ErrDBNotActive      = errors.ErrDBNotActive
-	ErrUnknownOperation = errors.ErrUnknownOperation
+	ErrDBNotActive      = docdberrors.ErrDBNotActive
+	ErrUnknownOperation = docdberrors.ErrUnknownOperation
 )
 
 // Request represents a database operation to be executed.
@@ -85,15 +87,17 @@ type Response struct {
 // Thread Safety: Pool operations are thread-safe.
 // Individual databases have their own locking.
 type Pool struct {
-	dbs      map[uint64]*docdb.LogicalDB // Open databases by ID
-	catalog  *catalog.Catalog            // Database metadata catalog
-	sched    *Scheduler                  // Request scheduler
-	memory   *memory.Caps                // Memory limit tracker
-	pool     *memory.BufferPool          // Buffer allocation pool
-	cfg      *config.Config              // Configuration
-	logger   *logger.Logger              // Structured logging
-	stopped  bool                        // True if pool is shutting down
-	shutdown *GracefulShutdown           // Graceful shutdown handler
+	dbs          map[uint64]*docdb.LogicalDB // Open databases by ID
+	catalog      *catalog.Catalog            // Database metadata catalog
+	sched        *Scheduler                  // Request scheduler
+	memory       *memory.Caps                // Memory limit tracker
+	pool         *memory.BufferPool          // Buffer allocation pool
+	cfg          *config.Config              // Configuration
+	logger       *logger.Logger              // Structured logging
+	stopped      bool                        // True if pool is shutting down
+	shutdown     *GracefulShutdown           // Graceful shutdown handler
+	classifier   *docdberrors.Classifier     // Error classifier
+	errorTracker *docdberrors.ErrorTracker   // Error tracker
 }
 
 // NewPool creates a new database pool.
@@ -119,14 +123,16 @@ func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	sched := NewScheduler(cfg.Sched.QueueDepth, log)
 
 	return &Pool{
-		dbs:     make(map[uint64]*docdb.LogicalDB),
-		catalog: catalog,
-		sched:   sched,
-		memory:  memCaps,
-		pool:    bufferPool,
-		cfg:     cfg,
-		logger:  log,
-		stopped: false,
+		dbs:          make(map[uint64]*docdb.LogicalDB),
+		catalog:      catalog,
+		sched:        sched,
+		memory:       memCaps,
+		pool:         bufferPool,
+		cfg:          cfg,
+		logger:       log,
+		stopped:      false,
+		classifier:   docdberrors.NewClassifier(),
+		errorTracker: docdberrors.NewErrorTracker(),
 	}
 }
 
@@ -233,7 +239,7 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 	}
 
 	if entry.Status != types.DBActive {
-		return nil, errors.ErrDBNotActive
+		return nil, docdberrors.ErrDBNotActive
 	}
 
 	if db, exists := p.dbs[dbID]; exists {
@@ -282,6 +288,8 @@ func (p *Pool) Execute(req *Request) {
 func (p *Pool) handleRequest(req *Request) {
 	db, dbErr := p.OpenDB(req.DBID)
 	if dbErr != nil {
+		category := p.classifier.Classify(dbErr)
+		p.errorTracker.RecordError(dbErr, category)
 		req.Response <- Response{
 			Status: types.StatusError,
 			Error:  dbErr,
@@ -304,11 +312,13 @@ func (p *Pool) handleRequest(req *Request) {
 	case types.OpPatch:
 		err = db.Patch(req.Collection, req.DocID, req.PatchOps)
 	default:
-		err = errors.ErrUnknownOperation
+		err = docdberrors.ErrUnknownOperation
 	}
 
 	status := types.StatusOK
 	if err != nil {
+		category := p.classifier.Classify(err)
+		p.errorTracker.RecordError(err, category)
 		status = types.StatusError
 		if err == docdb.ErrDocNotFound || err == types.ErrDocNotFound {
 			status = types.StatusNotFound
@@ -324,6 +334,11 @@ func (p *Pool) handleRequest(req *Request) {
 		Data:   data,
 		Error:  err,
 	}
+}
+
+// GetErrorTracker returns the error tracker for metrics.
+func (p *Pool) GetErrorTracker() *docdberrors.ErrorTracker {
+	return p.errorTracker
 }
 
 func (p *Pool) CreateCollection(dbID uint64, name string) error {
@@ -385,4 +400,59 @@ func (p *Pool) Stats() *types.Stats {
 		MemoryUsed:     p.memory.GlobalUsage(),
 		MemoryCapacity: p.memory.GlobalCapacity(),
 	}
+}
+
+// HealDocument heals a specific document in the specified database.
+func (p *Pool) HealDocument(dbID uint64, collection string, docID uint64) error {
+	if p.stopped {
+		return ErrPoolStopped
+	}
+
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return err
+	}
+
+	if db.HealingService() == nil {
+		return errors.New("healing service not available")
+	}
+
+	return db.HealingService().HealDocument(collection, docID)
+}
+
+// HealAll triggers a full database healing scan.
+func (p *Pool) HealAll(dbID uint64) ([]uint64, error) {
+	if p.stopped {
+		return nil, ErrPoolStopped
+	}
+
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return nil, err
+	}
+
+	if db.HealingService() == nil {
+		return nil, errors.New("healing service not available")
+	}
+
+	return db.HealingService().HealAll()
+}
+
+// HealStats returns healing statistics for the specified database.
+func (p *Pool) HealStats(dbID uint64) (docdb.HealingStats, error) {
+	if p.stopped {
+		return docdb.HealingStats{}, ErrPoolStopped
+	}
+
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return docdb.HealingStats{}, err
+	}
+
+	if db.HealingService() == nil {
+		return docdb.HealingStats{}, errors.New("healing service not available")
+	}
+
+	stats := db.HealingService().GetStats()
+	return stats, nil
 }

@@ -14,6 +14,9 @@ type Client interface {
 	DeleteCollection(dbID uint64, name string) error
 	ListCollections(dbID uint64) ([]string, error)
 	ListDBs() ([]*types.DBInfo, error)
+	HealDocument(dbID uint64, collection string, docID uint64) error
+	HealAll(dbID uint64) ([]uint64, error)
+	HealStats(dbID uint64) (map[string]interface{}, error)
 }
 
 type Shell interface {

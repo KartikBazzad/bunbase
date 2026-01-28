@@ -46,6 +46,7 @@ flowchart LR
 - **DocDB (`docdb/`)**
   - Provides an embedded document database.
   - Includes a server binary, interactive shell, and client libraries (including a TypeScript client).
+  - **v0.2 Features:** Collections, path-based updates (patch operations), automatic document healing, WAL trimming, error classification, Prometheus metrics.
 
 ### Service-Level Documentation
 

@@ -10,8 +10,14 @@ This document describes DocDB's system architecture, component interactions, and
 4. [Concurrency Model](#concurrency-model)
 5. [Storage Architecture](#storage-architecture)
 6. [Transaction Model](#transaction-model)
-7. [Design Decisions](#design-decisions)
-8. [Alternatives Considered](#alternatives-considered)
+7. [Collections](#collections-v02) (v0.2)
+8. [Path-Based Updates](#path-based-updates-v02) (v0.2)
+9. [Healing Service Architecture](#healing-service-architecture-v02) (v0.2)
+10. [WAL Lifecycle](#wal-lifecycle-v02) (v0.2)
+11. [Error Classification and Retry System](#error-classification-and-retry-system-v02) (v0.2)
+12. [Observability and Metrics](#observability-and-metrics-v02) (v0.2)
+13. [Design Decisions](#design-decisions)
+14. [Alternatives Considered](#alternatives-considered)
 
 ---
 
@@ -61,12 +67,14 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Manages multiple logical databases in a single runtime.
 
 **Responsibilities:**
+
 - Database lifecycle (create, open, close, delete)
 - Request scheduling across databases
 - Memory management (global + per-DB)
 - Catalog persistence (metadata)
 
 **Key Components:**
+
 - `Scheduler`: Round-robin request distribution
 - `Catalog`: Database metadata storage
 - `MemoryCaps`: Memory limit tracking
@@ -81,7 +89,10 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Manages a single logical database instance.
 
 **Responsibilities:**
+
 - Document CRUD operations
+- Collection management (v0.2)
+- Path-based updates (patch operations) (v0.2)
 - Transaction management
 - Index management
 - WAL writing
@@ -89,11 +100,14 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 - Crash recovery (WAL replay)
 
 **Key Components:**
+
 - `Index`: Sharded in-memory index
+- `CollectionRegistry`: Collection management (v0.2)
 - `MVCC`: Multi-version concurrency control
 - `TransactionManager`: Transaction lifecycle
 - `DataFile`: Append-only file operations
 - `WALWriter`: WAL record writing
+- Path utilities: JSON path parsing and manipulation (v0.2)
 
 **Thread Safety:** All public methods are thread-safe (RWMutex).
 
@@ -104,6 +118,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Fast document lookups with reduced lock contention.
 
 **Design:**
+
 ```
 ┌───────────────────────────────────────────────────┐
 │              Sharded Index (256 shards)        │
@@ -119,12 +134,14 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **Sharding Strategy:**
+
 - Formula: `shard_id = doc_id % num_shards`
 - Default: 256 shards
 - Each shard: Protected by own RWMutex
 - Benefit: Concurrent reads across different shards
 
 **Visibility Rules:**
+
 - Version is visible if: `created_tx_id <= snapshot_tx_id`
 - Version is hidden if: `deleted_tx_id <= snapshot_tx_id`
 
@@ -135,6 +152,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Durability and crash recovery.
 
 **Design:**
+
 ```
 ┌───────────────────────────────────────────────────┐
 │                 WAL Writer                    │
@@ -150,6 +168,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **Record Format:**
+
 ```
 [8 bytes: record_len]
 [8 bytes: tx_id]
@@ -162,6 +181,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **Recovery Process:**
+
 1. Open WAL file
 2. Read records sequentially
 3. Validate CRC32 for each record
@@ -179,6 +199,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Append-only storage for document payloads.
 
 **Design:**
+
 ```
 ┌───────────────────────────────────────────────────┐
 │              Data File (<db>.data)           │
@@ -192,12 +213,14 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **Record Format:**
+
 ```
 [4 bytes: payload_len]
 [N bytes: payload]
 ```
 
 **Characteristics:**
+
 - Append-only: Never overwrite existing data
 - Offset-addressed: Documents referenced by byte offset
 - No in-place mutations: Updates append new versions
@@ -209,6 +232,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Manage short-lived atomic transactions.
 
 **Design:**
+
 ```
 ┌───────────────────────────────────────────────────┐
 │         Transaction Manager                    │
@@ -224,6 +248,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **ACID Properties:**
+
 - **Atomicity:** All operations succeed or all fail (via rollback)
 - **Consistency:** Validated before commit
 - **Isolation:** Snapshot reads (MVCC-lite)
@@ -236,6 +261,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 **Purpose:** Client communication over Unix domain socket.
 
 **Design:**
+
 ```
 ┌───────────────────────────────────────────────────┐
 │              IPC Server                       │
@@ -252,6 +278,7 @@ DocDB is a file-based, ACID document database written in Go. It supports multipl
 ```
 
 **Protocol:**
+
 - Binary frames over Unix socket
 - Length-prefixed messages
 - Batch operation support
@@ -382,6 +409,7 @@ Ready to Serve Requests
 ```
 
 **Benefits:**
+
 - Concurrent reads across different shards (no blocking)
 - Concurrent reads within shard (shared lock)
 - Serialized writes per shard (exclusive lock)
@@ -409,17 +437,20 @@ Ready to Serve Requests
 ### Append-Only Model
 
 **Why Append-Only:**
+
 - **Simplicity:** No complex page management
 - **Durability:** Crash recovery is straightforward
 - **Concurrency:** No need for locking during writes
 - **Atomicity:** Append is atomic at filesystem level
 
 **Trade-offs:**
+
 - **Space:** Updates create new versions, old data remains until compaction
 - **Reads:** Require offset tracking and potential multiple disk seeks
 - **Writes:** May need to skip over deleted data during compaction
 
 **Compaction Strategy:**
+
 1. Create `.compact` file
 2. Copy only live documents
 3. Update index with new offsets
@@ -433,11 +464,13 @@ Ready to Serve Requests
 ### MVCC-Lite
 
 **Key Concepts:**
+
 - **Transaction IDs:** Monotonically increasing integers
 - **Snapshots:** Point-in-time view of database
 - **Versions:** Each document has multiple versions over time
 
 **Version Structure:**
+
 ```
 Document Version:
   ├─ Document ID
@@ -448,6 +481,7 @@ Document Version:
 ```
 
 **Visibility Rules:**
+
 ```
 Version is visible if:
   created_tx_id <= snapshot_tx_id
@@ -484,12 +518,14 @@ Rollback:
 ### Concurrency Behavior
 
 **"Last Commit Wins" Model:**
+
 - No conflict detection on concurrent updates
 - Both versions are written to WAL
 - Index shows last committed version
 - Non-deterministic across restarts (acceptable for v0)
 
 **Safety:**
+
 - ACID properties maintained
 - No data loss (both versions in WAL)
 - Reads see consistent snapshot
@@ -504,11 +540,13 @@ Rollback:
 **Decision:** One WAL file per database
 
 **Rationale:**
+
 - **Simpler Isolation:** Each database has independent recovery
 - **Easier Cleanup:** Can delete WAL without affecting other DBs
 - **Parallel Recovery:** Can recover databases concurrently
 
 **Trade-offs:**
+
 - **Harder Scheduling:** No global ordering across databases
 - **Fairness:** Requires pool-level coordination
 - **Cross-DB Operations:** Not supported (intentional for v0)
@@ -520,11 +558,13 @@ Rollback:
 **Decision:** 256-shard hash-based index
 
 **Rationale:**
+
 - **Reduced Contention:** Locks at shard level, not global
 - **Scalability:** Can handle concurrent reads/writes better
 - **Simple Sharding:** Hash modulo is O(1)
 
 **Trade-offs:**
+
 - **Memory Overhead:** 256 RWMutex instances
 - **Cache Locality:** Related documents may be in different shards
 - **Rebalancing:** Not supported (fixed shard count)
@@ -536,11 +576,13 @@ Rollback:
 **Decision:** MVCC-lite with snapshot reads
 
 **Rationale:**
+
 - **Simplicity:** No locking during reads
 - **Performance:** Readers never block writers
 - **Correctness:** Sufficient for v0 scope
 
 **Trade-offs:**
+
 - **No Repeatable Reads:** Different reads may see different states
 - **No Serialization:** Concurrent updates may interleave
 - **Phantom Reads:** Possible if scans were supported
@@ -552,11 +594,13 @@ Rollback:
 **Decision:** Append-only data file with versioned documents
 
 **Rationale:**
+
 - **Simplicity:** No complex page management
 - **Durability:** Crash recovery is straightforward
 - **Concurrency:** No need for locking during writes
 
 **Trade-offs:**
+
 - **Space:** Old versions remain until compaction
 - **Reads:** Need offset tracking, multiple versions
 - **Writes:** May need to skip deleted data during compaction
@@ -568,11 +612,13 @@ Rollback:
 **Decision:** Fair round-robin across databases
 
 **Rationale:**
+
 - **Fairness:** All databases get equal service
 - **Simplicity:** No priority configuration needed
 - **Starvation Prevention:** No database is starved
 
 **Trade-offs:**
+
 - **No Priority:** Critical requests not prioritized
 - **No Weighting:** Important databases not favored
 - **Simple:** Easier to reason about, less configurable
@@ -584,10 +630,12 @@ Rollback:
 ### 1. Global WAL vs Per-Database WAL
 
 **Global WAL (Rejected):**
+
 - **Pros:** Global ordering, cross-DB operations easier
 - **Cons:** Complex recovery, single point of failure, harder cleanup
 
 **Per-Database WAL (Chosen):**
+
 - **Pros:** Simple recovery, independent databases, parallel recovery possible
 - **Cons:** Harder scheduling, no global ordering
 
@@ -596,10 +644,12 @@ Rollback:
 ### 2. B+ Tree Index vs Sharded Hash Map
 
 **B+ Tree (Rejected):**
+
 - **Pros:** Ordered scans, range queries
 - **Cons:** Complex implementation, lock contention on hot spots
 
 **Sharded Hash Map (Chosen):**
+
 - **Pros:** Simple, fast lookups, concurrent reads, reduced contention
 - **Cons:** No ordered scans, limited to point lookups
 
@@ -608,10 +658,12 @@ Rollback:
 ### 3. LSM Tree vs Append-Only with Compaction
 
 **LSM Tree (Rejected):**
+
 - **Pros:** Efficient writes, built-in compaction
 - **Cons:** Complex implementation, read amplification
 
 **Append-Only + Compaction (Chosen):**
+
 - **Pros:** Simple implementation, no read amplification, easy recovery
 - **Cons:** Write amplification, periodic compaction needed
 
@@ -620,10 +672,12 @@ Rollback:
 ### 4. Single-Threaded vs Multi-Threaded WAL
 
 **Single-Threaded (Chosen):**
+
 - **Pros:** Simpler implementation, no race conditions
 - **Cons:** Write serialization across all operations
 
 **Multi-Threaded (Rejected):**
+
 - **Pros:** Parallel writes, higher throughput
 - **Cons:** Complex locking, race conditions, harder to reason about
 
@@ -632,10 +686,12 @@ Rollback:
 ### 5. TCP vs Unix Sockets
 
 **TCP (Rejected for v0):**
+
 - **Pros:** Network access, multi-machine deployment
 - **Cons:** More complex, slower (TCP overhead), security concerns
 
 **Unix Sockets (Chosen):**
+
 - **Pros:** Faster, simpler, file-system based security
 - **Cons:** Local-only access
 
@@ -645,50 +701,309 @@ Rollback:
 
 ### Latency
 
-| Operation | Expected Latency | Factors |
-|-----------|------------------|----------|
-| Create    | 1-10 ms          | Disk I/O, WAL fsync |
+| Operation | Expected Latency | Factors                  |
+| --------- | ---------------- | ------------------------ |
+| Create    | 1-10 ms          | Disk I/O, WAL fsync      |
 | Read      | 0.1-1 ms         | Memory lookup, disk seek |
-| Update    | 1-10 ms          | Disk I/O, WAL fsync |
-| Delete    | 1-10 ms          | Disk I/O, WAL fsync |
-| Batch     | O(n)              | n = operation count |
+| Update    | 1-10 ms          | Disk I/O, WAL fsync      |
+| Delete    | 1-10 ms          | Disk I/O, WAL fsync      |
+| Batch     | O(n)             | n = operation count      |
 
 ### Throughput
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Concurrent Writers | 10-100 | Limited by disk I/O |
-| Concurrent Readers | 100+   | Limited by memory |
-| Batch Operations | 1000/s | Depends on batch size |
+| Metric             | Target | Notes                 |
+| ------------------ | ------ | --------------------- |
+| Concurrent Writers | 10-100 | Limited by disk I/O   |
+| Concurrent Readers | 100+   | Limited by memory     |
+| Batch Operations   | 1000/s | Depends on batch size |
 
 ### Resource Usage
 
-| Resource | Typical Usage | Limits |
-|----------|----------------|--------|
-| Memory   | 10-100 MB per DB | Configurable |
-| Disk I/O  | Write-bound | Depends on workload |
-| CPU       | Low (mostly I/O) | Bursty on compaction |
-| File Handles | 1 per open DB | OS limits apply |
+| Resource     | Typical Usage    | Limits               |
+| ------------ | ---------------- | -------------------- |
+| Memory       | 10-100 MB per DB | Configurable         |
+| Disk I/O     | Write-bound      | Depends on workload  |
+| CPU          | Low (mostly I/O) | Bursty on compaction |
+| File Handles | 1 per open DB    | OS limits apply      |
+
+---
+
+## WAL Lifecycle (v0.2)
+
+DocDB v0.2 implements a complete WAL lifecycle with rotation, checkpoints, and trimming.
+
+### WAL Lifecycle Stages
+
+```
+┌─────────────┐
+│  Active WAL │
+│  (writing)  │
+└──────┬──────┘
+       │
+       │ Size >= MaxSizeMB
+       ▼
+┌─────────────┐
+│   Rotation  │
+│  (atomic)   │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐      ┌─────────────┐
+│ WAL Segment │      │ Active WAL  │
+│   .wal.1    │      │  (new)      │
+└──────┬──────┘      └─────────────┘
+       │
+       │ Size >= IntervalMB
+       ▼
+┌─────────────┐
+│ Checkpoint  │
+│  Created    │
+└──────┬──────┘
+       │
+       │ TrimAfterCheckpoint = true
+       ▼
+┌─────────────┐
+│   Trimming  │
+│  (delete    │
+│   old segs) │
+└─────────────┘
+```
+
+### Rotation
+
+**Trigger:** WAL size reaches `MaxFileSizeMB` (default: 64MB)
+
+**Process:**
+
+1. Current WAL file renamed to `dbname.wal.1`
+2. New active WAL file created as `dbname.wal`
+3. Atomic rename ensures no data loss
+4. Old segments numbered sequentially (.wal.1, .wal.2, ...)
+
+**Recovery:** All segments replayed in order during recovery
+
+### Checkpoints
+
+**Purpose:** Bound recovery time by marking safe replay points
+
+**Trigger:** WAL size reaches `Checkpoint.IntervalMB` (default: 64MB)
+
+**Process:**
+
+1. Checkpoint record written to WAL with transaction ID
+2. CheckpointManager tracks last checkpoint
+3. Recovery starts from last checkpoint (not from beginning)
+
+**Benefits:**
+
+- Bounded recovery time (only replay since last checkpoint)
+- Faster startup after crashes
+- Enables WAL trimming
+
+### Trimming
+
+**Purpose:** Prevent unbounded disk usage by cleaning old segments
+
+**Trigger:** After checkpoint creation (if `TrimAfterCheckpoint` enabled)
+
+**Process:**
+
+1. Identify segments before last checkpoint
+2. Keep `KeepSegments` segments as safety margin (default: 2)
+3. Delete older segments atomically
+4. Active segment always preserved
+
+**Safety:**
+
+- Only trims segments before checkpoint
+- Safety margin prevents accidental data loss
+- Atomic deletion ensures consistency
+
+### Recovery with Checkpoints
+
+```
+Recovery Process:
+1. Find last checkpoint (highest tx_id)
+2. Start replay from checkpoint (not from beginning)
+3. Replay all segments after checkpoint
+4. Apply committed transactions only
+5. Rebuild index from replayed records
+```
+
+**Recovery Time:** Bounded to size since last checkpoint (not full WAL history)
+
+---
+
+## Error Classification and Retry System (v0.2)
+
+DocDB v0.2 includes intelligent error handling with automatic retry for transient errors.
+
+### Error Flow
+
+```
+┌──────────────┐
+│  Operation   │
+│  (WAL/Data)  │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│   Error      │
+│   Occurs     │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│  Classifier  │
+│  Categorizes │
+└──────┬───────┘
+       │
+       ├──> Transient ──> RetryController ──> Retry with backoff
+       ├──> Permanent ──> Return Error (no retry)
+       ├──> Critical ────> Alert + Return Error
+       └──> Validation ──> Return Error (no retry)
+```
+
+### Retry Strategy
+
+**Exponential Backoff with Jitter:**
+
+- Initial delay: 10ms
+- Max delay: 1s
+- Max retries: 5
+- Jitter: ±25% random variation
+
+**Formula:**
+
+```
+delay = min(initialDelay * 2^attempt, maxDelay) + jitter
+```
+
+**Example Retry Sequence:**
+
+- Attempt 1: Immediate
+- Attempt 2: ~10ms ± 2.5ms
+- Attempt 3: ~20ms ± 5ms
+- Attempt 4: ~40ms ± 10ms
+- Attempt 5: ~80ms ± 20ms
+- Attempt 6: ~160ms ± 40ms (capped at 1s)
+
+### Error Tracking
+
+**Metrics Collected:**
+
+- Error counts by category
+- Error rates (errors per second)
+- Last occurrence time
+- Critical error alerts
+
+**Integration:**
+
+- Errors tracked in `ErrorTracker`
+- Metrics exposed via Prometheus exporter
+- Critical errors logged immediately
+
+---
+
+## Observability and Metrics (v0.2)
+
+DocDB v0.2 provides comprehensive observability through Prometheus metrics.
+
+### Metrics Architecture
+
+```
+┌──────────────┐
+│  Operations  │
+│  (WAL, Pool) │
+└──────┬───────┘
+       │ Record
+       ▼
+┌──────────────┐
+│  Exporter    │
+│  (Metrics)   │
+└──────┬───────┘
+       │ Export
+       ▼
+┌──────────────┐
+│  IPC Handler │
+│  (CmdMetrics)│
+└──────┬───────┘
+       │ Prometheus Format
+       ▼
+┌──────────────┐
+│   Client     │
+│  (Monitoring)│
+└──────────────┘
+```
+
+### Available Metrics
+
+**Operation Metrics:**
+
+- `docdb_operations_total{operation, status}` - Total operations
+- `docdb_operation_duration_seconds{operation}` - Duration histogram
+
+**System Metrics:**
+
+- `docdb_documents_total` - Live document count
+- `docdb_memory_bytes` - Memory usage
+- `docdb_wal_size_bytes` - WAL size
+
+**Error Metrics:**
+
+- `docdb_errors_total{category}` - Error counts by category
+
+**Healing Metrics:**
+
+- `docdb_healing_operations_total` - Total healing operations
+- `docdb_documents_healed_total` - Total documents healed
+
+### Metrics Collection
+
+**Automatic Collection:**
+
+- Operations tracked during IPC handling
+- Errors tracked via ErrorTracker
+- Healing tracked during healing operations
+
+**Access:**
+
+- Via IPC `CmdMetrics` command
+- Returns Prometheus text format
+- Can be scraped by Prometheus server
 
 ---
 
 ## Evolution Path
 
 ### v0 (Current)
+
 - Basic CRUD operations
 - Per-database WAL
 - Sharded index
 - MVCC-lite
 - Unix socket IPC
 
-### v0.1 (Potential)
+### v0.1 (Completed)
+
 - WAL rotation
-- Data file checksums
-- TCP support
-- Connection pooling
-- Deterministic conflict resolution
+- Data file checksums (CRC32)
+- Checkpoint-based recovery
+- Graceful shutdown
+- Document corruption detection
+
+### v0.2 (Current)
+
+- **Collections** - Collection management and collection-aware operations
+- **Path-Based Updates** - JSON patch operations (set, delete, insert)
+- Automatic document healing
+- WAL trimming after checkpoints
+- Error classification and retry
+- Prometheus/OpenMetrics metrics
+- Enhanced observability
 
 ### v1 (Future)
+
 - Global WAL
 - Full MVCC (serializable)
 - Secondary indexes

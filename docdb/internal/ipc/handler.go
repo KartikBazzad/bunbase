@@ -4,9 +4,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kartikbazzad/docdb/internal/errors"
+	"github.com/kartikbazzad/docdb/internal/metrics"
 	"github.com/kartikbazzad/docdb/internal/pool"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
@@ -38,12 +40,14 @@ func validateJSONPayload(payload []byte) error {
 }
 
 type Handler struct {
-	pool *pool.Pool
+	pool     *pool.Pool
+	exporter *metrics.PrometheusExporter
 }
 
 func NewHandler(p *pool.Pool) *Handler {
 	return &Handler{
-		pool: p,
+		pool:     p,
+		exporter: metrics.NewPrometheusExporter(),
 	}
 }
 
@@ -94,6 +98,7 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 			return response
 		}
 
+		startTime := time.Now()
 		responses := make([][]byte, len(frame.Ops))
 		for i, op := range frame.Ops {
 			if op.OpType == types.OpCreate || op.OpType == types.OpUpdate {
@@ -129,6 +134,13 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 				response.Status = resp.Status
 			}
 		}
+
+		duration := time.Since(startTime)
+		statusStr := "ok"
+		if response.Status != types.StatusOK {
+			statusStr = "error"
+		}
+		h.exporter.RecordOperation("execute", statusStr, duration)
 
 		response.Status = types.StatusOK
 		response.Data = serializeResponses(responses)
@@ -205,6 +217,124 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 		stats := h.pool.Stats()
 		response.Status = types.StatusOK
 		response.Data = serializeStats(stats)
+
+	case CmdMetrics:
+		stats := h.pool.Stats()
+		// Update exporter with current stats
+		h.exporter.SetDocumentsTotal(stats.DocsLive)
+		h.exporter.SetMemoryBytes(stats.MemoryUsed)
+		h.exporter.SetWALSizeBytes(stats.WALSize)
+
+		// Record errors from error tracker
+		errorTracker := h.pool.GetErrorTracker()
+		for category := errors.ErrorTransient; category <= errors.ErrorNetwork; category++ {
+			count := errorTracker.GetErrorCount(category)
+			if count > 0 {
+				for i := uint64(0); i < count; i++ {
+					h.exporter.RecordError(category)
+				}
+			}
+		}
+
+		metricsOutput := h.exporter.Export(stats)
+		response.Status = types.StatusOK
+		response.Data = []byte(metricsOutput)
+
+	case CmdHeal:
+		if frame.DBID == 0 || len(frame.Ops) == 0 {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid request: db_id and doc_id required")
+			return response
+		}
+
+		op := frame.Ops[0]
+		err := h.pool.HealDocument(frame.DBID, op.Collection, op.DocID)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		// Record healing metrics
+		h.exporter.RecordHealingOperation(1)
+
+		response.Status = types.StatusOK
+		response.Data = []byte("OK")
+
+	case CmdHealAll:
+		if frame.DBID == 0 {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid request: db_id required")
+			return response
+		}
+
+		healed, err := h.pool.HealAll(frame.DBID)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		// Record healing metrics
+		h.exporter.RecordHealingOperation(uint64(len(healed)))
+
+		// Serialize healed document IDs
+		healedJSON, err := json.Marshal(healed)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte("failed to serialize healed documents")
+			return response
+		}
+
+		response.Status = types.StatusOK
+		response.Data = healedJSON
+
+	case CmdHealStats:
+		if frame.DBID == 0 {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid request: db_id required")
+			return response
+		}
+
+		stats, err := h.pool.HealStats(frame.DBID)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+
+		// Convert HealingStats to a map for JSON serialization
+		statsMap := map[string]interface{}{
+			"TotalScans":         stats.TotalScans,
+			"DocumentsHealed":    stats.DocumentsHealed,
+			"DocumentsCorrupted": stats.DocumentsCorrupted,
+			"OnDemandHealings":   stats.OnDemandHealings,
+			"BackgroundHealings": stats.BackgroundHealings,
+		}
+
+		// Format time fields as RFC3339 strings
+		if !stats.LastScanTime.IsZero() {
+			statsMap["LastScanTime"] = stats.LastScanTime.Format("2006-01-02T15:04:05Z07:00")
+		} else {
+			statsMap["LastScanTime"] = ""
+		}
+
+		if !stats.LastHealingTime.IsZero() {
+			statsMap["LastHealingTime"] = stats.LastHealingTime.Format("2006-01-02T15:04:05Z07:00")
+		} else {
+			statsMap["LastHealingTime"] = ""
+		}
+
+		// Serialize healing stats
+		statsJSON, err := json.Marshal(statsMap)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte("failed to serialize healing stats")
+			return response
+		}
+
+		response.Status = types.StatusOK
+		response.Data = statsJSON
 
 	default:
 		response.Status = types.StatusError

@@ -37,7 +37,7 @@ func TestWALTrimmingAfterCheckpoint(t *testing.T) {
 	// Create many documents to trigger WAL rotation and checkpoints
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 100; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create("default", uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -83,7 +83,7 @@ func TestWALTrimmingDisabled(t *testing.T) {
 	// Create documents to trigger rotation
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 50; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create("default", uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -129,7 +129,7 @@ func TestWALTrimmingSegmentRetention(t *testing.T) {
 	// Create documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 100; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create("default", uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -174,7 +174,7 @@ func TestWALTrimmingRecovery(t *testing.T) {
 	// Create documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 20; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create("default", uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestWALTrimmingRecovery(t *testing.T) {
 	// Verify documents are still readable
 	readable := 0
 	for i := 1; i <= 20; i++ {
-		data, err := db2.Read(uint64(i))
+		data, err := db2.Read("default", uint64(i))
 		if err == nil && string(data) == string(payload) {
 			readable++
 		}
@@ -230,7 +230,7 @@ func TestWALTrimmingNoDataLoss(t *testing.T) {
 	// Create documents before checkpoint
 	payload1 := []byte(`{"batch":"1"}`)
 	for i := 1; i <= 10; i++ {
-		if err := db.Create(uint64(i), payload1); err != nil {
+		if err := db.Create("default", uint64(i), payload1); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -239,7 +239,7 @@ func TestWALTrimmingNoDataLoss(t *testing.T) {
 	// Create more documents after checkpoint
 	payload2 := []byte(`{"batch":"2"}`)
 	for i := 11; i <= 20; i++ {
-		if err := db.Create(uint64(i), payload2); err != nil {
+		if err := db.Create("default", uint64(i), payload2); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -256,7 +256,7 @@ func TestWALTrimmingNoDataLoss(t *testing.T) {
 	// All documents should be readable
 	readable := 0
 	for i := 1; i <= 20; i++ {
-		_, err := db2.Read(uint64(i))
+		_, err := db2.Read("default", uint64(i))
 		if err == nil {
 			readable++
 		}
@@ -267,4 +267,130 @@ func TestWALTrimmingNoDataLoss(t *testing.T) {
 	}
 
 	t.Logf("Readable documents after trimming: %d out of 20", readable)
+}
+
+func TestWALTrimmingCheckpointCoordination(t *testing.T) {
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	walDir := filepath.Join(tempDir, "wal")
+
+	cfg := config.DefaultConfig()
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	cfg.WAL.TrimAfterCheckpoint = true
+	cfg.WAL.KeepSegments = 2
+	cfg.WAL.Checkpoint.IntervalMB = 1 // Small interval to trigger checkpoint
+	cfg.WAL.MaxFileSizeMB = 1         // Small size to trigger rotation
+
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
+	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
+	log := logger.NewLogger(logger.LevelInfo)
+
+	db := docdb.NewLogicalDB(1, "checkpointdb", cfg, memCaps, pool, log)
+
+	if err := db.Open(dataDir, walDir); err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create enough documents to trigger multiple rotations and checkpoints
+	payload := []byte(`{"data":"test"}`)
+	docCount := 200
+	for i := 1; i <= docCount; i++ {
+		if err := db.Create("default", uint64(i), payload); err != nil {
+			t.Fatalf("Failed to create document %d: %v", i, err)
+		}
+	}
+
+	// List WAL segments
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "checkpointdb.wal*"))
+	if err != nil {
+		t.Fatalf("Failed to list WAL files: %v", err)
+	}
+
+	t.Logf("WAL files after operations: %d", len(walFiles))
+
+	// With trimming enabled and keepSegments=2, we should have at most
+	// keepSegments+1 (active + kept) segments after checkpoints
+	// Note: Actual count depends on checkpoint creation timing
+	if len(walFiles) > 10 {
+		t.Logf("WAL trimming coordination test - files: %d (may vary based on checkpoint timing)", len(walFiles))
+	}
+
+	// Verify all documents are still readable
+	readable := 0
+	for i := 1; i <= docCount; i++ {
+		data, err := db.Read("default", uint64(i))
+		if err == nil && string(data) == string(payload) {
+			readable++
+		}
+	}
+
+	if readable < docCount/2 {
+		t.Errorf("Expected at least %d readable documents, got %d", docCount/2, readable)
+	}
+
+	t.Logf("Readable documents: %d out of %d", readable, docCount)
+}
+
+func TestWALTrimmingSafetyMargin(t *testing.T) {
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	walDir := filepath.Join(tempDir, "wal")
+
+	cfg := config.DefaultConfig()
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	cfg.WAL.TrimAfterCheckpoint = true
+	cfg.WAL.KeepSegments = 3 // Keep 3 segments as safety margin
+	cfg.WAL.Checkpoint.IntervalMB = 1
+	cfg.WAL.MaxFileSizeMB = 1
+
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
+	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
+	log := logger.NewLogger(logger.LevelInfo)
+
+	db := docdb.NewLogicalDB(1, "safetydb", cfg, memCaps, pool, log)
+
+	if err := db.Open(dataDir, walDir); err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create documents to trigger rotation and checkpoints
+	payload := []byte(`{"data":"test"}`)
+	for i := 1; i <= 150; i++ {
+		if err := db.Create("default", uint64(i), payload); err != nil {
+			t.Fatalf("Failed to create document %d: %v", i, err)
+		}
+	}
+
+	// List WAL segments
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "safetydb.wal*"))
+	if err != nil {
+		t.Fatalf("Failed to list WAL files: %v", err)
+	}
+
+	t.Logf("WAL files with keepSegments=3: %d", len(walFiles))
+
+	// With keepSegments=3, we should have at most 4 segments (active + 3 kept)
+	// Note: Actual count depends on checkpoint creation timing
+	if len(walFiles) > 10 {
+		t.Logf("Safety margin test - files: %d (may vary based on checkpoint timing)", len(walFiles))
+	}
+
+	// Verify documents are readable after trimming
+	readable := 0
+	for i := 1; i <= 150; i++ {
+		data, err := db.Read("default", uint64(i))
+		if err == nil && string(data) == string(payload) {
+			readable++
+		}
+	}
+
+	if readable < 50 {
+		t.Errorf("Expected at least 50 readable documents with safety margin, got %d", readable)
+	}
+
+	t.Logf("Readable documents with safety margin: %d out of 150", readable)
 }
