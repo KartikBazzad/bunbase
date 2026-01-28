@@ -1,0 +1,10 @@
+{
+  "name": "hello-world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir=dist --target=bun",
+    "dev": "bun run src/index.ts"
+  }
+}
