@@ -32,9 +32,9 @@ If any of these appear, **the project scope has failed**.
 
 ## Current Status
 
-**Version**: v0.2
+**Version**: v0.3
 
-**Status**: v0.2 features complete. Production-ready with automatic healing, WAL trimming, error classification, and observability.
+**Status**: v0.3 features complete. Production-ready with ants goroutine pools, WAL group commit, faster replay, and enhanced observability.
 
 **What Works**:
 
@@ -54,18 +54,23 @@ If any of these appear, **the project scope has failed**.
 - ✅ **v0.2:** Checkpoint-based recovery
 - ✅ **v0.2:** Error classification and retry
 - ✅ **v0.2:** Prometheus/OpenMetrics metrics
-- ✅ **v0.2:** Enhanced observability
+- ✅ **v0.3:** Ants goroutine pool (scheduler, healing, optional IPC)
+- ✅ **v0.3:** WAL group commit (batched fsync)
+- ✅ **v0.3:** Fast WAL replay (single-pass, deferred datafile sync)
+- ✅ **v0.3:** Scheduler fairness under skewed workloads
+- ✅ **v0.3:** WAL/group-commit and ants pool metrics
 
-**v0.2 Features**:
+**v0.3 Features**:
 
-- ✅ Automatic document healing with background scans
-- ✅ WAL trimming after checkpoints
-- ✅ Checkpoint-based bounded recovery
-- ✅ Error classification and intelligent retry
-- ✅ Prometheus metrics export
-- ✅ Healing IPC commands (`.heal`, `.heal-all`, `.heal-stats`)
+- ✅ Ants library integration for scheduler workers (recycling, panic recovery, expiry)
+- ✅ WAL group commit wired (NewWriterFromConfig, FsyncConfig)
+- ✅ Single-pass WAL replay and WriteNoSync during replay
+- ✅ Queue-depth–aware scheduling (PickNextQueue)
+- ✅ Parallel healing via ants PoolWithFunc
+- ✅ Optional IPC connection pool (MaxConnections)
+- ✅ Ants pool and WAL group-commit metrics in GetSchedulerStats()
 
-**See [ROADMAP.md](docs/implementation-status/docdb/ROADMAP.md) for detailed plans.**
+**See [V0.3_IMPLEMENTATION_PLAN.md](docs/implementation-status/docdb/V0.3_IMPLEMENTATION_PLAN.md) and [V0.3_STATUS.md](docs/implementation-status/docdb/V0.3_STATUS.md).**
 
 ## Document Contract
 

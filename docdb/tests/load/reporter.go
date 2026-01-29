@@ -10,23 +10,27 @@ import (
 )
 
 // WriteCSV writes CSV files for the test results.
-func WriteCSV(results *TestResults, outputDir string) error {
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+// Layout:
+//
+//	<base>/csv_global/*.csv   - global metrics (wal_growth, healing_events, latency samples)
+func WriteCSV(results *TestResults, baseDir string) error {
+	csvGlobalDir := filepath.Join(baseDir, "csv_global")
+	if err := os.MkdirAll(csvGlobalDir, 0755); err != nil {
+		return fmt.Errorf("failed to create csv_global directory: %w", err)
 	}
 
 	// Write latency samples CSV
-	if err := writeLatencyCSV(results, outputDir); err != nil {
+	if err := writeLatencyCSV(results, csvGlobalDir); err != nil {
 		return fmt.Errorf("failed to write latency CSV: %w", err)
 	}
 
 	// Write WAL growth CSV
-	if err := writeWALGrowthCSV(results, outputDir); err != nil {
+	if err := writeWALGrowthCSV(results, csvGlobalDir); err != nil {
 		return fmt.Errorf("failed to write WAL growth CSV: %w", err)
 	}
 
 	// Write healing events CSV
-	if err := writeHealingEventsCSV(results, outputDir); err != nil {
+	if err := writeHealingEventsCSV(results, csvGlobalDir); err != nil {
 		return fmt.Errorf("failed to write healing events CSV: %w", err)
 	}
 
@@ -152,14 +156,25 @@ type MultiDBTestResults struct {
 }
 
 // WriteMultiDBCSV writes CSV files for multi-database test results.
-func WriteMultiDBCSV(results *MultiDBTestResults, outputDir string) error {
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+// Layout:
+//
+//	<base>/csv_dbs/<dbName>/latency_summary.csv
+//	<base>/csv_global/global_wal_growth.csv
+//	<base>/csv_global/phase_stats.csv
+func WriteMultiDBCSV(results *MultiDBTestResults, baseDir string) error {
+	csvDbsDir := filepath.Join(baseDir, "csv_dbs")
+	csvGlobalDir := filepath.Join(baseDir, "csv_global")
+
+	if err := os.MkdirAll(csvDbsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create csv_dbs directory: %w", err)
+	}
+	if err := os.MkdirAll(csvGlobalDir, 0755); err != nil {
+		return fmt.Errorf("failed to create csv_global directory: %w", err)
 	}
 
 	// Write per-database CSV files
 	for dbName, dbMetrics := range results.Databases {
-		dbDir := filepath.Join(outputDir, dbName)
+		dbDir := filepath.Join(csvDbsDir, dbName)
 		if err := os.MkdirAll(dbDir, 0755); err != nil {
 			return fmt.Errorf("failed to create database directory: %w", err)
 		}
@@ -171,13 +186,13 @@ func WriteMultiDBCSV(results *MultiDBTestResults, outputDir string) error {
 	}
 
 	// Write global WAL growth CSV (aggregated)
-	if err := writeGlobalWALGrowthCSV(results, outputDir); err != nil {
+	if err := writeGlobalWALGrowthCSV(results, csvGlobalDir); err != nil {
 		return fmt.Errorf("failed to write global WAL growth CSV: %w", err)
 	}
 
 	// Write phase statistics CSV
 	if results.Global != nil && len(results.Global.PhaseStats) > 0 {
-		if err := writePhaseStatsCSV(results.Global.PhaseStats, outputDir); err != nil {
+		if err := writePhaseStatsCSV(results.Global.PhaseStats, csvGlobalDir); err != nil {
 			return fmt.Errorf("failed to write phase stats CSV: %w", err)
 		}
 	}

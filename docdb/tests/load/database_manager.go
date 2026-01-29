@@ -12,7 +12,8 @@ type DatabaseContext struct {
 	Name           string
 	DBID           uint64
 	Config         *DatabaseConfig
-	Client         *client.Client
+	Client         *client.Client   // Primary client (for backward compatibility)
+	Clients        []*client.Client // All connections for this database
 	LatencyMetrics *LatencyMetrics
 	WALTracker     *WALTracker
 	HealingTracker *HealingTracker
@@ -40,7 +41,7 @@ func NewDatabaseManager(baseClient *client.Client, socketPath string) *DatabaseM
 }
 
 // AddDatabase adds a database to the manager.
-func (dm *DatabaseManager) AddDatabase(config DatabaseConfig, healingClient HealingStatsClient, walDir string) (*DatabaseContext, error) {
+func (dm *DatabaseManager) AddDatabase(config DatabaseConfig, healingClient HealingStatsClient, walDir string, connectionsPerDB int) (*DatabaseContext, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -54,12 +55,23 @@ func (dm *DatabaseManager) AddDatabase(config DatabaseConfig, healingClient Heal
 		return nil, fmt.Errorf("failed to open database %s: %w", config.Name, err)
 	}
 
-	// Create per-database client
-	dbClient := client.New(dm.socketPath)
-	if err := dbClient.Connect(); err != nil {
-		dm.baseClient.CloseDB(dbID)
-		return nil, fmt.Errorf("failed to connect client for %s: %w", config.Name, err)
+	// Create multiple connections per database
+	clients := make([]*client.Client, connectionsPerDB)
+	for i := 0; i < connectionsPerDB; i++ {
+		dbClient := client.New(dm.socketPath)
+		if err := dbClient.Connect(); err != nil {
+			// Clean up already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			dm.baseClient.CloseDB(dbID)
+			return nil, fmt.Errorf("failed to connect client %d for %s: %w", i, config.Name, err)
+		}
+		clients[i] = dbClient
 	}
+
+	// Primary client is the first one (for backward compatibility)
+	primaryClient := clients[0]
 
 	// Determine WAL directory
 	walDirToUse := config.WALDir
@@ -72,7 +84,8 @@ func (dm *DatabaseManager) AddDatabase(config DatabaseConfig, healingClient Heal
 		Name:           config.Name,
 		DBID:           dbID,
 		Config:         &config,
-		Client:         dbClient,
+		Client:         primaryClient,
+		Clients:        clients,
 		LatencyMetrics: NewLatencyMetrics(),
 		WALTracker:     NewWALTracker(walDirToUse, config.Name),
 		HealingTracker: NewHealingTracker(healingClient, dbID),
@@ -80,7 +93,7 @@ func (dm *DatabaseManager) AddDatabase(config DatabaseConfig, healingClient Heal
 	}
 
 	dm.databases[config.Name] = ctx
-	dm.clients[config.Name] = dbClient
+	dm.clients[config.Name] = primaryClient
 
 	return ctx, nil
 }
@@ -116,11 +129,17 @@ func (dm *DatabaseManager) CloseAll() error {
 
 	var firstErr error
 	for name, ctx := range dm.databases {
-		if ctx.Client != nil {
-			if err := ctx.Client.CloseDB(ctx.DBID); err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("failed to close database %s: %w", name, err)
+		// Close all connections for this database
+		for i, client := range ctx.Clients {
+			if client != nil {
+				if i == 0 {
+					// Close DB on primary client
+					if err := client.CloseDB(ctx.DBID); err != nil && firstErr == nil {
+						firstErr = fmt.Errorf("failed to close database %s: %w", name, err)
+					}
+				}
+				client.Close()
 			}
-			ctx.Client.Close()
 		}
 	}
 

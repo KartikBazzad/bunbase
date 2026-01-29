@@ -148,15 +148,19 @@ type MultiDBLoadTestConfig struct {
 
 	// Global vs per-database settings
 	PerDatabaseCRUD bool // If true, each DB has own CRUD percentages (overrides phase CRUD)
+
+	// Connection configuration
+	ConnectionsPerDB int // Number of independent client connections per database (default: 1)
 }
 
 // NewMultiDBConfig creates a new multi-database configuration.
 func NewMultiDBConfig() *MultiDBLoadTestConfig {
 	return &MultiDBLoadTestConfig{
-		LoadTestConfig:  DefaultConfig(),
-		Databases:       make([]DatabaseConfig, 0),
-		WorkloadProfile: nil,
-		PerDatabaseCRUD: false,
+		LoadTestConfig:   DefaultConfig(),
+		Databases:        make([]DatabaseConfig, 0),
+		WorkloadProfile:  nil,
+		PerDatabaseCRUD:  false,
+		ConnectionsPerDB: 1, // Default: 1 connection per database
 	}
 }
 
@@ -237,6 +241,14 @@ func (c *MultiDBLoadTestConfig) Validate() error {
 	if c.WorkloadProfile != nil {
 		if err := c.WorkloadProfile.Validate(); err != nil {
 			return err
+		}
+	}
+
+	// Validate connections per DB
+	if c.ConnectionsPerDB <= 0 {
+		return &ConfigError{
+			Field:   "ConnectionsPerDB",
+			Message: "must be > 0",
 		}
 	}
 

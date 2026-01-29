@@ -1,0 +1,364 @@
+{
+  "TestConfig": {
+    "Duration": 120000000000,
+    "Workers": 10,
+    "Operations": 0,
+    "ReadPercent": 40,
+    "WritePercent": 30,
+    "UpdatePercent": 20,
+    "DeletePercent": 10,
+    "DocumentSize": 1024,
+    "DocumentCount": 10000,
+    "MetricsInterval": 1000000000,
+    "SocketPath": "/tmp/docdb.sock",
+    "DBName": "loadtest",
+    "WALDir": "./docdb/data/wal",
+    "OutputPath": "./matrix_results/3db_10conn_2w.json",
+    "CSVOutput": true,
+    "Seed": 1769671160504028000,
+    "Databases": [
+      {
+        "Name": "db1",
+        "Workers": 2,
+        "DocumentSize": 1024,
+        "DocumentCount": 10000,
+        "CRUDPercent": null,
+        "WALDir": "./docdb/data/wal"
+      },
+      {
+        "Name": "db2",
+        "Workers": 2,
+        "DocumentSize": 1024,
+        "DocumentCount": 10000,
+        "CRUDPercent": null,
+        "WALDir": "./docdb/data/wal"
+      },
+      {
+        "Name": "db3",
+        "Workers": 2,
+        "DocumentSize": 1024,
+        "DocumentCount": 10000,
+        "CRUDPercent": null,
+        "WALDir": "./docdb/data/wal"
+      }
+    ],
+    "WorkloadProfile": null,
+    "PerDatabaseCRUD": false,
+    "ConnectionsPerDB": 10
+  },
+  "DurationSeconds": 120.000838417,
+  "TotalOperations": 2655320,
+  "Databases": {
+    "db1": {
+      "Name": "db1",
+      "Latency": {
+        "create": {
+          "P50": 0.132208,
+          "P95": 1.401651,
+          "P99": 2.435638,
+          "P999": 3.103055,
+          "Mean": 0.310377,
+          "Min": 0.035833,
+          "Max": 95.756208,
+          "Count": 265768
+        },
+        "delete": {
+          "P50": 0.100167,
+          "P95": 1.276752,
+          "P99": 1.579045,
+          "P999": 2.410034,
+          "Mean": 0.229617,
+          "Min": 0.013416,
+          "Max": 42.248291,
+          "Count": 88600
+        },
+        "read": {
+          "P50": 0.099875,
+          "P95": 1.277583,
+          "P99": 1.575872,
+          "P999": 2.394123,
+          "Mean": 0.229894,
+          "Min": 0.014334,
+          "Max": 38.224875,
+          "Count": 354008
+        },
+        "update": {
+          "P50": 0.132375,
+          "P95": 1.401818,
+          "P99": 2.419027,
+          "P999": 3.091464,
+          "Mean": 0.309534,
+          "Min": 0.039959,
+          "Max": 36.283917,
+          "Count": 177508
+        }
+      },
+      "WALGrowth": {
+        "InitialSizeBytes": 233497786,
+        "FinalSizeBytes": 233497786,
+        "MaxSizeBytes": 233497786,
+        "GrowthRateBytesPerSec": 0,
+        "SampleCount": 122,
+        "DurationSeconds": 120.002271167
+      },
+      "Healing": {
+        "TotalHealings": 0,
+        "TotalDocumentsHealed": 0,
+        "HealingTimeSeconds": 0,
+        "OverheadPercent": 0,
+        "EventCount": 0,
+        "InitialStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        },
+        "FinalStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        }
+      },
+      "OperationCounts": {
+        "create": 265768,
+        "delete": 88600,
+        "read": 354008,
+        "update": 177508
+      },
+      "TotalOperations": 885884
+    },
+    "db2": {
+      "Name": "db2",
+      "Latency": {
+        "create": {
+          "P50": 0.132291,
+          "P95": 1.402462,
+          "P99": 2.428694,
+          "P999": 3.144191,
+          "Mean": 0.308628,
+          "Min": 0.03925,
+          "Max": 23.098542,
+          "Count": 265659
+        },
+        "delete": {
+          "P50": 0.100208,
+          "P95": 1.282141,
+          "P99": 1.586484,
+          "P999": 2.352398,
+          "Mean": 0.231456,
+          "Min": 0.013542,
+          "Max": 15.827792,
+          "Count": 88373
+        },
+        "read": {
+          "P50": 0.100167,
+          "P95": 1.278916,
+          "P99": 1.576125,
+          "P999": 2.372875,
+          "Mean": 0.230612,
+          "Min": 0.015125,
+          "Max": 62.158416,
+          "Count": 354777
+        },
+        "update": {
+          "P50": 0.1325,
+          "P95": 1.401208,
+          "P99": 2.421115,
+          "P999": 3.121906,
+          "Mean": 0.309671,
+          "Min": 0.035708,
+          "Max": 92.935875,
+          "Count": 177309
+        }
+      },
+      "WALGrowth": {
+        "InitialSizeBytes": 160159772,
+        "FinalSizeBytes": 160159772,
+        "MaxSizeBytes": 160159772,
+        "GrowthRateBytesPerSec": 0,
+        "SampleCount": 122,
+        "DurationSeconds": 120.002121834
+      },
+      "Healing": {
+        "TotalHealings": 0,
+        "TotalDocumentsHealed": 0,
+        "HealingTimeSeconds": 0,
+        "OverheadPercent": 0,
+        "EventCount": 0,
+        "InitialStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        },
+        "FinalStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        }
+      },
+      "OperationCounts": {
+        "create": 265659,
+        "delete": 88373,
+        "read": 354777,
+        "update": 177309
+      },
+      "TotalOperations": 886118
+    },
+    "db3": {
+      "Name": "db3",
+      "Latency": {
+        "create": {
+          "P50": 0.132625,
+          "P95": 1.402625,
+          "P99": 2.425239,
+          "P999": 3.17051,
+          "Mean": 0.309866,
+          "Min": 0.037042,
+          "Max": 70.389708,
+          "Count": 264576
+        },
+        "delete": {
+          "P50": 0.100667,
+          "P95": 1.280099,
+          "P99": 1.578587,
+          "P999": 2.401372,
+          "Mean": 0.233141,
+          "Min": 0.016208,
+          "Max": 33.560333,
+          "Count": 88693
+        },
+        "read": {
+          "P50": 0.1,
+          "P95": 1.278173,
+          "P99": 1.576875,
+          "P999": 2.378204,
+          "Mean": 0.23065,
+          "Min": 0.013083,
+          "Max": 96.17825,
+          "Count": 353098
+        },
+        "update": {
+          "P50": 0.133042,
+          "P95": 1.406,
+          "P99": 2.422787,
+          "P999": 3.126323,
+          "Mean": 0.311234,
+          "Min": 0.039208,
+          "Max": 9.780875,
+          "Count": 176956
+        }
+      },
+      "WALGrowth": {
+        "InitialSizeBytes": 160877522,
+        "FinalSizeBytes": 160877522,
+        "MaxSizeBytes": 160877522,
+        "GrowthRateBytesPerSec": 0,
+        "SampleCount": 122,
+        "DurationSeconds": 120.002335542
+      },
+      "Healing": {
+        "TotalHealings": 0,
+        "TotalDocumentsHealed": 0,
+        "HealingTimeSeconds": 0,
+        "OverheadPercent": 0,
+        "EventCount": 0,
+        "InitialStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        },
+        "FinalStats": {
+          "TotalScans": 0,
+          "DocumentsHealed": 0,
+          "DocumentsCorrupted": 0,
+          "OnDemandHealings": 0,
+          "BackgroundHealings": 0,
+          "LastScanTime": "0001-01-01T00:00:00Z",
+          "LastHealingTime": "0001-01-01T00:00:00Z"
+        }
+      },
+      "OperationCounts": {
+        "create": 264576,
+        "delete": 88693,
+        "read": 353098,
+        "update": 176956
+      },
+      "TotalOperations": 883323
+    }
+  },
+  "Global": {
+    "TotalOperations": 2655325,
+    "Latency": {
+      "create": {
+        "P50": 0.1323743032538822,
+        "P95": 1.4022454028766222,
+        "P99": 2.429864074625347,
+        "P999": 3.139204515396299,
+        "Mean": 0.309623440117688,
+        "Min": 0.035833,
+        "Max": 95.756208,
+        "Count": 796003
+      },
+      "delete": {
+        "P50": 0.10034756429125294,
+        "P95": 1.2796620357892994,
+        "P99": 1.5813666570919878,
+        "P999": 2.387969735118532,
+        "Mean": 0.23140523063169544,
+        "Min": 0.013416,
+        "Max": 42.248291,
+        "Count": 265666
+      },
+      "read": {
+        "P50": 0.1000141227978977,
+        "P95": 1.2782245448415692,
+        "P99": 1.5762900459382059,
+        "P999": 2.3817306095407877,
+        "Mean": 0.23038527067106263,
+        "Min": 0.013083,
+        "Max": 96.17825,
+        "Count": 1061883
+      },
+      "update": {
+        "P50": 0.1326386336876825,
+        "P95": 1.4030062353974346,
+        "P99": 2.4209744019026913,
+        "P999": 3.1132141636638195,
+        "Mean": 0.3101453821743488,
+        "Min": 0.035708,
+        "Max": 92.935875,
+        "Count": 531773
+      }
+    },
+    "TotalWALGrowth": 0,
+    "TotalHealing": {
+      "TotalHealings": 0,
+      "TotalDocumentsHealed": 0,
+      "HealingTimeSeconds": 0,
+      "OverheadPercent": 0,
+      "EventCount": 0,
+      "InitialStats": null,
+      "FinalStats": null
+    },
+    "PhaseStats": []
+  }
+}

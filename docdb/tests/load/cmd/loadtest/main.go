@@ -26,6 +26,16 @@ func main() {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
+	// Ensure output directory layout exists and derive full output path
+	jsonDir, _, _, _, err := load.EnsureOutputDirs(cfg.OutputDir)
+	if err != nil {
+		log.Fatalf("Failed to create output directories under %s: %v", cfg.OutputDir, err)
+	}
+	// Treat OutputPath as a file name inside jsonDir when relative
+	if !filepath.IsAbs(cfg.OutputPath) {
+		cfg.OutputPath = filepath.Join(jsonDir, cfg.OutputPath)
+	}
+
 	// Initialize random number generator
 	rng := rand.New(rand.NewSource(cfg.Seed))
 
@@ -184,14 +194,10 @@ func main() {
 
 	// Write CSV if requested
 	if cfg.CSVOutput {
-		outputDir := filepath.Dir(cfg.OutputPath)
-		if outputDir == "" {
-			outputDir = "."
-		}
-		if err := load.WriteCSV(results, outputDir); err != nil {
+		if err := load.WriteCSV(results, cfg.OutputDir); err != nil {
 			log.Printf("Warning: Failed to write CSV files: %v", err)
 		} else {
-			log.Printf("CSV files written to %s", outputDir)
+			log.Printf("CSV files written to %s/csv_global", cfg.OutputDir)
 		}
 	}
 }

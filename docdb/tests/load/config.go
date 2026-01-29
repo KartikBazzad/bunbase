@@ -31,7 +31,8 @@ type LoadTestConfig struct {
 	WALDir     string // WAL directory for size tracking
 
 	// Output
-	OutputPath string // Path to output JSON file
+	OutputPath string // Path to output JSON file (inside OutputDir)
+	OutputDir  string // Base directory for all outputs (JSON, CSV, reports)
 	CSVOutput  bool   // Also generate CSV files
 
 	// Random seed for reproducibility
@@ -55,6 +56,7 @@ func DefaultConfig() *LoadTestConfig {
 		DBName:          "loadtest",
 		WALDir:          "/tmp/docdb/wal",
 		OutputPath:      "loadtest_results.json",
+		OutputDir:       "docdb/tests/load/results",
 		CSVOutput:       false,
 		Seed:            time.Now().UnixNano(),
 	}
@@ -75,7 +77,8 @@ func (c *LoadTestConfig) ParseFlags() {
 	flag.StringVar(&c.SocketPath, "socket", c.SocketPath, "IPC socket path")
 	flag.StringVar(&c.DBName, "db-name", c.DBName, "Database name")
 	flag.StringVar(&c.WALDir, "wal-dir", c.WALDir, "WAL directory path")
-	flag.StringVar(&c.OutputPath, "output", c.OutputPath, "Output JSON file path")
+	flag.StringVar(&c.OutputPath, "output", c.OutputPath, "Output JSON file name (relative to output-dir)")
+	flag.StringVar(&c.OutputDir, "output-dir", c.OutputDir, "Base directory for all outputs (JSON, CSV, reports)")
 	flag.BoolVar(&c.CSVOutput, "csv", c.CSVOutput, "Generate CSV output files")
 	flag.Int64Var(&c.Seed, "seed", c.Seed, "Random seed for reproducibility")
 }
@@ -106,6 +109,9 @@ func (c *LoadTestConfig) Validate() error {
 	}
 	if c.DBName == "" {
 		return &ConfigError{Field: "DBName", Message: "cannot be empty"}
+	}
+	if c.OutputDir == "" {
+		return &ConfigError{Field: "OutputDir", Message: "cannot be empty"}
 	}
 	return nil
 }

@@ -13,8 +13,9 @@ import (
 // Worker executes operations for assigned databases.
 type Worker struct {
 	ID           int
-	Databases    []string // Databases this worker handles
-	Client       *client.Client
+	Databases    []string       // Databases this worker handles
+	Client       *client.Client // Client connection for this worker
+	DBConnection int            // Index of connection used for this worker's database
 	CurrentPhase *WorkloadPhase
 	StopCh       chan struct{}
 	Config       *MultiDBLoadTestConfig
@@ -99,22 +100,33 @@ func (wpm *WorkerPoolManager) allocateWorkers(totalWorkers int) error {
 
 		workerID := 0
 		for _, dbConfig := range wpm.config.Databases {
+			// Get database context to access connections
+			ctx, err := wpm.dbManager.GetDatabase(dbConfig.Name)
+			if err != nil {
+				return fmt.Errorf("failed to get database context for %s: %w", dbConfig.Name, err)
+			}
+
+			connectionsPerDB := len(ctx.Clients)
+			if connectionsPerDB == 0 {
+				return fmt.Errorf("database %s has no connections", dbConfig.Name)
+			}
+
 			dbWorkers := make([]*Worker, 0)
 			for i := 0; i < workersPerDB; i++ {
-				client := client.New(wpm.config.SocketPath)
-				if err := client.Connect(); err != nil {
-					return fmt.Errorf("failed to connect worker client: %w", err)
-				}
+				// Assign worker to a connection using round-robin
+				connectionIndex := i % connectionsPerDB
+				workerClient := ctx.Clients[connectionIndex]
 
 				worker := &Worker{
-					ID:         workerID,
-					Databases:  []string{dbConfig.Name},
-					Client:     client,
-					StopCh:     make(chan struct{}),
-					Config:     wpm.config,
-					DBManager:  wpm.dbManager,
-					ProfileMgr: wpm.profileMgr,
-					RNG:        rand.New(rand.NewSource(wpm.config.Seed + int64(workerID))),
+					ID:           workerID,
+					Databases:    []string{dbConfig.Name},
+					Client:       workerClient,
+					DBConnection: connectionIndex,
+					StopCh:       make(chan struct{}),
+					Config:       wpm.config,
+					DBManager:    wpm.dbManager,
+					ProfileMgr:   wpm.profileMgr,
+					RNG:          rand.New(rand.NewSource(wpm.config.Seed + int64(workerID))),
 				}
 
 				wpm.workers = append(wpm.workers, worker)
@@ -125,24 +137,36 @@ func (wpm *WorkerPoolManager) allocateWorkers(totalWorkers int) error {
 		}
 	} else {
 		// Use per-database worker counts
+		// Distribute workers across connections per database
 		workerID := 0
 		for _, dbConfig := range wpm.config.Databases {
+			// Get database context to access connections
+			ctx, err := wpm.dbManager.GetDatabase(dbConfig.Name)
+			if err != nil {
+				return fmt.Errorf("failed to get database context for %s: %w", dbConfig.Name, err)
+			}
+
+			connectionsPerDB := len(ctx.Clients)
+			if connectionsPerDB == 0 {
+				return fmt.Errorf("database %s has no connections", dbConfig.Name)
+			}
+
 			dbWorkers := make([]*Worker, 0)
 			for i := 0; i < dbConfig.Workers; i++ {
-				client := client.New(wpm.config.SocketPath)
-				if err := client.Connect(); err != nil {
-					return fmt.Errorf("failed to connect worker client: %w", err)
-				}
+				// Assign worker to a connection using round-robin
+				connectionIndex := i % connectionsPerDB
+				workerClient := ctx.Clients[connectionIndex]
 
 				worker := &Worker{
-					ID:         workerID,
-					Databases:  []string{dbConfig.Name},
-					Client:     client,
-					StopCh:     make(chan struct{}),
-					Config:     wpm.config,
-					DBManager:  wpm.dbManager,
-					ProfileMgr: wpm.profileMgr,
-					RNG:        rand.New(rand.NewSource(wpm.config.Seed + int64(workerID))),
+					ID:           workerID,
+					Databases:    []string{dbConfig.Name},
+					Client:       workerClient,
+					DBConnection: connectionIndex,
+					StopCh:       make(chan struct{}),
+					Config:       wpm.config,
+					DBManager:    wpm.dbManager,
+					ProfileMgr:   wpm.profileMgr,
+					RNG:          rand.New(rand.NewSource(wpm.config.Seed + int64(workerID))),
 				}
 
 				wpm.workers = append(wpm.workers, worker)
@@ -309,9 +333,8 @@ func (wpm *WorkerPoolManager) Stop() {
 func (wpm *WorkerPoolManager) stopAllWorkers() {
 	for _, worker := range wpm.workers {
 		close(worker.StopCh)
-		if worker.Client != nil {
-			worker.Client.Close()
-		}
+		// Note: We don't close the client here because it's shared across workers
+		// and managed by DatabaseManager. Closing is handled in DatabaseManager.CloseAll()
 	}
 }
 

@@ -28,6 +28,7 @@ go run docdb/tests/load/cmd/loadtest/main.go \
   -socket /tmp/docdb.sock \
   -db-name loadtest \
   -wal-dir ./docdb/data/wal \
+  -output-dir ./docdb/tests/load/results \
   -output results.json
 ```
 
@@ -77,7 +78,10 @@ go run docdb/tests/load/cmd/loadtest/main.go \
     WAL directory path. Default: /tmp/docdb/wal
 
 -output string
-    Output JSON file path. Default: loadtest_results.json
+    Output JSON file name (relative to output-dir). Default: loadtest_results.json
+
+-output-dir string
+    Base directory for all outputs (JSON, CSV, reports). Default: docdb/tests/load/results
 
 -csv
     Generate CSV output files. Default: false

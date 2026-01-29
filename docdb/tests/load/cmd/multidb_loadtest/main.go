@@ -21,12 +21,20 @@ func main() {
 	configFile := flag.String("config", "", "Path to configuration file (JSON)")
 	databasesFlag := flag.String("databases", "", "Comma-separated database names (alternative to config file)")
 	workersPerDB := flag.Int("workers-per-db", 10, "Workers per database (when using -databases)")
+	connectionsPerDB := flag.Int("connections-per-db", 1, "Number of independent client connections per database")
 	duration := flag.Duration("duration", 5*time.Minute, "Test duration")
 	socketPath := flag.String("socket", "/tmp/docdb.sock", "IPC socket path")
 	walDir := flag.String("wal-dir", "./data/wal", "WAL directory path")
-	outputPath := flag.String("output", "multidb_results.json", "Output JSON file path")
+	outputPath := flag.String("output", "multidb_results.json", "Output JSON file name (relative to output-dir/json)")
+	outputDir := flag.String("output-dir", "docdb/tests/load/results_multidb", "Base directory for all outputs (JSON, CSV, reports)")
 	csvOutput := flag.Bool("csv", false, "Generate CSV output files")
 	seed := flag.Int64("seed", time.Now().UnixNano(), "Random seed")
+	docSize := flag.Int("doc-size", 1024, "Document size in bytes")
+	docCount := flag.Int("doc-count", 10000, "Number of unique documents per database")
+	readPercent := flag.Int("read-percent", 40, "Percentage of read operations")
+	writePercent := flag.Int("write-percent", 30, "Percentage of write operations")
+	updatePercent := flag.Int("update-percent", 20, "Percentage of update operations")
+	deletePercent := flag.Int("delete-percent", 10, "Percentage of delete operations")
 	flag.Parse()
 
 	var cfg *load.MultiDBLoadTestConfig
@@ -40,7 +48,7 @@ func main() {
 		}
 	} else if *databasesFlag != "" {
 		// Create config from command-line flags
-		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *duration, *socketPath, *walDir, *outputPath, *csvOutput, *seed)
+		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *connectionsPerDB, *duration, *socketPath, *walDir, *outputPath, *csvOutput, *seed, *docSize, *docCount, *readPercent, *writePercent, *updatePercent, *deletePercent)
 	} else {
 		log.Fatalf("Must specify either -config or -databases")
 	}
@@ -48,6 +56,15 @@ func main() {
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
+	}
+
+	// Ensure output directory layout exists and derive full output path
+	jsonDir, _, _, _, err := load.EnsureOutputDirs(*outputDir)
+	if err != nil {
+		log.Fatalf("Failed to create output directories under %s: %v", *outputDir, err)
+	}
+	if !filepath.IsAbs(cfg.OutputPath) {
+		cfg.OutputPath = filepath.Join(jsonDir, *outputPath)
 	}
 
 	log.Printf("Starting multi-database load test with %d databases", len(cfg.Databases))
@@ -70,7 +87,7 @@ func main() {
 	// Initialize databases
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	for _, dbConfig := range cfg.Databases {
-		ctx, err := dbManager.AddDatabase(dbConfig, healingClient, cfg.WALDir)
+		ctx, err := dbManager.AddDatabase(dbConfig, healingClient, cfg.WALDir, cfg.ConnectionsPerDB)
 		if err != nil {
 			log.Fatalf("Failed to add database %s: %v", dbConfig.Name, err)
 		}
@@ -78,7 +95,7 @@ func main() {
 		// Generate payloads for this database
 		ctx.Payloads = generatePayloads(dbConfig.DocumentCount, dbConfig.DocumentSize, rng)
 
-		log.Printf("Initialized database '%s' with ID %d", dbConfig.Name, ctx.DBID)
+		log.Printf("Initialized database '%s' with ID %d (%d connections)", dbConfig.Name, ctx.DBID, len(ctx.Clients))
 	}
 
 	// Create workload profile manager
@@ -187,9 +204,9 @@ func main() {
 
 	// Write CSV if requested
 	if cfg.CSVOutput {
-		outputDir := filepath.Dir(cfg.OutputPath)
-		if outputDir == "" {
-			outputDir = "."
+		baseDir := filepath.Dir(cfg.OutputPath)
+		if baseDir == "" {
+			baseDir = "."
 		}
 		csvResults := &load.MultiDBTestResults{
 			TestConfig:      results.TestConfig,
@@ -198,15 +215,15 @@ func main() {
 			Databases:       results.Databases,
 			Global:          results.Global,
 		}
-		if err := load.WriteMultiDBCSV(csvResults, outputDir); err != nil {
+		if err := load.WriteMultiDBCSV(csvResults, baseDir); err != nil {
 			log.Printf("Warning: Failed to write CSV files: %v", err)
 		} else {
-			log.Printf("CSV files written to %s", outputDir)
+			log.Printf("CSV files written to %s", baseDir)
 		}
 	}
 }
 
-func createConfigFromFlags(databasesStr string, workersPerDB int, duration time.Duration, socketPath, walDir, outputPath string, csvOutput bool, seed int64) *load.MultiDBLoadTestConfig {
+func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB int, duration time.Duration, socketPath, walDir, outputPath string, csvOutput bool, seed int64, docSize, docCount, readPercent, writePercent, updatePercent, deletePercent int) *load.MultiDBLoadTestConfig {
 	cfg := load.NewMultiDBConfig()
 	cfg.Duration = duration
 	cfg.SocketPath = socketPath
@@ -215,6 +232,13 @@ func createConfigFromFlags(databasesStr string, workersPerDB int, duration time.
 	cfg.CSVOutput = csvOutput
 	cfg.Seed = seed
 	cfg.MetricsInterval = 1 * time.Second
+	cfg.ConnectionsPerDB = connectionsPerDB
+
+	// Set CRUD percentages
+	cfg.ReadPercent = readPercent
+	cfg.WritePercent = writePercent
+	cfg.UpdatePercent = updatePercent
+	cfg.DeletePercent = deletePercent
 
 	// Parse database names
 	dbNames := strings.Split(databasesStr, ",")
@@ -226,8 +250,8 @@ func createConfigFromFlags(databasesStr string, workersPerDB int, duration time.
 		cfg.AddDatabase(load.DatabaseConfig{
 			Name:          dbName,
 			Workers:       workersPerDB,
-			DocumentSize:  1024,
-			DocumentCount: 10000,
+			DocumentSize:  docSize,
+			DocumentCount: docCount,
 			CRUDPercent:   nil, // Use default or profile
 			WALDir:        "",
 		})
