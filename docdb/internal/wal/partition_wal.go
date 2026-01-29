@@ -221,7 +221,7 @@ func (pw *PartitionWAL) rotate() error {
 	return nil
 }
 
-// Close closes the partition WAL.
+// Close closes the partition WAL. Syncs the file before closing so replay after reopen sees all data.
 func (pw *PartitionWAL) Close() error {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
@@ -236,6 +236,7 @@ func (pw *PartitionWAL) Close() error {
 	}
 
 	if pw.file != nil {
+		_ = pw.file.Sync()
 		pw.file.Close()
 		pw.file = nil
 	}

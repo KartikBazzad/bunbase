@@ -14,14 +14,14 @@ func TestCompactionCrash(t *testing.T) {
 	// Create multiple documents to trigger compaction threshold
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 20; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
 
 	// Delete some documents to create tombstones
 	for i := 1; i <= 10; i++ {
-		if err := db.Delete(uint64(i)); err != nil {
+		if err := db.Delete(defaultColl, uint64(i)); err != nil {
 			t.Fatalf("Failed to delete document %d: %v", i, err)
 		}
 	}
@@ -70,7 +70,7 @@ func TestCompactionCrashWithPartialWrite(t *testing.T) {
 	// Create documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 10; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}

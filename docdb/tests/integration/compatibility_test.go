@@ -16,10 +16,13 @@ func TestV01DatabaseOpenInV02(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
 	// Create a v0.1 database (without collections)
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -39,7 +42,7 @@ func TestV01DatabaseOpenInV02(t *testing.T) {
 	db.Close()
 
 	// Reopen database - should work with v0.2
-	db2 := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	db2 := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db2.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -82,9 +85,12 @@ func TestV01DocumentsInDefaultCollection(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -121,9 +127,12 @@ func TestMixedV01V02WALReplay(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -148,7 +157,7 @@ func TestMixedV01V02WALReplay(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify both collections work
-	db2 := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	db2 := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db2.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
@@ -185,9 +194,12 @@ func TestV01OperationsStillWork(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

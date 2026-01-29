@@ -48,11 +48,12 @@ func TestWALRotation(t *testing.T) {
 
 	// Write enough data to trigger rotation.
 	// Use a large, but valid, JSON string payload.
+	const coll = "_default"
 	payload := []byte(`{"data":"` + strings.Repeat("x", 100*1024-30) + `"}`) // ~100KB JSON
 
 	for i := 0; i < 15; i++ {
 		docID := uint64(i + 1)
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("failed to create document %d: %v", docID, err)
 		}
@@ -102,11 +103,12 @@ func TestMultiSegmentRecovery(t *testing.T) {
 	}
 
 	// Large, valid JSON payload for multi-segment recovery.
+	const coll = "_default"
 	payload := []byte(`{"data":"` + strings.Repeat("x", 100*1024-30) + `"}`)
 
 	for i := 0; i < 15; i++ {
 		docID := uint64(i + 1)
-		err = db1.Create(docID, payload)
+		err = db1.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("failed to create document %d: %v", docID, err)
 		}
@@ -129,7 +131,7 @@ func TestMultiSegmentRecovery(t *testing.T) {
 	// Verify all documents are recoverable
 	for i := 0; i < 15; i++ {
 		docID := uint64(i + 1)
-		data, err := db2.Read(docID)
+		data, err := db2.Read(coll, docID)
 		if err != nil {
 			t.Errorf("failed to read document %d after recovery: %v", docID, err)
 		}
@@ -171,11 +173,12 @@ func TestRotationDuringCrash(t *testing.T) {
 	}
 
 	// Write data approaching rotation threshold using valid JSON payloads.
+	const coll = "_default"
 	payload := []byte(`{"data":"` + strings.Repeat("x", 800*1024-30) + `"}`) // ~800KB
 
 	for i := 0; i < 10; i++ {
 		docID := uint64(i + 1)
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("failed to create document %d: %v", docID, err)
 		}
@@ -204,7 +207,7 @@ func TestRotationDuringCrash(t *testing.T) {
 	// Verify documents are recoverable
 	for i := 0; i < 10; i++ {
 		docID := uint64(i + 1)
-		data, err := db2.Read(docID)
+		data, err := db2.Read(coll, docID)
 		if err != nil {
 			t.Errorf("failed to read document %d after crash recovery: %v", docID, err)
 		}

@@ -8,6 +8,7 @@ This document defines how the BunBase repository is organized and how new compon
 - `functions/` – Go-based control plane for running Bun workers that execute JS/TS functions.
 - `platform/` – Go Platform API (auth, projects, function deployment, integration with Functions).
 - `platform-web/` – React + Vite + Tailwind dashboard for the BunBase Platform.
+- `buncast/` – Go Pub/Sub service (event bus for cross-service events).
 - `requirements/` – Product and feature requirements (this is where `platform.md` lives).
 - `planning/` – Plans, RFCs, and design documents (this file, shared libraries plan, etc.).
 - `docs/` – Cross-cutting architecture, development workflow, and onboarding docs.

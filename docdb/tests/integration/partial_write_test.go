@@ -52,11 +52,12 @@ func TestPartialWrite_UnverifiedRecordSkipped(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupSingleDBForPartialWrite(t, "partial-unverified")
 	defer cleanup()
 
+	const coll = "_default"
 	docID := uint64(1)
 	payload := []byte(`{"data":"test"}`)
 
 	// Create a document normally (this writes with verification flag)
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create(coll, docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -121,7 +122,7 @@ func TestPartialWrite_UnverifiedRecordSkipped(t *testing.T) {
 	defer db2.Close()
 
 	// The original document should still be readable
-	got, err := db2.Read(docID)
+	got, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read original document failed: %v", err)
 	}
@@ -136,11 +137,12 @@ func TestPartialWrite_CrashBeforeVerificationFlag(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupSingleDBForPartialWrite(t, "partial-crash")
 	defer cleanup()
 
+	const coll = "_default"
 	docID := uint64(1)
 	payload := []byte(`{"data":"crash test"}`)
 
 	// Create document normally
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create(coll, docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -204,7 +206,7 @@ func TestPartialWrite_CrashBeforeVerificationFlag(t *testing.T) {
 	defer db2.Close()
 
 	// Original document should still be readable
-	got, err := db2.Read(docID)
+	got, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read original document failed: %v", err)
 	}
@@ -230,16 +232,17 @@ func TestPartialWrite_VerifiedRecordReadable(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupSingleDBForPartialWrite(t, "partial-verified")
 	defer cleanup()
 
+	const coll = "_default"
 	docID := uint64(1)
 	payload := []byte(`{"data":"verified test"}`)
 
 	// Create document (writes with verification flag)
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create(coll, docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
 	// Verify it's readable immediately
-	got, err := db.Read(docID)
+	got, err := db.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -267,7 +270,7 @@ func TestPartialWrite_VerifiedRecordReadable(t *testing.T) {
 	defer db2.Close()
 
 	// Should still be readable after restart
-	got2, err := db2.Read(docID)
+	got2, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read after restart failed: %v", err)
 	}
@@ -285,11 +288,12 @@ func TestPartialWrite_RecoverySkipsUnverified(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupSingleDBForPartialWrite(t, "partial-recovery")
 	defer cleanup()
 
+	const coll = "_default"
 	docID := uint64(1)
 	payload := []byte(`{"data":"recovery test"}`)
 
 	// Create document
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create(coll, docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -313,7 +317,7 @@ func TestPartialWrite_RecoverySkipsUnverified(t *testing.T) {
 	defer db2.Close()
 
 	// Document should be recoverable
-	got, err := db2.Read(docID)
+	got, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read after recovery failed: %v", err)
 	}

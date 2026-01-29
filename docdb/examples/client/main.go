@@ -34,12 +34,13 @@ func main() {
 	fmt.Printf("Created database with ID: %d\n", dbID)
 	fmt.Println()
 
+	const collection = "_default"
 	fmt.Println("Creating documents...")
 	for i := 1; i <= 5; i++ {
 		payload := []byte(fmt.Sprintf("Document %d payload", i))
 		docID := uint64(i)
 
-		err := cli.Create(dbID, docID, payload)
+		err := cli.Create(dbID, collection, docID, payload)
 		if err != nil {
 			fmt.Printf("Failed to create document %d: %v\n", docID, err)
 			continue
@@ -53,7 +54,7 @@ func main() {
 	for i := 1; i <= 5; i++ {
 		docID := uint64(i)
 
-		data, err := cli.Read(dbID, docID)
+		data, err := cli.Read(dbID, collection, docID)
 		if err != nil {
 			fmt.Printf("Failed to read document %d: %v\n", docID, err)
 			continue
@@ -67,7 +68,7 @@ func main() {
 
 	fmt.Println("Updating document 3...")
 	newPayload := []byte("Updated payload for document 3")
-	err = cli.Update(dbID, 3, newPayload)
+	err = cli.Update(dbID, collection, 3, newPayload)
 	if err != nil {
 		fmt.Printf("Failed to update document 3: %v\n", err)
 	} else {
@@ -76,7 +77,7 @@ func main() {
 	fmt.Println()
 
 	fmt.Println("Reading updated document 3...")
-	data, err := cli.Read(dbID, 3)
+	data, err := cli.Read(dbID, collection, 3)
 	if err != nil {
 		fmt.Printf("Failed to read document 3: %v\n", err)
 	} else {
@@ -87,7 +88,7 @@ func main() {
 	fmt.Println()
 
 	fmt.Println("Deleting document 5...")
-	err = cli.Delete(dbID, 5)
+	err = cli.Delete(dbID, collection, 5)
 	if err != nil {
 		fmt.Printf("Failed to delete document 5: %v\n", err)
 	} else {
@@ -99,7 +100,7 @@ func main() {
 	for i := 1; i <= 5; i++ {
 		docID := uint64(i)
 
-		data, err := cli.Read(dbID, docID)
+		data, err := cli.Read(dbID, collection, docID)
 		if err != nil {
 			fmt.Printf("  Document %d: not found (as expected)\n", docID)
 			continue
@@ -116,12 +117,12 @@ func main() {
 
 	// Create JSON documents
 	type User struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		Email    string `json:"email"`
-		Age      int    `json:"age"`
-		Active   bool   `json:"active"`
-		Tags     []string `json:"tags"`
+		ID       int                    `json:"id"`
+		Name     string                 `json:"name"`
+		Email    string                 `json:"email"`
+		Age      int                    `json:"age"`
+		Active   bool                   `json:"active"`
+		Tags     []string               `json:"tags"`
 		Metadata map[string]interface{} `json:"metadata"`
 	}
 
@@ -134,14 +135,14 @@ func main() {
 	fmt.Println("Creating JSON documents...")
 	for i, user := range jsonDocs {
 		docID := uint64(100 + i) // Use IDs 100, 101, 102
-		
+
 		jsonData, err := json.MarshalIndent(user, "", "  ")
 		if err != nil {
 			fmt.Printf("Failed to marshal JSON for document %d: %v\n", docID, err)
 			continue
 		}
 
-		err = cli.Create(dbID, docID, jsonData)
+		err = cli.Create(dbID, collection, docID, jsonData)
 		if err != nil {
 			fmt.Printf("Failed to create JSON document %d: %v\n", docID, err)
 			continue
@@ -156,7 +157,7 @@ func main() {
 	for i := 0; i < len(jsonDocs); i++ {
 		docID := uint64(100 + i)
 
-		data, err := cli.Read(dbID, docID)
+		data, err := cli.Read(dbID, collection, docID)
 		if err != nil {
 			fmt.Printf("Failed to read JSON document %d: %v\n", docID, err)
 			continue

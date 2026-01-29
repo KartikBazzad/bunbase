@@ -94,9 +94,9 @@ type LogicalDB struct {
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
-	maxConcurrentQueries := cfg.Query.MaxConcurrentQueries
-	if maxConcurrentQueries <= 0 {
-		maxConcurrentQueries = 100 // Fallback default
+	maxConcurrentQueries := 100 // Default when cfg nil or not set
+	if cfg != nil && cfg.Query.MaxConcurrentQueries > 0 {
+		maxConcurrentQueries = cfg.Query.MaxConcurrentQueries
 	}
 	querySemaphore := make(chan struct{}, maxConcurrentQueries)
 
@@ -124,9 +124,9 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 
 // NewLogicalDBWithConfig creates a LogicalDB with explicit LogicalDBConfig (v0.4).
 func NewLogicalDBWithConfig(dbID uint64, dbName string, cfg *config.Config, dbCfg *config.LogicalDBConfig, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
-	maxConcurrentQueries := cfg.Query.MaxConcurrentQueries
-	if maxConcurrentQueries <= 0 {
-		maxConcurrentQueries = 100 // Fallback default
+	maxConcurrentQueries := 100 // Default when cfg nil or not set
+	if cfg != nil && cfg.Query.MaxConcurrentQueries > 0 {
+		maxConcurrentQueries = cfg.Query.MaxConcurrentQueries
 	}
 	querySemaphore := make(chan struct{}, maxConcurrentQueries)
 
@@ -264,6 +264,10 @@ func (db *LogicalDB) executeCreateOnPartition(partition *Partition, collection s
 		db.memory.Free(db.dbID, memoryNeeded)
 		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
 	}
+	if err := wal.Write(txID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL commit marker: %w", err)}
+	}
 
 	db.txnsCommitted++
 	partition.index.Set(collection, newVersion)
@@ -343,6 +347,10 @@ func (db *LogicalDB) executeUpdateOnPartition(partition *Partition, collection s
 		db.memory.Free(db.dbID, memoryNeeded)
 		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
 	}
+	if err := wal.Write(txID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL commit marker: %w", err)}
+	}
 
 	db.txnsCommitted++
 	partition.index.Set(collection, newVersion)
@@ -372,6 +380,9 @@ func (db *LogicalDB) executeDeleteOnPartition(partition *Partition, collection s
 	wal := partition.GetWAL()
 	if err := wal.Write(txID, db.dbID, collection, docID, types.OpDelete, nil); err != nil {
 		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
+	}
+	if err := wal.Write(txID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL commit marker: %w", err)}
 	}
 
 	db.txnsCommitted++
@@ -541,15 +552,19 @@ func (db *LogicalDB) openLegacy(dataDir string, walDir string) error {
 }
 
 // openPartitioned opens a LogicalDB in partitioned mode (v0.4, PartitionCount > 1).
+// Partition WALs live under walDir/dbName/ (p0.wal, p1.wal, ...) so each DB has its own WAL files.
 func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCount int) error {
-	// Phase D.8: Validate partition count limit
-	maxPartitions := db.cfg.Query.MaxPartitionsPerDB
-	if maxPartitions > 0 && partitionCount > maxPartitions {
+	// Phase D.8: Validate partition count limit (defensive: cfg may be nil)
+	if db.cfg != nil && db.cfg.Query.MaxPartitionsPerDB > 0 && partitionCount > db.cfg.Query.MaxPartitionsPerDB {
 		return ErrTooManyPartitions
 	}
 
-	// Ensure checkpoint directory exists
-	checkpointDir := filepath.Join(walDir, "checkpoints")
+	// Per-database WAL directory (same idea as legacy dbname.wal)
+	partitionWalDir := filepath.Join(walDir, db.dbName)
+	if err := os.MkdirAll(partitionWalDir, 0755); err != nil {
+		return fmt.Errorf("failed to create partition WAL directory: %w", err)
+	}
+	checkpointDir := filepath.Join(partitionWalDir, "checkpoints")
 	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
 		return fmt.Errorf("failed to create checkpoint directory: %w", err)
 	}
@@ -559,8 +574,8 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 	for i := 0; i < partitionCount; i++ {
 		db.partitions[i] = NewPartition(i, db.dbConfig.QueueSize, db.memory, db.logger)
 
-		// Create partition WAL
-		walPath := filepath.Join(walDir, fmt.Sprintf("p%d.wal", i))
+		// Create partition WAL under walDir/dbName/p{i}.wal
+		walPath := filepath.Join(partitionWalDir, fmt.Sprintf("p%d.wal", i))
 		maxSize := db.dbConfig.MaxSegmentSize
 		if maxSize == 0 {
 			maxSize = int64(db.cfg.WAL.MaxFileSizeMB * 1024 * 1024)
@@ -605,7 +620,7 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		replayWg.Add(1)
 		go func() {
 			defer replayWg.Done()
-			walPath := filepath.Join(walDir, fmt.Sprintf("p%d.wal", i))
+			walPath := filepath.Join(partitionWalDir, fmt.Sprintf("p%d.wal", i))
 			txID, lsn, err := db.replayPartitionWALForPartition(db.partitions[i], walPath)
 			maxTxIDs[i] = txID
 			maxLSNs[i] = lsn
@@ -684,13 +699,20 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 	dataFile := partition.GetDataFile()
 	index := partition.GetIndex()
 
-	for txID, recs := range txRecords {
+	// Apply transactions in txID order so Create before Delete is preserved.
+	txIDs := make([]uint64, 0, len(txRecords))
+	for txID := range txRecords {
 		if !committed[txID] {
 			continue
 		}
 		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
 			continue
 		}
+		txIDs = append(txIDs, txID)
+	}
+	sort.Slice(txIDs, func(i, j int) bool { return txIDs[i] < txIDs[j] })
+	for _, txID := range txIDs {
+		recs := txRecords[txID]
 		for _, rec := range recs {
 			checkRecoveryCommittedOnly(txID, committed)
 			collection := rec.Collection
@@ -819,6 +841,14 @@ func (db *LogicalDB) newPartitionRowStream(partition *Partition, collection stri
 	dataFile := partition.GetDataFile()
 	go func() {
 		defer close(ch)
+		defer func() {
+			if r := recover(); r != nil {
+				select {
+				case ch <- streamResult{err: fmt.Errorf("scan panic: %v", r)}:
+				default:
+				}
+			}
+		}()
 		idx.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
 			data, err := dataFile.Read(version.Offset, version.Length)
 			if err != nil {
@@ -1858,8 +1888,10 @@ func (db *LogicalDB) replayWAL() error {
 		return nil
 	})
 
+	// Apply buffered records even when Replay returned error (e.g. corrupt record).
+	// We truncate at corruption and have already buffered all valid records before the error.
 	if err != nil {
-		return fmt.Errorf("corrupt WAL: %w", err)
+		db.logger.Warn("Failed to replay WAL: %v", err)
 	}
 
 	if lastCheckpointTxID > 0 {
@@ -1871,17 +1903,21 @@ func (db *LogicalDB) replayWAL() error {
 		db.mvcc.SetCurrentTxID(maxTxID + 1)
 	}
 
-	// Apply only records from committed transactions.
-	// Use WriteNoSync during replay; one Sync at the end (much faster than N fsyncs).
-	for txID, recs := range txRecords {
+	// Apply only records from committed transactions, in txID order,
+	// so Create-before-Delete ordering is preserved (map iteration is non-deterministic).
+	txIDs := make([]uint64, 0, len(txRecords))
+	for txID := range txRecords {
 		if !committed[txID] {
 			continue
 		}
-		// Skip transactions at or before checkpoint (state already applied at checkpoint time).
 		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
 			continue
 		}
-
+		txIDs = append(txIDs, txID)
+	}
+	sort.Slice(txIDs, func(i, j int) bool { return txIDs[i] < txIDs[j] })
+	for _, txID := range txIDs {
+		recs := txRecords[txID]
 		for _, rec := range recs {
 			collection := rec.Collection
 			if collection == "" {
@@ -1991,10 +2027,11 @@ func (db *LogicalDB) replayWAL() error {
 	}
 
 	// Single fsync after all replay writes (was N fsyncs during apply).
-	if err := db.dataFile.Sync(); err != nil {
-		db.logger.Warn("Data file sync after replay failed: %v", err)
+	if syncErr := db.dataFile.Sync(); syncErr != nil {
+		db.logger.Warn("Data file sync after replay failed: %v", syncErr)
 	}
 
 	db.logger.Info("Replayed %d WAL records (committed only)", records)
-	return nil
+	// Return replay error so caller can log; state is still consistent (we applied good records).
+	return err
 }

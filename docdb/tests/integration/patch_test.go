@@ -19,9 +19,12 @@ func TestPatchSetOperation(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -66,9 +69,12 @@ func TestPatchSetNestedField(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -112,9 +118,12 @@ func TestPatchDeleteOperation(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -159,9 +168,12 @@ func TestPatchInsertOperation(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -207,9 +219,12 @@ func TestPatchMultipleOperations(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -259,9 +274,12 @@ func TestPatchInvalidPath(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -288,9 +306,12 @@ func TestPatchNonObjectDocument(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -319,9 +340,12 @@ func TestPatchDocumentNotFound(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -342,9 +366,12 @@ func TestPatchEmptyOperations(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

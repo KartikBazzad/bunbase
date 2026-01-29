@@ -107,8 +107,9 @@ func TestWALUnchangedOnInvalidInput(t *testing.T) {
 		[]byte("hex:deadbeef"),
 	}
 
+	const coll = "_default"
 	for _, payload := range invalidPayloads {
-		err = db.Create(1, payload)
+		err = db.Create(coll, 1, payload)
 		if err == nil {
 			t.Errorf("expected error for invalid payload: %s", string(payload))
 		}
@@ -137,8 +138,9 @@ func TestEngineValidatesJSONBeforeWAL(t *testing.T) {
 	}
 
 	// Create a valid document first
+	const coll = "_default"
 	validPayload := []byte(`{"name":"Alice","age":30}`)
-	err = db.Create(1, validPayload)
+	err = db.Create(coll, 1, validPayload)
 	if err != nil {
 		t.Fatalf("failed to create valid document: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestEngineValidatesJSONBeforeWAL(t *testing.T) {
 
 	// Try to create invalid document
 	invalidPayload := []byte("not json")
-	err = db.Create(2, invalidPayload)
+	err = db.Create(coll, 2, invalidPayload)
 	if err != errors.ErrInvalidJSON {
 		t.Errorf("expected ErrInvalidJSON, got: %v", err)
 	}

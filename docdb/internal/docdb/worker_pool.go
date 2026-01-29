@@ -6,6 +6,7 @@ package docdb
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"strconv"
 	"sync"
@@ -190,6 +191,23 @@ func (w *worker) run() {
 }
 
 func (w *worker) executeTask(task *Task) {
+	// Recover from panics so one bad task does not kill the worker; send error and keep worker alive.
+	defer func() {
+		if r := recover(); r != nil {
+			if w.logger != nil {
+				w.logger.Error("worker task panic: %v", r)
+			}
+			select {
+			case task.ResultCh <- &Result{
+				Status: types.StatusError,
+				Error:  fmt.Errorf("task panic: %v", r),
+			}:
+			default:
+				// Client may have given up; avoid blocking worker
+			}
+		}
+	}()
+
 	// Get partition
 	partition := w.db.getPartition(task.PartitionID)
 	if partition == nil {
@@ -210,11 +228,10 @@ func (w *worker) executeTask(task *Task) {
 	// Writes: lock partition (exactly one writer at a time)
 	lockStart := time.Now()
 	partition.mu.Lock()
+	defer partition.mu.Unlock() // Ensure unlock on panic
 	lockWait := time.Since(lockStart)
 	metrics.RecordPartitionLockWait(w.db.Name(), strconv.Itoa(partition.ID()), lockWait)
 	checkSingleWriter(partition, task.Op)
 	result := w.db.executeOnPartition(partition, task)
-	partition.mu.Unlock()
-
 	task.ResultCh <- result
 }

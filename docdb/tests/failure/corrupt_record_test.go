@@ -14,7 +14,7 @@ func TestCorruptWALRecord(t *testing.T) {
 	// Create documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 5; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestCorruptDataFileRecord(t *testing.T) {
 	// Create documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 5; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestCorruptRecordIsolation(t *testing.T) {
 	}
 
 	for i, payload := range payloads {
-		if err := db.Create(uint64(i+1), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i+1), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i+1, err)
 		}
 	}

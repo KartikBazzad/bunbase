@@ -160,6 +160,9 @@ func (s *Server) acceptLoop() {
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("connection handler panic: %v", r)
+		}
 		conn.Close()
 		s.connMu.Lock()
 		delete(s.connections, conn)

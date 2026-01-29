@@ -13,7 +13,7 @@ func TestWALWriteCrashMidTransaction(t *testing.T) {
 
 	// Create a document
 	payload := []byte(`{"key":"value1"}`)
-	if err := db.Create(1, payload); err != nil {
+	if err := db.Create(defaultColl, 1, payload); err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
@@ -57,7 +57,7 @@ func TestWALWriteCrashMultipleTransactions(t *testing.T) {
 	}
 
 	for i, payload := range payloads {
-		if err := db.Create(uint64(i+1), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i+1), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i+1, err)
 		}
 	}
@@ -102,7 +102,7 @@ func TestWALWriteCrashDuringCommitMarker(t *testing.T) {
 
 	// Create a document
 	payload := []byte(`{"key":"value"}`)
-	if err := db.Create(1, payload); err != nil {
+	if err := db.Create(defaultColl, 1, payload); err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 

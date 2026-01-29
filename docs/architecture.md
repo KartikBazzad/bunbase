@@ -1,11 +1,12 @@
 ## BunBase Architecture Overview
 
-BunBase is composed of four primary components that live in this monorepo:
+BunBase is composed of five primary components that live in this monorepo:
 
 - `platform-web/` – React + Vite dashboard used by developers.
 - `platform/` – Go API server that handles auth, projects, and function deployment.
 - `functions/` – Go control plane managing Bun workers that execute JS/TS functions.
 - `docdb/` – Go document database used for persistent data.
+- `buncast/` – Go Pub/Sub service (event bus) for cross-service events (e.g. function deployed).
 
 ### High-Level Data Flow
 
@@ -15,6 +16,7 @@ flowchart LR
   platformWeb --> platformAPI[PlatformAPI]
   platformAPI --> functionsService[FunctionsService]
   functionsService --> docdbService[DocDB]
+  platformAPI --> buncast[Buncast]
 
   subgraph clientSide[Client]
     platformWeb
@@ -24,6 +26,7 @@ flowchart LR
     platformAPI
     functionsService
     docdbService
+    buncast
   end
 ```
 
@@ -48,6 +51,11 @@ flowchart LR
   - Includes a server binary, interactive shell, and client libraries (including a TypeScript client).
   - **v0.2 Features:** Collections, path-based updates (patch operations), automatic document healing, WAL trimming, error classification, Prometheus metrics.
 
+- **Buncast (`buncast/`)**
+  - In-memory Publish-Subscribe broker for events (e.g. function deployed).
+  - Exposes Unix socket IPC for server-to-server publish/subscribe and HTTP + SSE for dashboard/CLI.
+  - Platform API can publish to Buncast on deploy when `--buncast-socket` is set.
+
 ### Service-Level Documentation
 
 For detailed documentation of each component, see:
@@ -56,6 +64,7 @@ For detailed documentation of each component, see:
 - Functions: `functions/README.md`, `functions/docs/`
 - Platform API: `platform/README.md`
 - Platform Web: `platform-web/README.md`
+- Buncast: `buncast/README.md`, `buncast/docs/`
 
 ### Monorepo Layout
 

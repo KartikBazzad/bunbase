@@ -28,6 +28,7 @@ Historical implementation status and progress reports are in [`implementation-st
 - **Platform**: `implementation-status/platform.md`
 - **DocDB**: `implementation-status/docdb/`
 - **Functions**: `implementation-status/functions/`
+- **Buncast**: `implementation-status/buncast/` - Pub/Sub service status
 
 ## Service-Specific Documentation
 
@@ -37,6 +38,7 @@ Each service maintains its own documentation:
 - **Functions**: `../functions/docs/` - API reference, deployment, function development
 - **Platform API**: `../platform/README.md` - API endpoints and setup
 - **Platform Web**: `../platform-web/README.md` - Frontend setup and design system
+- **Buncast**: `../buncast/README.md`, `../buncast/docs/` - Pub/Sub service, IPC and HTTP API
 
 ## Planning & Requirements
 

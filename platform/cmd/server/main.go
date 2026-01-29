@@ -23,6 +23,7 @@ func main() {
 	port := flag.String("port", "3001", "Server port")
 	functionsSocket := flag.String("functions-socket", "/tmp/functions.sock", "Functions service socket path")
 	bundleBasePath := flag.String("bundle-path", "../functions/data/bundles", "Base path for function bundles")
+	buncastSocket := flag.String("buncast-socket", "", "Buncast IPC socket path (optional; enables publish on deploy)")
 	corsOrigin := flag.String("cors-origin", "http://localhost:5173", "Allowed CORS origin")
 	flag.Parse()
 
@@ -36,7 +37,7 @@ func main() {
 	// Initialize services
 	authService := auth.NewAuth(db.DB)
 	projectService := services.NewProjectService(db.DB)
-	functionService, err := services.NewFunctionService(db.DB, *functionsSocket, *bundleBasePath)
+	functionService, err := services.NewFunctionService(db.DB, *functionsSocket, *bundleBasePath, *buncastSocket)
 	if err != nil {
 		log.Fatalf("Failed to initialize function service: %v", err)
 	}

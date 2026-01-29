@@ -60,6 +60,7 @@ func TestConcurrentWrites(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numWriters)
 
+	const coll = "_default"
 	writer := func(workerID int) {
 		defer wg.Done()
 
@@ -69,7 +70,7 @@ func TestConcurrentWrites(t *testing.T) {
 			// engine invariant under concurrent write load.
 			payload := []byte(fmt.Sprintf(`{"worker":%d,"doc":%d}`, workerID, docID))
 
-			err := db.Create(docID, payload)
+			err := db.Create(coll, docID, payload)
 			if err != nil {
 				t.Logf("Worker %d: Failed to create doc %d: %v", workerID, docID, err)
 			}
@@ -103,10 +104,11 @@ func TestConcurrentReadsWrites(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
+	const coll = "_default"
 	numDocs := 100
 	for i := 1; i <= numDocs; i++ {
 		payload := []byte("initial payload")
-		err := db.Create(uint64(i), payload)
+		err := db.Create(coll, uint64(i), payload)
 		if err != nil {
 			t.Fatalf("Failed to create doc %d: %v", i, err)
 		}
@@ -118,7 +120,7 @@ func TestConcurrentReadsWrites(t *testing.T) {
 		defer wg.Done()
 
 		for i := 1; i <= numDocs; i++ {
-			_, err := db.Read(uint64(i))
+			_, err := db.Read(coll, uint64(i))
 			if err != nil && err != docdb.ErrDocNotFound {
 				t.Logf("Reader %d: Error reading doc %d: %v", workerID, i, err)
 			}
@@ -131,7 +133,7 @@ func TestConcurrentReadsWrites(t *testing.T) {
 		for i := 1; i <= 10; i++ {
 			docID := uint64((workerID * 10) + i)
 			payload := []byte("updated payload")
-			err := db.Update(docID, payload)
+			err := db.Update(coll, docID, payload)
 			if err != nil {
 				t.Logf("Writer %d: Failed to update doc %d: %v", workerID, docID, err)
 			}
@@ -178,9 +180,10 @@ func TestMultipleDBs(t *testing.T) {
 				return
 			}
 
+			const coll = "_default"
 			for j := 1; j <= numDocs; j++ {
 				payload := []byte("multi-db payload")
-				err := db.Create(uint64(j), payload)
+				err := db.Create(coll, uint64(j), payload)
 				if err != nil {
 					t.Logf("DB %d: Failed to create doc %d: %v", dbID, j, err)
 				}
@@ -225,10 +228,11 @@ func TestStarvationPrevention(t *testing.T) {
 	burstyWriter := func(db *docdb.LogicalDB, workerID int) {
 		defer wg.Done()
 
+		const coll = "_default"
 		for i := 0; i < 100; i++ {
 			payload := []byte("bursty payload")
 			docID := uint64(workerID*1000 + i)
-			err := db.Create(docID, payload)
+			err := db.Create(coll, docID, payload)
 			if err != nil {
 				t.Logf("Bursty writer %d: Error creating doc %d: %v", workerID, docID, err)
 			}
@@ -238,10 +242,11 @@ func TestStarvationPrevention(t *testing.T) {
 	slowWriter := func(db *docdb.LogicalDB, workerID int) {
 		defer wg.Done()
 
+		const coll = "_default"
 		for i := 0; i < 100; i++ {
 			payload := []byte("slow payload")
 			docID := uint64(workerID*1000 + i)
-			err := db.Create(docID, payload)
+			err := db.Create(coll, docID, payload)
 			if err != nil {
 				t.Logf("Slow writer %d: Error creating doc %d: %v", workerID, docID, err)
 			}

@@ -62,9 +62,10 @@ func TestCheckpoint_Creation(t *testing.T) {
 	}
 	largePayload := []byte(`{"data":"` + string(largeData) + `"}`) // ~100KB
 
+	const coll = "_default"
 	for i := 1; i <= 20; i++ {
 		docID := uint64(i)
-		if err := db.Create(docID, largePayload); err != nil {
+		if err := db.Create(coll, docID, largePayload); err != nil {
 			t.Fatalf("Create doc %d failed: %v", docID, err)
 		}
 	}
@@ -93,7 +94,7 @@ func TestCheckpoint_Creation(t *testing.T) {
 	// Verify documents are recoverable
 	for i := 1; i <= 20; i++ {
 		docID := uint64(i)
-		got, err := db2.Read(docID)
+		got, err := db2.Read(coll, docID)
 		if err != nil {
 			t.Fatalf("Read doc %d after checkpoint recovery failed: %v", docID, err)
 		}
@@ -115,9 +116,10 @@ func TestCheckpoint_RecoveryFromCheckpoint(t *testing.T) {
 	}
 	largePayload := []byte(`{"data":"` + string(largeData) + `"}`)
 
+	const coll = "_default"
 	for i := 1; i <= 15; i++ {
 		docID := uint64(i)
-		if err := db.Create(docID, largePayload); err != nil {
+		if err := db.Create(coll, docID, largePayload); err != nil {
 			t.Fatalf("Create doc %d failed: %v", docID, err)
 		}
 	}
@@ -156,10 +158,11 @@ func TestCheckpoint_NoCheckpointRecoversAll(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupDBForCheckpoint(t, "checkpoint-none", 0)
 	defer cleanup()
 
+	const coll = "_default"
 	docID := uint64(1)
 	payload := []byte(`{"data":"test"}`)
 
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create(coll, docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -183,7 +186,7 @@ func TestCheckpoint_NoCheckpointRecoversAll(t *testing.T) {
 	}
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Read after recovery failed: %v", err)
 	}

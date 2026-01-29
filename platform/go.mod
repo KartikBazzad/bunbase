@@ -5,10 +5,13 @@ go 1.21
 require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/google/uuid v1.6.0
+	github.com/kartikbazzad/bunbase/buncast v0.0.0
 	github.com/mattn/go-sqlite3 v1.14.20
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.23.0
 )
+
+replace github.com/kartikbazzad/bunbase/buncast => ../buncast
 
 require (
 	github.com/bytedance/sonic v1.11.6 // indirect

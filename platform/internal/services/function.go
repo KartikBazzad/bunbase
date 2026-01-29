@@ -2,12 +2,14 @@ package services
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
 	"github.com/kartikbazzad/bunbase/platform/pkg/functions"
 )
@@ -16,27 +18,36 @@ import (
 type FunctionService struct {
 	db              *sql.DB
 	functionsClient *functions.Client
+	buncastClient   *client.Client // optional: publish events on deploy
 	bundleBasePath  string
 }
 
-// NewFunctionService creates a new FunctionService
-func NewFunctionService(db *sql.DB, functionsSocketPath, bundleBasePath string) (*FunctionService, error) {
-	client, err := functions.NewClient(functionsSocketPath)
+// NewFunctionService creates a new FunctionService.
+// buncastSocketPath is optional; if non-empty, deploy events are published to Buncast.
+func NewFunctionService(db *sql.DB, functionsSocketPath, bundleBasePath, buncastSocketPath string) (*FunctionService, error) {
+	fc, err := functions.NewClient(functionsSocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create functions client: %w", err)
 	}
 
-	return &FunctionService{
+	svc := &FunctionService{
 		db:              db,
-		functionsClient: client,
+		functionsClient: fc,
 		bundleBasePath:  bundleBasePath,
-	}, nil
+	}
+	if buncastSocketPath != "" {
+		svc.buncastClient = client.New(buncastSocketPath)
+	}
+	return svc, nil
 }
 
-// Close closes the functions client
+// Close closes the functions and buncast clients
 func (s *FunctionService) Close() error {
 	if s.functionsClient != nil {
-		return s.functionsClient.Close()
+		_ = s.functionsClient.Close()
+	}
+	if s.buncastClient != nil {
+		_ = s.buncastClient.Close()
 	}
 	return nil
 }
@@ -94,16 +105,29 @@ func (s *FunctionService) DeployFunction(projectID, name, runtime, handler, vers
 		return nil, fmt.Errorf("failed to deploy function: %w", err)
 	}
 
+	// Publish deploy event to Buncast if configured
+	if s.buncastClient != nil {
+		event := map[string]string{
+			"project_id": projectID,
+			"name":       name,
+			"version":    version,
+			"service_id": functionServiceID,
+		}
+		if payload, e := json.Marshal(event); e == nil {
+			_ = s.buncastClient.Publish("functions.deployments", payload)
+		}
+	}
+
 	// Save or update function in platform database
 	now := time.Now().Unix()
-	
+
 	// Check if we need to create or update
 	var existingID string
 	err = s.db.QueryRow(
 		"SELECT id FROM functions WHERE project_id = ? AND name = ?",
 		projectID, name,
 	).Scan(&existingID)
-	
+
 	if err == sql.ErrNoRows {
 		// Create new function record
 		functionID := uuid.New().String()

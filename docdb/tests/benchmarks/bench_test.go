@@ -34,13 +34,14 @@ func BenchmarkCreateDocument(b *testing.B) {
 	}
 	defer db.Close()
 
+	const coll = "_default"
 	payload := []byte("benchmark payload")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		docID := uint64(1)
 		for pb.Next() {
-			err := db.Create(docID, payload)
+			err := db.Create(coll, docID, payload)
 			if err != nil {
 				b.Fatalf("Failed to create document: %v", err)
 			}
@@ -71,10 +72,11 @@ func BenchmarkReadDocument(b *testing.B) {
 	}
 	defer db.Close()
 
+	const coll = "_default"
 	numDocs := 1000
 	for i := 1; i <= numDocs; i++ {
 		payload := []byte("benchmark payload")
-		err := db.Create(uint64(i), payload)
+		err := db.Create(coll, uint64(i), payload)
 		if err != nil {
 			b.Fatalf("Failed to create document: %v", err)
 		}
@@ -84,7 +86,7 @@ func BenchmarkReadDocument(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		docID := uint64(1)
 		for pb.Next() {
-			_, err := db.Read(docID)
+			_, err := db.Read(coll, docID)
 			if err != nil {
 				b.Fatalf("Failed to read document: %v", err)
 			}
@@ -118,9 +120,10 @@ func BenchmarkUpdateDocument(b *testing.B) {
 	}
 	defer db.Close()
 
+	const coll = "_default"
 	payload := []byte("benchmark payload")
 	docID := uint64(1)
-	err = db.Create(docID, payload)
+	err = db.Create(coll, docID, payload)
 	if err != nil {
 		b.Fatalf("Failed to create document: %v", err)
 	}
@@ -128,7 +131,7 @@ func BenchmarkUpdateDocument(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		newPayload := []byte("updated benchmark payload")
-		err := db.Update(docID, newPayload)
+		err := db.Update(coll, docID, newPayload)
 		if err != nil {
 			b.Fatalf("Failed to update document: %v", err)
 		}

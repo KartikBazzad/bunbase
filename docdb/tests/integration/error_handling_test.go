@@ -23,7 +23,7 @@ func TestErrorClassification(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, pool, log)
 
@@ -70,7 +70,7 @@ func TestRetryLogic(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, pool, log)
 
@@ -124,7 +124,7 @@ func TestErrorTracking(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, pool, log)
 
@@ -170,7 +170,7 @@ func TestFileOperationRetry(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, pool, log)
 
@@ -207,7 +207,7 @@ func TestCorruptionErrorTracking(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, pool, log)
 
@@ -358,7 +358,7 @@ func TestErrorClassificationIntegration(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "integrationdb", cfg, memCaps, pool, log)
 

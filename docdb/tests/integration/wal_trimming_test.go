@@ -25,7 +25,7 @@ func TestWALTrimmingAfterCheckpoint(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "trimdb", cfg, memCaps, pool, log)
 
@@ -71,7 +71,7 @@ func TestWALTrimmingDisabled(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "notrimdb", cfg, memCaps, pool, log)
 
@@ -117,7 +117,7 @@ func TestWALTrimmingSegmentRetention(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "retentiondb", cfg, memCaps, pool, log)
 
@@ -163,7 +163,7 @@ func TestWALTrimmingRecovery(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "recoverydb", cfg, memCaps, pool, log)
 
@@ -219,7 +219,7 @@ func TestWALTrimmingNoDataLoss(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "nodatalossdb", cfg, memCaps, pool, log)
 
@@ -284,7 +284,7 @@ func TestWALTrimmingCheckpointCoordination(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "checkpointdb", cfg, memCaps, pool, log)
 
@@ -348,7 +348,7 @@ func TestWALTrimmingSafetyMargin(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "safetydb", cfg, memCaps, pool, log)
 

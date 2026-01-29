@@ -71,16 +71,17 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
+		const coll = "_default"
 		// Valid JSON payload to satisfy engine-level JSON enforcement.
 		payload := []byte(`{"data":"test payload"}`)
 		docID := uint64(1)
 
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("Failed to create document: %v", err)
 		}
 
-		retrieved, err := db.Read(docID)
+		retrieved, err := db.Read(coll, docID)
 		if err != nil {
 			t.Fatalf("Failed to read document: %v", err)
 		}
@@ -89,7 +90,7 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Payload mismatch: got %s, want %s", retrieved, payload)
 		}
 
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err == nil {
 			t.Fatal("Expected error when creating duplicate document")
 		}
@@ -106,21 +107,22 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
+		const coll = "_default"
 		payload := []byte(`{"data":"initial payload"}`)
 		docID := uint64(1)
 
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("Failed to create document: %v", err)
 		}
 
 		newPayload := []byte(`{"data":"updated payload"}`)
-		err = db.Update(docID, newPayload)
+		err = db.Update(coll, docID, newPayload)
 		if err != nil {
 			t.Fatalf("Failed to update document: %v", err)
 		}
 
-		retrieved, err := db.Read(docID)
+		retrieved, err := db.Read(coll, docID)
 		if err != nil {
 			t.Fatalf("Failed to read document: %v", err)
 		}
@@ -141,20 +143,21 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
+		const coll = "_default"
 		payload := []byte(`{"data":"test payload"}`)
 		docID := uint64(1)
 
-		err = db.Create(docID, payload)
+		err = db.Create(coll, docID, payload)
 		if err != nil {
 			t.Fatalf("Failed to create document: %v", err)
 		}
 
-		err = db.Delete(docID)
+		err = db.Delete(coll, docID)
 		if err != nil {
 			t.Fatalf("Failed to delete document: %v", err)
 		}
 
-		_, err = db.Read(docID)
+		_, err = db.Read(coll, docID)
 		if err != docdb.ErrDocNotFound {
 			t.Fatalf("Expected ErrDocNotFound, got: %v", err)
 		}
@@ -171,17 +174,18 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Fatalf("Failed to open database: %v", err)
 		}
 
+		const coll = "_default"
 		numDocs := 100
 		for i := 1; i <= numDocs; i++ {
 			payload := []byte(`{"data":"payload for doc"}`)
-			err := db.Create(uint64(i), payload)
+			err := db.Create(coll, uint64(i), payload)
 			if err != nil {
 				t.Fatalf("Failed to create document %d: %v", i, err)
 			}
 		}
 
 		for i := 1; i <= numDocs; i++ {
-			_, err := db.Read(uint64(i))
+			_, err := db.Read(coll, uint64(i))
 			if err != nil {
 				t.Fatalf("Failed to read document %d: %v", i, err)
 			}
@@ -215,21 +219,22 @@ func TestMVCC(t *testing.T) {
 	}
 	defer db.Close()
 
+	const coll = "_default"
 	payload1 := []byte(`{"data":"version 1"}`)
 	docID := uint64(1)
 
-	err = db.Create(docID, payload1)
+	err = db.Create(coll, docID, payload1)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
 	payload2 := []byte(`{"data":"version 2"}`)
-	err = db.Update(docID, payload2)
+	err = db.Update(coll, docID, payload2)
 	if err != nil {
 		t.Fatalf("Failed to update document: %v", err)
 	}
 
-	retrieved, err := db.Read(docID)
+	retrieved, err := db.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Failed to read document: %v", err)
 	}
@@ -264,10 +269,11 @@ func TestMemoryLimits(t *testing.T) {
 	defer db.Close()
 
 	// Large but valid JSON payload exercising memory limits.
+	const coll = "_default"
 	largePayload := []byte(`{"data":"` + strings.Repeat("x", 2*1024*1024-20) + `"}`)
 	docID := uint64(1)
 
-	err = db.Create(docID, largePayload)
+	err = db.Create(coll, docID, largePayload)
 	if err != docdb.ErrMemoryLimit {
 		t.Fatalf("Expected ErrMemoryLimit, got: %v", err)
 	}
@@ -294,10 +300,11 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
+	const coll = "_default"
 	payload := []byte(`{"data":"persistent payload"}`)
 	docID := uint64(1)
 
-	err = db.Create(docID, payload)
+	err = db.Create(coll, docID, payload)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -312,7 +319,7 @@ func TestPersistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	retrieved, err := db2.Read(docID)
+	retrieved, err := db2.Read(coll, docID)
 	if err != nil {
 		t.Fatalf("Failed to read document after restart: %v", err)
 	}

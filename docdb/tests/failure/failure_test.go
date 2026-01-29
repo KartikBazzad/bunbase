@@ -47,10 +47,11 @@ func TestCorruptWAL(t *testing.T) {
 
 	// Use valid JSON payload so engine-level JSON enforcement still allows
 	// us to exercise WAL corruption behavior.
+	const coll = "_default"
 	payload := []byte(`{"data":"test payload"}`)
 	docID := uint64(1)
 
-	err := db.Create(docID, payload)
+	err := db.Create(coll, docID, payload)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestCorruptWAL(t *testing.T) {
 	}
 	defer db2.Close()
 
-	_, err = db2.Read(docID)
+	_, err = db2.Read(coll, docID)
 	if err == nil {
 		t.Fatal("Expected error when reading after corrupted WAL")
 	}
@@ -104,11 +105,12 @@ func TestTruncatedWAL(t *testing.T) {
 	db, tmpDir, cleanup := setupTestDB(t)
 	defer cleanup()
 
+	const coll = "_default"
 	// Valid JSON payload for truncated WAL scenario.
 	payload := []byte(`{"data":"test payload"}`)
 
 	for i := 0; i < 10; i++ {
-		err := db.Create(uint64(i+1), payload)
+		err := db.Create(coll, uint64(i+1), payload)
 		if err != nil {
 			t.Fatalf("Failed to create document %d: %v", i+1, err)
 		}
@@ -145,7 +147,7 @@ func TestTruncatedWAL(t *testing.T) {
 	defer db2.Close()
 
 	for i := 1; i <= 5; i++ {
-		_, err := db2.Read(uint64(i))
+		_, err := db2.Read(coll, uint64(i))
 		if err != nil {
 			t.Logf("Document %d may not be available after truncation: %v", i, err)
 		}
@@ -177,9 +179,10 @@ func TestMissingWAL(t *testing.T) {
 	defer db.Close()
 
 	// Valid JSON payload for missing WAL scenario.
+	const coll = "_default"
 	payload := []byte(`{"data":"test payload"}`)
 
-	err = db.Create(1, payload)
+	err = db.Create(coll, 1, payload)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -199,7 +202,7 @@ func TestMissingWAL(t *testing.T) {
 	}
 	defer db2.Close()
 
-	retrieved, err := db2.Read(1)
+	retrieved, err := db2.Read(coll, 1)
 	if err != nil {
 		t.Logf("Document may not be available after missing WAL: %v", err)
 	} else {

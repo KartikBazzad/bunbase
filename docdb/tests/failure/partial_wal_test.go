@@ -15,7 +15,7 @@ func TestPartialWALRecovery(t *testing.T) {
 	// Create multiple documents
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 10; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestPartialWALMultiSegment(t *testing.T) {
 	// Create many documents to potentially trigger WAL rotation
 	payload := []byte(`{"data":"test"}`)
 	for i := 1; i <= 50; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i, err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestPartialWALAtRecordBoundary(t *testing.T) {
 	}
 
 	for i, payload := range payloads {
-		if err := db.Create(uint64(i+1), payload); err != nil {
+		if err := db.Create(defaultColl, uint64(i+1), payload); err != nil {
 			t.Fatalf("Failed to create document %d: %v", i+1, err)
 		}
 	}

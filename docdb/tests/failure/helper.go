@@ -1,3 +1,6 @@
+// Package failure provides test helpers for crash simulation, recovery, and failure testing.
+// Helper types and functions are exported so that tests/integration can use them.
+
 package failure
 
 import (
@@ -322,7 +325,6 @@ func (pm *ProcessManager) Kill() error {
 	}
 
 	if runtime.GOOS == "windows" {
-		// Windows doesn't support SIGKILL, use Kill() instead
 		return pm.cmd.Process.Kill()
 	}
 
@@ -347,17 +349,10 @@ func (pm *ProcessManager) PID() int {
 	return pm.cmd.Process.Pid
 }
 
-// SimulateCrashDuringWrite simulates a crash during a write operation by
-// killing the process mid-operation. This is a helper for testing scenarios
-// where we can't easily inject failures.
+// SimulateCrashDuringWrite simulates a crash during a write operation (closes DB abruptly).
 func SimulateCrashDuringWrite(t *testing.T, db *docdb.LogicalDB, docID uint64, payload []byte) error {
-	// For testing purposes, we'll close the database abruptly
-	// In a real crash scenario, the process would be killed
 	if err := db.Close(); err != nil {
 		return fmt.Errorf("failed to close database: %w", err)
 	}
-
-	// Simulate crash by truncating WAL (representing incomplete write)
-	// This is a simplified simulation - real crash tests would use process management
 	return nil
 }

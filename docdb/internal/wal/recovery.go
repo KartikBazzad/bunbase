@@ -45,6 +45,7 @@ func (r *Recovery) Replay(handler RecoveryHandler) error {
 		r.logger.Info("Replaying WAL segment %d/%d: %s", i+1, len(walPaths), walPath)
 
 		segRecords, err := r.replaySegment(walPath, handler, i == len(walPaths)-1)
+		totalRecords += segRecords
 		if err != nil {
 			lastError = err
 			r.logger.Error("Failed to replay segment %s: %v", walPath, err)
@@ -54,7 +55,6 @@ func (r *Recovery) Replay(handler RecoveryHandler) error {
 			break
 		}
 
-		totalRecords += segRecords
 		r.logger.Info("Replayed %d records from segment %s", segRecords, walPath)
 	}
 

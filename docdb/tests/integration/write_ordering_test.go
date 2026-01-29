@@ -81,7 +81,7 @@ func TestWriteOrdering_NormalCommit(t *testing.T) {
 	docID := uint64(1)
 	payload := []byte(`{"data":"normal commit"}`)
 
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create("_default", docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestWriteOrdering_NormalCommit(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-normal", dataDir, walDir)
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read("_default", docID)
 	if err != nil {
 		t.Fatalf("Read after restart failed: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestWriteOrdering_UncommittedSkipped(t *testing.T) {
 
 	docID := uint64(42)
 	payload := []byte(`{"data":"uncommitted"}`)
-	if err := writer.Write(1, 1, docID, types.OpCreate, payload); err != nil {
+	if err := writer.Write(1, 1, "_default", docID, types.OpCreate, payload); err != nil {
 		t.Fatalf("Failed to write uncommitted WAL record: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestWriteOrdering_UncommittedSkipped(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-uncommitted", dataDir, walDir)
 	defer db2.Close()
 
-	_, err := db2.Read(docID)
+	_, err := db2.Read("_default", docID)
 	if err == nil {
 		t.Fatalf("Expected document to be absent after replay of uncommitted tx, but read succeeded")
 	}
@@ -153,12 +153,12 @@ func TestWriteOrdering_UpdateCommit(t *testing.T) {
 	updatedPayload := []byte(`{"data":"updated"}`)
 
 	// Create initial document
-	if err := db.Create(docID, initialPayload); err != nil {
+	if err := db.Create("_default", docID, initialPayload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
 	// Update document
-	if err := db.Update(docID, updatedPayload); err != nil {
+	if err := db.Update("_default", docID, updatedPayload); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestWriteOrdering_UpdateCommit(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-update", dataDir, walDir)
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read("_default", docID)
 	if err != nil {
 		t.Fatalf("Read after restart failed: %v", err)
 	}
@@ -190,12 +190,12 @@ func TestWriteOrdering_DeleteCommit(t *testing.T) {
 	payload := []byte(`{"data":"to be deleted"}`)
 
 	// Create document
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create("_default", docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
 	// Delete document
-	if err := db.Delete(docID); err != nil {
+	if err := db.Delete("_default", docID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestWriteOrdering_DeleteCommit(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-delete", dataDir, walDir)
 	defer db2.Close()
 
-	_, err := db2.Read(docID)
+	_, err := db2.Read("_default", docID)
 	if err == nil {
 		t.Fatalf("Expected document to be deleted after restart, but read succeeded")
 	}
@@ -227,7 +227,7 @@ func TestWriteOrdering_CrashAfterCommitMarker(t *testing.T) {
 	payload := []byte(`{"data":"committed"}`)
 
 	// Create document (this writes WAL record + commit marker)
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create("_default", docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestWriteOrdering_CrashAfterCommitMarker(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-crash-after", dataDir, walDir)
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read("_default", docID)
 	if err != nil {
 		t.Fatalf("Read after crash recovery failed: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	// Transaction 1: committed (has commit marker)
 	doc1 := uint64(1)
 	payload1 := []byte(`{"data":"committed1"}`)
-	if err := writer.Write(1, 1, doc1, types.OpCreate, payload1); err != nil {
+	if err := writer.Write(1, 1, "_default", doc1, types.OpCreate, payload1); err != nil {
 		t.Fatalf("Failed to write tx1 WAL record: %v", err)
 	}
 	if err := writer.WriteCommitMarker(1); err != nil {
@@ -282,7 +282,7 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	// Transaction 2: uncommitted (no commit marker)
 	doc2 := uint64(2)
 	payload2 := []byte(`{"data":"uncommitted2"}`)
-	if err := writer.Write(2, 1, doc2, types.OpCreate, payload2); err != nil {
+	if err := writer.Write(2, 1, "_default", doc2, types.OpCreate, payload2); err != nil {
 		t.Fatalf("Failed to write tx2 WAL record: %v", err)
 	}
 	// No commit marker for tx2
@@ -290,7 +290,7 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	// Transaction 3: committed (has commit marker)
 	doc3 := uint64(3)
 	payload3 := []byte(`{"data":"committed3"}`)
-	if err := writer.Write(3, 1, doc3, types.OpCreate, payload3); err != nil {
+	if err := writer.Write(3, 1, "_default", doc3, types.OpCreate, payload3); err != nil {
 		t.Fatalf("Failed to write tx3 WAL record: %v", err)
 	}
 	if err := writer.WriteCommitMarker(3); err != nil {
@@ -302,7 +302,7 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	defer db2.Close()
 
 	// Document 1 should exist (committed)
-	got1, err := db2.Read(doc1)
+	got1, err := db2.Read("_default", doc1)
 	if err != nil {
 		t.Fatalf("Read doc1 failed: %v", err)
 	}
@@ -311,13 +311,13 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	}
 
 	// Document 2 should NOT exist (uncommitted)
-	_, err = db2.Read(doc2)
+	_, err = db2.Read("_default", doc2)
 	if err == nil {
 		t.Fatalf("Expected doc2 to be absent (uncommitted), but read succeeded")
 	}
 
 	// Document 3 should exist (committed)
-	got3, err := db2.Read(doc3)
+	got3, err := db2.Read("_default", doc3)
 	if err != nil {
 		t.Fatalf("Read doc3 failed: %v", err)
 	}
@@ -355,13 +355,13 @@ func TestWriteOrdering_PartialTransaction(t *testing.T) {
 	payload2 := []byte(`{"data":"partial2"}`)
 	payload3 := []byte(`{"data":"partial3"}`)
 
-	if err := writer.Write(txID, 1, doc1, types.OpCreate, payload1); err != nil {
+	if err := writer.Write(txID, 1, "_default", doc1, types.OpCreate, payload1); err != nil {
 		t.Fatalf("Failed to write op1: %v", err)
 	}
-	if err := writer.Write(txID, 1, doc2, types.OpCreate, payload2); err != nil {
+	if err := writer.Write(txID, 1, "_default", doc2, types.OpCreate, payload2); err != nil {
 		t.Fatalf("Failed to write op2: %v", err)
 	}
-	if err := writer.Write(txID, 1, doc3, types.OpCreate, payload3); err != nil {
+	if err := writer.Write(txID, 1, "_default", doc3, types.OpCreate, payload3); err != nil {
 		t.Fatalf("Failed to write op3: %v", err)
 	}
 	// Intentionally no commit marker
@@ -370,17 +370,17 @@ func TestWriteOrdering_PartialTransaction(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-partial", dataDir, walDir)
 	defer db2.Close()
 
-	_, err := db2.Read(doc1)
+	_, err := db2.Read("_default", doc1)
 	if err == nil {
 		t.Fatalf("Expected doc1 to be absent (partial tx), but read succeeded")
 	}
 
-	_, err = db2.Read(doc2)
+	_, err = db2.Read("_default", doc2)
 	if err == nil {
 		t.Fatalf("Expected doc2 to be absent (partial tx), but read succeeded")
 	}
 
-	_, err = db2.Read(doc3)
+	_, err = db2.Read("_default", doc3)
 	if err == nil {
 		t.Fatalf("Expected doc3 to be absent (partial tx), but read succeeded")
 	}
@@ -401,7 +401,7 @@ func TestWriteOrdering_SequentialOperations(t *testing.T) {
 		payload := []byte(fmt.Sprintf(`{"data":"doc%d"}`, i))
 		documents[docID] = payload
 
-		if err := db.Create(docID, payload); err != nil {
+		if err := db.Create("_default", docID, payload); err != nil {
 			t.Fatalf("Create doc %d failed: %v", docID, err)
 		}
 	}
@@ -416,7 +416,7 @@ func TestWriteOrdering_SequentialOperations(t *testing.T) {
 
 	// Verify all documents survived restart
 	for docID, expectedPayload := range documents {
-		got, err := db2.Read(docID)
+		got, err := db2.Read("_default", docID)
 		if err != nil {
 			t.Fatalf("Read doc %d after restart failed: %v", docID, err)
 		}
@@ -446,24 +446,24 @@ func TestWriteOrdering_MixedOperations(t *testing.T) {
 	payload2a := []byte(`{"data":"doc2"}`)
 	payload3a := []byte(`{"data":"doc3"}`)
 
-	if err := db.Create(doc1, payload1a); err != nil {
+	if err := db.Create("_default", doc1, payload1a); err != nil {
 		t.Fatalf("Create doc1 failed: %v", err)
 	}
-	if err := db.Create(doc2, payload2a); err != nil {
+	if err := db.Create("_default", doc2, payload2a); err != nil {
 		t.Fatalf("Create doc2 failed: %v", err)
 	}
-	if err := db.Create(doc3, payload3a); err != nil {
+	if err := db.Create("_default", doc3, payload3a); err != nil {
 		t.Fatalf("Create doc3 failed: %v", err)
 	}
 
 	// Update doc1
 	payload1b := []byte(`{"data":"doc1-updated"}`)
-	if err := db.Update(doc1, payload1b); err != nil {
+	if err := db.Update("_default", doc1, payload1b); err != nil {
 		t.Fatalf("Update doc1 failed: %v", err)
 	}
 
 	// Delete doc2
-	if err := db.Delete(doc2); err != nil {
+	if err := db.Delete("_default", doc2); err != nil {
 		t.Fatalf("Delete doc2 failed: %v", err)
 	}
 
@@ -476,7 +476,7 @@ func TestWriteOrdering_MixedOperations(t *testing.T) {
 	defer db2.Close()
 
 	// Verify doc1 was updated
-	got1, err := db2.Read(doc1)
+	got1, err := db2.Read("_default", doc1)
 	if err != nil {
 		t.Fatalf("Read doc1 failed: %v", err)
 	}
@@ -485,13 +485,13 @@ func TestWriteOrdering_MixedOperations(t *testing.T) {
 	}
 
 	// Verify doc2 was deleted
-	_, err = db2.Read(doc2)
+	_, err = db2.Read("_default", doc2)
 	if err == nil {
 		t.Fatalf("Expected doc2 to be deleted, but read succeeded")
 	}
 
 	// Verify doc3 still exists unchanged
-	got3, err := db2.Read(doc3)
+	got3, err := db2.Read("_default", doc3)
 	if err != nil {
 		t.Fatalf("Read doc3 failed: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestWriteOrdering_UncommittedUpdate(t *testing.T) {
 	initialPayload := []byte(`{"data":"initial"}`)
 
 	// Create initial document
-	if err := db.Create(docID, initialPayload); err != nil {
+	if err := db.Create("_default", docID, initialPayload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -529,7 +529,7 @@ func TestWriteOrdering_UncommittedUpdate(t *testing.T) {
 
 	// Write an uncommitted update (no commit marker)
 	updatedPayload := []byte(`{"data":"uncommitted-update"}`)
-	if err := writer.Write(2, 1, docID, types.OpUpdate, updatedPayload); err != nil {
+	if err := writer.Write(2, 1, "_default", docID, types.OpUpdate, updatedPayload); err != nil {
 		t.Fatalf("Failed to write uncommitted update: %v", err)
 	}
 
@@ -537,7 +537,7 @@ func TestWriteOrdering_UncommittedUpdate(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-uncommitted-update", dataDir, walDir)
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read("_default", docID)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -557,7 +557,7 @@ func TestWriteOrdering_UncommittedDelete(t *testing.T) {
 	payload := []byte(`{"data":"to survive"}`)
 
 	// Create document
-	if err := db.Create(docID, payload); err != nil {
+	if err := db.Create("_default", docID, payload); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
@@ -575,7 +575,7 @@ func TestWriteOrdering_UncommittedDelete(t *testing.T) {
 	defer writer.Close()
 
 	// Write an uncommitted delete (no commit marker)
-	if err := writer.Write(2, 1, docID, types.OpDelete, nil); err != nil {
+	if err := writer.Write(2, 1, "_default", docID, types.OpDelete, nil); err != nil {
 		t.Fatalf("Failed to write uncommitted delete: %v", err)
 	}
 
@@ -583,7 +583,7 @@ func TestWriteOrdering_UncommittedDelete(t *testing.T) {
 	db2 := reopenDB(t, "writeorder-uncommitted-delete", dataDir, walDir)
 	defer db2.Close()
 
-	got, err := db2.Read(docID)
+	got, err := db2.Read("_default", docID)
 	if err != nil {
 		t.Fatalf("Expected document to survive uncommitted delete, but read failed: %v", err)
 	}

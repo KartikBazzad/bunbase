@@ -26,7 +26,7 @@ func TestAutomaticHealingOnCorruption(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "healdb", cfg, memCaps, pool, log)
 
@@ -106,7 +106,7 @@ func TestManualHealing(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "manualheal", cfg, memCaps, pool, log)
 
@@ -181,7 +181,7 @@ func TestHealingStatistics(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "statsdb", cfg, memCaps, pool, log)
 
@@ -249,7 +249,7 @@ func TestBatchHealing(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "batchdb", cfg, memCaps, pool, log)
 
@@ -321,7 +321,7 @@ func TestHealingDisabled(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "disableddb", cfg, memCaps, pool, log)
 
@@ -376,7 +376,7 @@ func TestCollectionSpecificHealing(t *testing.T) {
 
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
 	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
-	log := logger.NewLogger(logger.LevelInfo)
+	log := logger.Default()
 
 	db := docdb.NewLogicalDB(1, "collectiondb", cfg, memCaps, pool, log)
 

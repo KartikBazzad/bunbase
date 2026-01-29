@@ -17,9 +17,12 @@ func TestCollectionCreation(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -57,9 +60,12 @@ func TestCollectionDeletion(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -97,9 +103,13 @@ func TestCollectionNotEmptyDeletion(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
 
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -130,9 +140,12 @@ func TestDocumentIsolationBetweenCollections(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -181,9 +194,12 @@ func TestCollectionNameValidation(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -215,9 +231,12 @@ func TestDefaultCollectionCannotBeDeleted(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -235,9 +254,12 @@ func TestListCollections(t *testing.T) {
 	walDir := filepath.Join(tmpDir, "wal")
 
 	cfg := config.DefaultConfig()
-	log := logger.NewLogger("test", logger.LevelInfo)
-
-	db := docdb.NewLogicalDB(1, "testdb", cfg, memory.NewCaps(1024*1024), memory.NewBufferPool(), log)
+	cfg.DataDir = dataDir
+	cfg.WAL.Dir = walDir
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB)
+	db := docdb.NewLogicalDB(1, "testdb", cfg, memCaps, memory.NewBufferPool(cfg.Memory.BufferSizes), log)
 	if err := db.Open(dataDir, walDir); err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
