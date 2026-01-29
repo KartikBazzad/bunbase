@@ -141,14 +141,14 @@ func (h *CrashTestHelper) ReopenDBWithPartitions(dbName string, partitionCount i
 	return db
 }
 
-// WALPath returns the path to the WAL file for a database.
+// WALPath returns the path to the partition 0 WAL file for a database (v0.4 layout: walDir/dbName/p0.wal).
 func (h *CrashTestHelper) WALPath(dbName string) string {
-	return filepath.Join(h.WALDir(), fmt.Sprintf("%s.wal", dbName))
+	return filepath.Join(h.WALDir(), dbName, "p0.wal")
 }
 
-// DataFilePath returns the path to the data file for a database.
+// DataFilePath returns the path to the partition 0 data file for a database (v0.4 layout: dbName_p0.data).
 func (h *CrashTestHelper) DataFilePath(dbName string) string {
-	return filepath.Join(h.tempDir, fmt.Sprintf("%s.data", dbName))
+	return filepath.Join(h.tempDir, fmt.Sprintf("%s_p0.data", dbName))
 }
 
 // TruncateWAL truncates the WAL file at the specified offset.

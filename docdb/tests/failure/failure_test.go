@@ -60,7 +60,7 @@ func TestCorruptWAL(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	walPath := filepath.Join(tmpDir, "wal", "faildb.wal")
+	walPath := filepath.Join(tmpDir, "wal", "faildb", "p0.wal")
 	walData, err := os.ReadFile(walPath)
 	if err != nil {
 		t.Fatalf("Failed to read WAL: %v", err)
@@ -120,7 +120,7 @@ func TestTruncatedWAL(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	walPath := filepath.Join(tmpDir, "wal", "faildb.wal")
+	walPath := filepath.Join(tmpDir, "wal", "faildb", "p0.wal")
 	walData, err := os.ReadFile(walPath)
 	if err != nil {
 		t.Fatalf("Failed to read WAL: %v", err)
@@ -191,7 +191,7 @@ func TestMissingWAL(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	walPath := filepath.Join(tmpDir, "wal", "missingwaldb.wal")
+	walPath := filepath.Join(tmpDir, "wal", "missingwaldb", "p0.wal")
 	if err := os.Remove(walPath); err != nil {
 		t.Fatalf("Failed to remove WAL: %v", err)
 	}

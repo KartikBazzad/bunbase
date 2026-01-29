@@ -313,71 +313,41 @@ func (p *Pool) handleRequest(req *Request) {
 		return
 	}
 
-	// v0.4: If LogicalDB is partitioned, submit task to worker pool and wait for result
-	if db.PartitionCount() > 1 {
-		partitionID := docdb.RouteToPartition(req.DocID, db.PartitionCount())
-		var task *docdb.Task
-		switch req.OpType {
-		case types.OpCreate:
-			task = docdb.NewTaskWithPayload(partitionID, types.OpCreate, req.Collection, req.DocID, req.Payload)
-		case types.OpRead:
-			task = docdb.NewTask(partitionID, types.OpRead, req.Collection, req.DocID)
-		case types.OpUpdate:
-			task = docdb.NewTaskWithPayload(partitionID, types.OpUpdate, req.Collection, req.DocID, req.Payload)
-		case types.OpDelete:
-			task = docdb.NewTask(partitionID, types.OpDelete, req.Collection, req.DocID)
-		case types.OpPatch:
-			task = docdb.NewTaskWithPatch(partitionID, req.Collection, req.DocID, req.PatchOps)
-		default:
-			req.Response <- Response{Status: types.StatusError, Error: docdberrors.ErrUnknownOperation}
-			return
-		}
-		result := db.SubmitTaskAndWait(task)
-		req.Response <- Response{
-			Status: result.Status,
-			Data:   result.Data,
-			Error:  result.Error,
-		}
-		return
-	}
-
-	// Legacy path (PartitionCount <= 1): direct db operations
-	var data []byte
-	var err error
-
+	// Always route via worker pool (partitioned mode, PartitionCount >= 1)
+	partitionID := docdb.RouteToPartition(req.DocID, db.PartitionCount())
+	var task *docdb.Task
 	switch req.OpType {
 	case types.OpCreate:
-		err = db.Create(req.Collection, req.DocID, req.Payload)
+		task = docdb.NewTaskWithPayload(partitionID, types.OpCreate, req.Collection, req.DocID, req.Payload)
 	case types.OpRead:
-		data, err = db.Read(req.Collection, req.DocID)
+		task = docdb.NewTask(partitionID, types.OpRead, req.Collection, req.DocID)
 	case types.OpUpdate:
-		err = db.Update(req.Collection, req.DocID, req.Payload)
+		task = docdb.NewTaskWithPayload(partitionID, types.OpUpdate, req.Collection, req.DocID, req.Payload)
 	case types.OpDelete:
-		err = db.Delete(req.Collection, req.DocID)
+		task = docdb.NewTask(partitionID, types.OpDelete, req.Collection, req.DocID)
 	case types.OpPatch:
-		err = db.Patch(req.Collection, req.DocID, req.PatchOps)
+		task = docdb.NewTaskWithPatch(partitionID, req.Collection, req.DocID, req.PatchOps)
 	default:
-		err = docdberrors.ErrUnknownOperation
+		req.Response <- Response{Status: types.StatusError, Error: docdberrors.ErrUnknownOperation}
+		return
 	}
-
-	status := types.StatusOK
-	if err != nil {
-		category := p.classifier.Classify(err)
-		p.errorTracker.RecordError(err, category)
-		status = types.StatusError
-		if err == docdb.ErrDocNotFound || err == types.ErrDocNotFound {
+	result := db.SubmitTaskAndWait(task)
+	status := result.Status
+	if result.Error != nil {
+		category := p.classifier.Classify(result.Error)
+		p.errorTracker.RecordError(result.Error, category)
+		if result.Error == docdb.ErrDocNotFound || result.Error == types.ErrDocNotFound {
 			status = types.StatusNotFound
-		} else if err == docdb.ErrMemoryLimit || err == types.ErrMemoryLimit {
+		} else if result.Error == docdb.ErrMemoryLimit || result.Error == types.ErrMemoryLimit {
 			status = types.StatusMemoryLimit
-		} else if err == docdb.ErrDocExists || err == docdb.ErrDocAlreadyExists || err == types.ErrDocExists {
+		} else if result.Error == docdb.ErrDocExists || result.Error == docdb.ErrDocAlreadyExists || result.Error == types.ErrDocExists {
 			status = types.StatusConflict
 		}
 	}
-
 	req.Response <- Response{
 		Status: status,
-		Data:   data,
-		Error:  err,
+		Data:   result.Data,
+		Error:  result.Error,
 	}
 }
 

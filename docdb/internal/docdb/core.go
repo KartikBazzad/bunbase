@@ -45,16 +45,17 @@ import (
 	"github.com/kartikbazzad/docdb/internal/wal"
 )
 
-// LogicalDB represents a single logical database instance (v0.4: partitioned).
+// LogicalDB represents a single logical database instance (partitioned, v0.4).
 //
 // It manages the complete lifecycle of documents within this database,
 // including storage, indexing, transaction management, and recovery.
+// All databases use partitioned layout (one or more partitions); each partition
+// owns its data file, WAL, and index.
 //
-// v0.4 Architecture:
-//   - LogicalDB is a partitioned execution domain
+// Architecture:
+//   - LogicalDB is a partitioned execution domain (PartitionCount >= 1)
 //   - Each partition owns data, WAL, and index
-//   - Workers are NOT bound to partitions; they pull tasks and lock partitions
-//   - Exactly one writer per partition at a time (enforced by partition.mu)
+//   - Workers pull tasks and lock partitions; exactly one writer per partition at a time
 //   - Unlimited readers (lock-free via immutable index snapshots)
 //
 // Thread Safety: All public methods are safe for concurrent use.
@@ -64,33 +65,26 @@ type LogicalDB struct {
 	dbID   uint64       // Unique database identifier
 	dbName string       // Human-readable database name
 
-	// v0.4: Partitioned execution
-	partitions []*Partition            // Partitions (nil if PartitionCount=1, using legacy mode)
+	// Partitioned execution (v0.4; always used, PartitionCount >= 1)
+	partitions []*Partition            // Partitions (one or more)
 	dbConfig   *config.LogicalDBConfig // LogicalDB-specific config (partitioning, workers)
 	workerPool WorkerPool              // Worker pool for this LogicalDB
 
-	// Legacy mode (PartitionCount=1): single WAL, datafile, index
-	dataFile *DataFile   // Legacy: single datafile (used when partitions == nil)
-	wal      *wal.Writer // Legacy: single WAL (used when partitions == nil)
-	index    *Index      // Legacy: single index (used when partitions == nil)
-
-	mvcc           *MVCC                  // Multi-version concurrency control
-	txManager      *TransactionManager    // Transaction lifecycle management
-	memory         *memory.Caps           // Memory limit tracking
-	pool           *memory.BufferPool     // Efficient buffer allocation
-	cfg            *config.Config         // Global database configuration
-	logger         *logger.Logger         // Structured logging
-	closed         bool                   // True if database is closed
-	dataDir        string                 // Directory for data files
-	walDir         string                 // Directory for WAL files
-	txnsCommitted  uint64                 // Count of committed transactions
-	lastCompaction time.Time              // Timestamp of last compaction
-	checkpointMgr  *wal.CheckpointManager // Legacy checkpoint manager (for PartitionCount=1)
-	errorTracker   *errors.ErrorTracker   // Error tracking for observability
-	healingService *HealingService        // Automatic document healing service
-	walTrimmer     *wal.Trimmer           // Legacy WAL trimmer (for PartitionCount=1)
-	collections    *CollectionRegistry    // Collection management
-	querySemaphore chan struct{}          // Phase D.8: Semaphore for concurrent query limiting
+	mvcc           *MVCC                // Multi-version concurrency control
+	txManager      *TransactionManager  // Transaction lifecycle management
+	memory         *memory.Caps         // Memory limit tracking
+	pool           *memory.BufferPool   // Efficient buffer allocation
+	cfg            *config.Config       // Global database configuration
+	logger         *logger.Logger       // Structured logging
+	closed         bool                 // True if database is closed
+	dataDir        string               // Directory for data files
+	walDir         string               // Directory for WAL files
+	txnsCommitted  uint64               // Count of committed transactions
+	lastCompaction time.Time            // Timestamp of last compaction
+	errorTracker   *errors.ErrorTracker // Error tracking for observability
+	healingService *HealingService      // Automatic document healing service
+	collections    *CollectionRegistry  // Collection management
+	querySemaphore chan struct{}        // Phase D.8: Semaphore for concurrent query limiting
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
@@ -169,12 +163,15 @@ func validateJSONPayload(payload []byte) error {
 	return nil
 }
 
-// PartitionCount returns the number of partitions (0 or 1 = legacy mode).
+// PartitionCount returns the number of partitions (always >= 1 after Open).
 func (db *LogicalDB) PartitionCount() int {
-	if db.dbConfig == nil {
-		return 1
+	if db.partitions != nil {
+		return len(db.partitions)
 	}
-	return db.dbConfig.PartitionCount
+	if db.dbConfig != nil && db.dbConfig.PartitionCount > 0 {
+		return db.dbConfig.PartitionCount
+	}
+	return 1
 }
 
 // SubmitTaskAndWait submits a task to the LogicalDB worker pool and blocks until the result is ready.
@@ -501,75 +498,10 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 		partitionCount = 1
 	}
 
-	// v0.3 detection: if single WAL file exists (dbname.wal), use legacy mode even if config says > 1
-	legacyWAL := filepath.Join(walDir, fmt.Sprintf("%s.wal", db.dbName))
-	p0WAL := filepath.Join(walDir, "p0.wal")
-	if _, errLegacy := os.Stat(legacyWAL); errLegacy == nil {
-		if _, errP0 := os.Stat(p0WAL); os.IsNotExist(errP0) {
-			// v0.3 layout: single WAL file, no partitioned WALs → force PartitionCount=1
-			partitionCount = 1
-			db.dbConfig.PartitionCount = 1
-		}
-	}
-
-	// v0.4: Initialize partitions if PartitionCount > 1
-	if partitionCount > 1 {
-		return db.openPartitioned(dataDir, walDir, partitionCount)
-	}
-
-	// Legacy mode (PartitionCount=1): single WAL, datafile, index (v0.3 compatible)
-	return db.openLegacy(dataDir, walDir)
+	return db.openPartitioned(dataDir, walDir, partitionCount)
 }
 
-// openLegacy opens a LogicalDB in legacy mode (PartitionCount=1, v0.3 compatibility).
-func (db *LogicalDB) openLegacy(dataDir string, walDir string) error {
-	dbFile := filepath.Join(dataDir, fmt.Sprintf("%s.data", db.dbName))
-	db.dataFile = NewDataFile(dbFile, db.logger)
-	if err := db.dataFile.Open(); err != nil {
-		return fmt.Errorf("failed to open data file: %w", err)
-	}
-
-	walFile := filepath.Join(walDir, fmt.Sprintf("%s.wal", db.dbName))
-	db.wal = wal.NewWriterFromConfig(walFile, db.dbID, db.cfg.WAL.MaxFileSizeMB*1024*1024, &db.cfg.WAL, db.logger)
-	if err := db.wal.Open(); err != nil {
-		return fmt.Errorf("failed to open WAL: %w", err)
-	}
-
-	// Initialize index for legacy mode
-	db.index = NewIndex()
-
-	// Initialize checkpoint manager
-	db.checkpointMgr = wal.NewCheckpointManager(
-		db.cfg.WAL.Checkpoint.IntervalMB,
-		db.cfg.WAL.Checkpoint.AutoCreate,
-		db.cfg.WAL.Checkpoint.MaxCheckpoints,
-		db.logger,
-	)
-	db.wal.SetCheckpointManager(db.checkpointMgr)
-
-	// Initialize WAL trimmer if enabled
-	if db.cfg.WAL.TrimAfterCheckpoint {
-		db.walTrimmer = wal.NewTrimmer(walDir, db.dbName, db.logger)
-	}
-
-	// Ensure default collection exists
-	db.collections.EnsureDefault()
-
-	if err := db.replayWAL(); err != nil {
-		db.logger.Warn("Failed to replay WAL: %v", err)
-	}
-
-	// Start healing service if enabled
-	if db.cfg.Healing.Enabled {
-		db.healingService = NewHealingService(db, &db.cfg.Healing, db.logger)
-		db.healingService.Start()
-	}
-
-	db.logger.Info("Opened database (legacy mode): %s (id=%d)", db.dbName, db.dbID)
-	return nil
-}
-
-// openPartitioned opens a LogicalDB in partitioned mode (v0.4, PartitionCount > 1).
+// openPartitioned opens a LogicalDB in partitioned mode (v0.4, PartitionCount >= 1).
 // Partition WALs live under walDir/dbName/ (p0.wal, p1.wal, ...) so each DB has its own WAL files.
 func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCount int) error {
 	// Phase D.8: Validate partition count limit (defensive: cfg may be nil)
@@ -666,6 +598,12 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		if db.partitions[i].GetWAL() != nil && maxLSNs[i] > 0 {
 			db.partitions[i].GetWAL().SetNextLSN(maxLSNs[i])
 		}
+	}
+
+	// Start healing service if enabled
+	if db.cfg.Healing.Enabled {
+		db.healingService = NewHealingService(db, &db.cfg.Healing, db.logger)
+		db.healingService.Start()
 	}
 
 	db.logger.Info("Opened database (partitioned mode): %s (id=%d, partitions=%d)", db.dbName, db.dbID, partitionCount)
@@ -943,7 +881,7 @@ func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q quer
 	}
 
 	// Phase D.8: Apply query timeout if configured
-	if db.cfg.Query.QueryTimeout > 0 {
+	if db.cfg != nil && db.cfg.Query.QueryTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, db.cfg.Query.QueryTimeout)
 		defer cancel()
@@ -973,124 +911,66 @@ func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q quer
 	}
 
 	// Clamp query limit (defense in depth)
-	if db.cfg.Query.MaxQueryLimit > 0 && q.Limit > db.cfg.Query.MaxQueryLimit {
+	if db.cfg != nil && db.cfg.Query.MaxQueryLimit > 0 && q.Limit > db.cfg.Query.MaxQueryLimit {
 		q.Limit = db.cfg.Query.MaxQueryLimit
 	}
 
 	snap := db.mvcc.CurrentSnapshot()
 	checkSnapshotMonotonic(db.mvcc, snap)
-	partitionCount := 0
-	if db.partitions != nil {
-		partitionCount = len(db.partitions)
+	if db.partitions == nil || len(db.partitions) == 0 {
+		return nil, ErrDBNotOpen
 	}
-	checkQuerySnapshotConsistent(snap, partitionCount)
+	checkQuerySnapshotConsistent(snap, len(db.partitions))
 
 	// Phase D.8: Use configured query memory limit
 	var maxMem uint64 = defaultMaxQueryMemoryBytes
-	if db.cfg.Query.MaxQueryMemoryMB > 0 {
+	if db.cfg != nil && db.cfg.Query.MaxQueryMemoryMB > 0 {
 		maxMem = uint64(db.cfg.Query.MaxQueryMemoryMB) * 1024 * 1024
 	}
 	var allRows []query.Row
-	var partitionsScanned uint64
+	partitionsScanned := uint64(len(db.partitions))
 	var rowsScanned uint64
 
-	if db.partitions != nil {
-		// Partitioned: streaming k-way merge with memory cap
-		partitionsScanned = uint64(len(db.partitions))
-		streams := make([]query.RowStream, len(db.partitions))
-		for i := range db.partitions {
-			streams[i] = db.newPartitionRowStream(db.partitions[i], collection, snap)
-		}
-		merger := query.NewKWayMerger(streams, q.OrderBy, 0) // limit applied when collecting
-		defer merger.Close()
-
-		var bytesScanned uint64
-		for {
-			select {
-			case <-ctx.Done():
-				executionTime := time.Since(queryStart)
-				metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
-				return nil, ctx.Err()
-			default:
-			}
-			row, ok := merger.Next()
-			if !ok {
-				break
-			}
-			rowsScanned++ // Count all rows from merger (before filtering)
-			if q.Filter.Field != "" && !db.rowMatchesFilter(row, &q.Filter) {
-				continue
-			}
-			bytesScanned += uint64(len(row.Payload))
-			if bytesScanned > maxMem {
-				executionTime := time.Since(queryStart)
-				metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
-				return nil, ErrQueryMemoryLimit
-			}
-			allRows = append(allRows, row)
-			if q.Limit > 0 && len(allRows) >= q.Limit {
-				break
-			}
-		}
-
-		// Merger already yielded in sorted order when OrderBy set
-		if q.Limit > 0 && len(allRows) > q.Limit {
-			allRows = allRows[:q.Limit]
-		}
-		executionTime := time.Since(queryStart)
-		metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
-		return allRows, nil
+	// Streaming k-way merge with memory cap
+	streams := make([]query.RowStream, len(db.partitions))
+	for i := range db.partitions {
+		streams[i] = db.newPartitionRowStream(db.partitions[i], collection, snap)
 	}
+	merger := query.NewKWayMerger(streams, q.OrderBy, 0) // limit applied when collecting
+	defer merger.Close()
 
-	// Legacy: single index + datafile (no streaming), with memory cap
-	partitionsScanned = 1 // Legacy mode = 1 partition
 	var bytesScanned uint64
-	db.index.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
+	for {
 		select {
 		case <-ctx.Done():
-			return false
+			executionTime := time.Since(queryStart)
+			metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+			return nil, ctx.Err()
 		default:
 		}
-		data, err := db.dataFile.Read(version.Offset, version.Length)
-		if err != nil {
-			db.logger.Warn("query scan doc %d: read: %v", docID, err)
-			return true
+		row, ok := merger.Next()
+		if !ok {
+			break
 		}
-		bytesScanned += uint64(len(data))
+		rowsScanned++
+		if q.Filter.Field != "" && !db.rowMatchesFilter(row, &q.Filter) {
+			continue
+		}
+		bytesScanned += uint64(len(row.Payload))
 		if bytesScanned > maxMem {
-			return false // Stop scanning; we'll return ErrQueryMemoryLimit below
+			executionTime := time.Since(queryStart)
+			metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+			return nil, ErrQueryMemoryLimit
 		}
-		allRows = append(allRows, query.Row{DocID: docID, Payload: data})
-		return true
-	})
-	rowsScanned = uint64(len(allRows)) // In legacy mode, all scanned rows are in allRows before filtering
-	if bytesScanned > maxMem {
-		executionTime := time.Since(queryStart)
-		metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
-		return nil, ErrQueryMemoryLimit
-	}
-
-	// Apply filter (simple JSON field predicate)
-	if q.Filter.Field != "" {
-		filtered := allRows[:0]
-		for _, r := range allRows {
-			if db.rowMatchesFilter(r, &q.Filter) {
-				filtered = append(filtered, r)
-			}
+		allRows = append(allRows, row)
+		if q.Limit > 0 && len(allRows) >= q.Limit {
+			break
 		}
-		allRows = filtered
 	}
 
-	// Apply order (single field)
-	if q.OrderBy != nil && q.OrderBy.Field != "" {
-		db.sortRowsByField(allRows, q.OrderBy.Field, q.OrderBy.Asc)
-	}
-
-	// Apply limit
 	if q.Limit > 0 && len(allRows) > q.Limit {
 		allRows = allRows[:q.Limit]
 	}
-
 	executionTime := time.Since(queryStart)
 	metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
 	return allRows, nil
@@ -1200,154 +1080,26 @@ func (db *LogicalDB) sortRowsByField(rows []query.Row, field string, asc bool) {
 
 // Patch applies path-based updates to a document atomically.
 func (db *LogicalDB) Patch(collection string, docID uint64, ops []types.PatchOperation) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.closed {
-		return ErrDBNotOpen
-	}
-
-	// Normalize collection name and ensure it exists
 	if collection == "" {
 		collection = DefaultCollection
 	}
-	if err := db.collections.EnsureCollection(collection); err != nil {
-		return err
-	}
-
-	// Normalize collection name
-	if collection == "" {
-		collection = DefaultCollection
-	}
-
 	if len(ops) == 0 {
 		return errors.ErrInvalidPatch
 	}
-
-	// Read current document
-	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
-	if !exists || version.DeletedTxID != nil {
-		return ErrDocNotFound
+	db.mu.RLock()
+	if db.closed {
+		db.mu.RUnlock()
+		return ErrDBNotOpen
 	}
-
-	data, err := db.dataFile.Read(version.Offset, version.Length)
-	if err != nil {
-		return fmt.Errorf("failed to read document: %w", err)
+	if db.workerPool == nil {
+		db.mu.RUnlock()
+		return ErrDBNotOpen
 	}
-
-	// Parse current document as JSON
-	var doc interface{}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return errors.ErrInvalidJSON
-	}
-
-	// Ensure document is a JSON object
-	docMap, ok := doc.(map[string]interface{})
-	if !ok {
-		return errors.ErrNotJSONObject
-	}
-
-	// Apply each patch operation
-	for _, op := range ops {
-		path, err := ParsePath(op.Path)
-		if err != nil {
-			return fmt.Errorf("invalid path '%s': %w", op.Path, err)
-		}
-
-		switch op.Op {
-		case "set":
-			if op.Value == nil {
-				return fmt.Errorf("set operation requires value: %w", errors.ErrInvalidPatch)
-			}
-			if err := SetValue(docMap, path, op.Value); err != nil {
-				return fmt.Errorf("failed to set value at path '%s': %w", op.Path, err)
-			}
-
-		case "delete":
-			if err := DeleteValue(docMap, path); err != nil {
-				return fmt.Errorf("failed to delete value at path '%s': %w", op.Path, err)
-			}
-
-		case "insert":
-			if op.Value == nil {
-				return fmt.Errorf("insert operation requires value: %w", errors.ErrInvalidPatch)
-			}
-			if len(path) == 0 {
-				return fmt.Errorf("insert operation requires array path: %w", errors.ErrInvalidPatch)
-			}
-			// Last segment should be array index
-			indexStr := path[len(path)-1]
-			index, err := strconv.Atoi(indexStr)
-			if err != nil {
-				return fmt.Errorf("insert operation requires numeric index: %w", errors.ErrInvalidPatch)
-			}
-			parentPath := path[:len(path)-1]
-			if err := InsertValue(docMap, parentPath, index, op.Value); err != nil {
-				return fmt.Errorf("failed to insert value at path '%s': %w", op.Path, err)
-			}
-
-		default:
-			return fmt.Errorf("unknown patch operation '%s': %w", op.Op, errors.ErrInvalidPatch)
-		}
-	}
-
-	// Marshal updated document
-	updatedPayload, err := json.Marshal(docMap)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated document: %w", err)
-	}
-
-	// Validate updated payload
-	if err := validateJSONPayload(updatedPayload); err != nil {
-		return fmt.Errorf("updated document is invalid JSON: %w", err)
-	}
-
-	// Calculate memory change
-	memoryNeeded := uint64(len(updatedPayload))
-	oldMemory := uint64(version.Length)
-
-	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-		return ErrMemoryLimit
-	}
-
-	// Write updated payload to data file
-	offset, err := db.dataFile.Write(updatedPayload)
-	if err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		return err
-	}
-
-	txID := db.mvcc.NextTxID()
-	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(updatedPayload)))
-
-	// Phase 1: write WAL record for the patch operation.
-	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpPatch, updatedPayload); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL: %w", err)
-	}
-
-	// Phase 2: write commit marker.
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL commit marker: %w", err)
-	}
-
-	db.txnsCommitted++
-	db.index.Set(collection, newVersion)
-	if oldMemory > 0 {
-		db.memory.Free(db.dbID, oldMemory)
-	}
-
-	// Check if checkpoint should be created after commit
-	db.maybeCreateCheckpointAndTrim(txID)
-
-	return nil
+	partitionID := RouteToPartition(docID, db.PartitionCount())
+	db.mu.RUnlock()
+	task := NewTaskWithPatch(partitionID, collection, docID, ops)
+	result := db.SubmitTaskAndWait(task)
+	return result.Error
 }
 
 // CreateCollection creates a new collection.
@@ -1358,22 +1110,29 @@ func (db *LogicalDB) CreateCollection(name string) error {
 	if db.closed {
 		return ErrDBNotOpen
 	}
+	if db.partitions == nil || len(db.partitions) == 0 {
+		return ErrDBNotOpen
+	}
 
 	if err := db.collections.CreateCollection(name); err != nil {
 		return err
 	}
 
-	// Write WAL record for collection creation
 	txID := db.mvcc.NextTxID()
-	if err := db.wal.Write(txID, db.dbID, name, 0, types.OpCreateCollection, nil); err != nil {
-		// Rollback collection creation
+	p0WAL := db.partitions[0].GetWAL()
+	if p0WAL == nil {
+		db.collections.mu.Lock()
+		delete(db.collections.collections, name)
+		db.collections.mu.Unlock()
+		return fmt.Errorf("partition 0 WAL not available")
+	}
+	if err := p0WAL.Write(txID, db.dbID, name, 0, types.OpCreateCollection, nil); err != nil {
 		db.collections.mu.Lock()
 		delete(db.collections.collections, name)
 		db.collections.mu.Unlock()
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
-
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
+	if err := p0WAL.Write(txID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
 		return fmt.Errorf("failed to write WAL commit marker: %w", err)
 	}
 
@@ -1389,15 +1148,27 @@ func (db *LogicalDB) DeleteCollection(name string) error {
 	if db.closed {
 		return ErrDBNotOpen
 	}
+	if db.partitions == nil || len(db.partitions) == 0 {
+		return ErrDBNotOpen
+	}
 
 	if err := db.collections.DeleteCollection(name); err != nil {
 		return err
 	}
 
-	// Write WAL record for collection deletion
 	txID := db.mvcc.NextTxID()
-	if err := db.wal.Write(txID, db.dbID, name, 0, types.OpDeleteCollection, nil); err != nil {
-		// Rollback - recreate collection
+	p0WAL := db.partitions[0].GetWAL()
+	if p0WAL == nil {
+		db.collections.mu.Lock()
+		db.collections.collections[name] = &types.CollectionMetadata{
+			Name:      name,
+			CreatedAt: time.Now(),
+			DocCount:  0,
+		}
+		db.collections.mu.Unlock()
+		return fmt.Errorf("partition 0 WAL not available")
+	}
+	if err := p0WAL.Write(txID, db.dbID, name, 0, types.OpDeleteCollection, nil); err != nil {
 		db.collections.mu.Lock()
 		db.collections.collections[name] = &types.CollectionMetadata{
 			Name:      name,
@@ -1407,8 +1178,7 @@ func (db *LogicalDB) DeleteCollection(name string) error {
 		db.collections.mu.Unlock()
 		return fmt.Errorf("failed to write WAL: %w", err)
 	}
-
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
+	if err := p0WAL.Write(txID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
 		return fmt.Errorf("failed to write WAL commit marker: %w", err)
 	}
 
@@ -1426,27 +1196,6 @@ func (db *LogicalDB) ListCollections() []string {
 	}
 
 	return db.collections.ListCollections()
-}
-
-// maybeCreateCheckpointAndTrim creates a checkpoint if needed and trims old WAL segments.
-func (db *LogicalDB) maybeCreateCheckpointAndTrim(txID uint64) {
-	if db.checkpointMgr == nil || !db.checkpointMgr.ShouldCreateCheckpoint(db.wal.Size()) {
-		return
-	}
-
-	if err := db.wal.WriteCheckpoint(txID); err != nil {
-		db.logger.Warn("Failed to write checkpoint: %v", err)
-		// Don't fail the operation if checkpoint fails
-		return
-	}
-
-	// Trim old WAL segments after checkpoint
-	if db.walTrimmer != nil && db.cfg.WAL.TrimAfterCheckpoint {
-		if err := db.walTrimmer.TrimSegmentsBeforeCheckpoint(txID, db.cfg.WAL.KeepSegments); err != nil {
-			db.logger.Warn("Failed to trim WAL segments: %v", err)
-			// Don't fail the operation if trimming fails
-		}
-	}
 }
 
 func (db *LogicalDB) Close() error {
@@ -1482,17 +1231,6 @@ func (db *LogicalDB) Close() error {
 		db.partitions = nil
 	}
 
-	// Close legacy WAL and datafile (PartitionCount=1)
-	if db.wal != nil {
-		db.wal.Close()
-		db.wal = nil
-	}
-
-	if db.dataFile != nil {
-		db.dataFile.Close()
-		db.dataFile = nil
-	}
-
 	db.closed = true
 	db.logger.Info("Closed database: %s (id=%d)", db.dbName, db.dbID)
 	return nil
@@ -1503,242 +1241,99 @@ func (db *LogicalDB) Name() string {
 }
 
 func (db *LogicalDB) Create(collection string, docID uint64, payload []byte) error {
-	// Validate JSON-only payload outside lock to reduce contention
 	if err := validateJSONPayload(payload); err != nil {
 		return err
 	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
+	db.mu.RLock()
 	if db.closed {
+		db.mu.RUnlock()
 		return ErrDBNotOpen
 	}
-
-	// Normalize collection name and ensure it exists
-	if collection == "" {
-		collection = DefaultCollection
+	if db.workerPool == nil {
+		db.mu.RUnlock()
+		return ErrDBNotOpen
 	}
-	if err := db.collections.EnsureCollection(collection); err != nil {
-		return err
-	}
-
-	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
-	if exists && version.DeletedTxID == nil {
-		return ErrDocAlreadyExists
-	}
-
-	memoryNeeded := uint64(len(payload))
-	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-		return ErrMemoryLimit
-	}
-
-	offset, err := db.dataFile.Write(payload)
-	if err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		return err
-	}
-
-	txID := db.mvcc.NextTxID()
-	newVersion := db.mvcc.CreateVersion(docID, txID, offset, uint32(len(payload)))
-
-	// Phase 1: write WAL record for the operation.
-	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpCreate, payload); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL: %w", err)
-	}
-
-	// Phase 2: write commit marker. Only after this succeeds do we
-	// make the new version visible in the index.
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL commit marker: %w", err)
-	}
-
-	db.txnsCommitted++
-	db.index.Set(collection, newVersion)
-	db.collections.IncrementDocCount(collection)
-
-	// Check if checkpoint should be created after commit
-	db.maybeCreateCheckpointAndTrim(txID)
-
-	return nil
+	partitionID := RouteToPartition(docID, db.PartitionCount())
+	db.mu.RUnlock()
+	task := NewTaskWithPayload(partitionID, types.OpCreate, collection, docID, payload)
+	result := db.SubmitTaskAndWait(task)
+	return result.Error
 }
 
 func (db *LogicalDB) Read(collection string, docID uint64) ([]byte, error) {
 	db.mu.RLock()
-
 	if db.closed {
 		db.mu.RUnlock()
 		return nil, ErrDBNotOpen
 	}
-
-	// Normalize collection name
-	if collection == "" {
-		collection = DefaultCollection
-	}
-
-	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
-	if !exists || version.DeletedTxID != nil {
+	if db.workerPool == nil {
 		db.mu.RUnlock()
-		return nil, ErrDocNotFound
+		return nil, ErrDBNotOpen
 	}
-
-	data, err := db.dataFile.Read(version.Offset, version.Length)
+	partitionID := RouteToPartition(docID, db.PartitionCount())
 	db.mu.RUnlock()
-
-	// Trigger healing on corruption detection
-	if err != nil && db.healingService != nil {
-		db.healingService.HealOnCorruption(collection, docID)
+	task := NewTask(partitionID, types.OpRead, collection, docID)
+	result := db.SubmitTaskAndWait(task)
+	if result.Error != nil {
+		return nil, result.Error
 	}
-
-	return data, err
+	return result.Data, nil
 }
 
 func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) error {
-	// Normalize collection name
 	if collection == "" {
 		collection = DefaultCollection
 	}
-
-	// Validate JSON-only payload outside lock to reduce contention
 	if err := validateJSONPayload(payload); err != nil {
 		return err
 	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
+	db.mu.RLock()
 	if db.closed {
+		db.mu.RUnlock()
 		return ErrDBNotOpen
 	}
-
-	// Normalize collection name and ensure it exists
-	if collection == "" {
-		collection = DefaultCollection
+	if db.workerPool == nil {
+		db.mu.RUnlock()
+		return ErrDBNotOpen
 	}
-	if err := db.collections.EnsureCollection(collection); err != nil {
-		return err
-	}
-
-	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
-	if !exists || version.DeletedTxID != nil {
-		return ErrDocNotFound
-	}
-
-	memoryNeeded := uint64(len(payload))
-	oldMemory := uint64(version.Length)
-
-	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-		return ErrMemoryLimit
-	}
-
-	offset, err := db.dataFile.Write(payload)
-	if err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		return err
-	}
-
-	txID := db.mvcc.NextTxID()
-	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(payload)))
-
-	// Phase 1: write WAL record for the update.
-	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpUpdate, payload); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL: %w", err)
-	}
-
-	// Phase 2: write commit marker. Only after this succeeds do we
-	// make the updated version visible in the index.
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
-		db.memory.Free(db.dbID, memoryNeeded)
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL commit marker: %w", err)
-	}
-
-	db.txnsCommitted++
-	db.index.Set(collection, newVersion)
-	if oldMemory > 0 {
-		db.memory.Free(db.dbID, oldMemory)
-	}
-
-	// Check if checkpoint should be created after commit
-	db.maybeCreateCheckpointAndTrim(txID)
-
-	return nil
+	partitionID := RouteToPartition(docID, db.PartitionCount())
+	db.mu.RUnlock()
+	task := NewTaskWithPayload(partitionID, types.OpUpdate, collection, docID, payload)
+	result := db.SubmitTaskAndWait(task)
+	return result.Error
 }
 
 func (db *LogicalDB) Delete(collection string, docID uint64) error {
-	// Normalize collection name and ensure it exists
 	if collection == "" {
 		collection = DefaultCollection
 	}
-	if err := db.collections.EnsureCollection(collection); err != nil {
-		return err
-	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
+	db.mu.RLock()
 	if db.closed {
+		db.mu.RUnlock()
 		return ErrDBNotOpen
 	}
-
-	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
-	if !exists || version.DeletedTxID != nil {
-		return ErrDocNotFound
+	if db.workerPool == nil {
+		db.mu.RUnlock()
+		return ErrDBNotOpen
 	}
-
-	oldMemory := uint64(version.Length)
-	if oldMemory > 0 {
-		db.memory.Free(db.dbID, oldMemory)
-	}
-
-	txID := db.mvcc.NextTxID()
-	deleteVersion := db.mvcc.DeleteVersion(docID, txID)
-
-	// Phase 1: write WAL record for the delete.
-	if err := db.wal.Write(txID, db.dbID, collection, docID, types.OpDelete, nil); err != nil {
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL: %w", err)
-	}
-
-	// Phase 2: write commit marker. Only after this succeeds do we
-	// make the delete visible in the index.
-	if err := db.wal.WriteCommitMarker(txID); err != nil {
-		classifier := errors.NewClassifier()
-		category := classifier.Classify(err)
-		db.errorTracker.RecordError(err, category)
-		return fmt.Errorf("failed to write WAL commit marker: %w", err)
-	}
-
-	db.txnsCommitted++
-	db.index.Set(collection, deleteVersion)
-	db.collections.DecrementDocCount(collection)
-
-	// Check if checkpoint should be created after commit
-	db.maybeCreateCheckpointAndTrim(txID)
-
-	return nil
+	partitionID := RouteToPartition(docID, db.PartitionCount())
+	db.mu.RUnlock()
+	task := NewTask(partitionID, types.OpDelete, collection, docID)
+	result := db.SubmitTaskAndWait(task)
+	return result.Error
 }
 
 func (db *LogicalDB) IndexSize() int {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	return db.index.Size()
+	if db.partitions == nil {
+		return 0
+	}
+	n := 0
+	for _, p := range db.partitions {
+		n += p.GetIndex().Size()
+	}
+	return n
 }
 
 func (db *LogicalDB) MemoryUsage() uint64 {
@@ -1752,67 +1347,15 @@ func (db *LogicalDB) Begin() *Tx {
 }
 
 func (db *LogicalDB) Commit(tx *Tx) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.closed {
+	db.mu.RLock()
+	closed := db.closed
+	db.mu.RUnlock()
+	if closed {
 		return ErrDBNotOpen
 	}
-
-	records, err := db.txManager.Commit(tx)
-	if err != nil {
-		return err
-	}
-
-	// Phase 1: write all WAL records for this transaction.
-	for _, record := range records {
-		collection := record.Collection
-		if collection == "" {
-			collection = DefaultCollection
-		}
-		if err := db.wal.Write(record.TxID, record.DBID, collection, record.DocID, record.OpType, record.Payload); err != nil {
-			return fmt.Errorf("failed to write WAL: %w", err)
-		}
-	}
-
-	// Phase 2: write the transaction commit marker. Only after this
-	// succeeds do we make the transaction's changes visible in the index.
-	if err := db.wal.WriteCommitMarker(tx.ID); err != nil {
-		return fmt.Errorf("failed to write WAL commit marker: %w", err)
-	}
-
-	db.txnsCommitted++
-
-	// Apply changes to MVCC/index using the transaction's ID so that
-	// visibility matches the WAL records.
-	for _, record := range records {
-		collection := record.Collection
-		if collection == "" {
-			collection = DefaultCollection
-		}
-
-		switch record.OpType {
-		case types.OpCreate:
-			version := db.mvcc.CreateVersion(record.DocID, tx.ID, 0, record.PayloadLen)
-			db.index.Set(collection, version)
-			db.collections.IncrementDocCount(collection)
-		case types.OpUpdate, types.OpPatch:
-			existing, exists := db.index.Get(collection, record.DocID, db.mvcc.CurrentSnapshot())
-			if exists {
-				version := db.mvcc.UpdateVersion(existing, tx.ID, 0, record.PayloadLen)
-				db.index.Set(collection, version)
-			}
-		case types.OpDelete:
-			version := db.mvcc.DeleteVersion(record.DocID, tx.ID)
-			db.index.Set(collection, version)
-			db.collections.DecrementDocCount(collection)
-		}
-	}
-
-	// Check if checkpoint should be created after transaction commit
-	db.maybeCreateCheckpointAndTrim(tx.ID)
-
-	return nil
+	// Multi-doc transactions are not supported in partitioned mode.
+	// Use single-doc Create/Read/Update/Delete/Patch or pool requests instead.
+	return fmt.Errorf("multi-doc transactions not supported in partitioned mode")
 }
 
 func (db *LogicalDB) Rollback(tx *Tx) error {
@@ -1823,15 +1366,25 @@ func (db *LogicalDB) Stats() *types.Stats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	live := db.index.TotalLiveCount()
-	tombstoned := db.index.TotalTombstonedCount()
+	var live, tombstoned int
+	var walSize uint64
+	if db.partitions != nil {
+		for _, p := range db.partitions {
+			idx := p.GetIndex()
+			live += idx.TotalLiveCount()
+			tombstoned += idx.TotalTombstonedCount()
+			if w := p.GetWAL(); w != nil {
+				walSize += w.Size()
+			}
+		}
+	}
 
 	return &types.Stats{
 		TotalDBs:       1,
 		ActiveDBs:      1,
 		TotalTxns:      db.mvcc.CurrentSnapshot(),
 		TxnsCommitted:  db.txnsCommitted,
-		WALSize:        db.wal.Size(),
+		WALSize:        walSize,
 		MemoryUsed:     db.memory.DBUsage(db.dbID),
 		MemoryCapacity: db.memory.DBLimit(db.dbID),
 		DocsLive:       uint64(live),
@@ -1848,214 +1401,15 @@ func (db *LogicalDB) HealingService() *HealingService {
 }
 
 // GetWALStats returns WAL/group-commit metrics when group commit is active.
-// Returns nil when group commit is not in use. Map keys: total_batches, total_records,
-// avg_batch_size, avg_batch_latency_ns, max_batch_size, max_batch_latency_ns, last_flush_time_unix_ns.
+// In partitioned mode, returns nil (per-partition stats not aggregated here).
+// Map keys when non-nil: total_batches, total_records, avg_batch_size, avg_batch_latency_ns,
+// max_batch_size, max_batch_latency_ns, last_flush_time_unix_ns.
 func (db *LogicalDB) GetWALStats() map[string]interface{} {
 	db.mu.RLock()
-	wal := db.wal
-	db.mu.RUnlock()
-	if wal == nil {
+	defer db.mu.RUnlock()
+	if db.partitions == nil || len(db.partitions) == 0 {
 		return nil
 	}
-	st, ok := wal.GetGroupCommitStats()
-	if !ok {
-		return nil
-	}
-	return map[string]interface{}{
-		"total_batches":           st.TotalBatches,
-		"total_records":           st.TotalRecords,
-		"avg_batch_size":          st.AvgBatchSize,
-		"avg_batch_latency_ns":    st.AvgBatchLatency.Nanoseconds(),
-		"max_batch_size":          st.MaxBatchSize,
-		"max_batch_latency_ns":    st.MaxBatchLatency.Nanoseconds(),
-		"last_flush_time_unix_ns": st.LastFlushTime.UnixNano(),
-	}
-}
-
-func (db *LogicalDB) replayWAL() error {
-	walBasePath := filepath.Join(db.walDir, fmt.Sprintf("%s.wal", db.dbName))
-	if _, err := os.Stat(walBasePath); os.IsNotExist(err) {
-		return nil
-	}
-
-	recovery := wal.NewRecovery(walBasePath, db.logger)
-
-	maxTxID := uint64(0)
-	records := 0
-	lastCheckpointTxID := uint64(0)
-
-	txRecords := make(map[uint64][]*types.WALRecord)
-	committed := make(map[uint64]bool)
-
-	// Single pass: buffer records (avoids second full WAL read).
-	err := recovery.Replay(func(rec *types.WALRecord) error {
-		if rec == nil {
-			return nil
-		}
-
-		txID := rec.TxID
-
-		if rec.OpType == types.OpCheckpoint {
-			// Checkpoint marker - skip record, do not skip other records
-			return nil
-		}
-
-		if txID > maxTxID {
-			maxTxID = txID
-		}
-
-		switch rec.OpType {
-		case types.OpCommit:
-			committed[txID] = true
-		default:
-			txRecords[txID] = append(txRecords[txID], rec)
-			records++
-		}
-
-		return nil
-	})
-
-	// Apply buffered records even when Replay returned error (e.g. corrupt record).
-	// We truncate at corruption and have already buffered all valid records before the error.
-	if err != nil {
-		db.logger.Warn("Failed to replay WAL: %v", err)
-	}
-
-	if lastCheckpointTxID > 0 {
-		db.logger.Info("Found checkpoint at tx_id=%d, recovery will start from there", lastCheckpointTxID)
-	}
-
-	// Update MVCC to use the next transaction ID after the highest one found
-	if maxTxID > 0 {
-		db.mvcc.SetCurrentTxID(maxTxID + 1)
-	}
-
-	// Apply only records from committed transactions, in txID order,
-	// so Create-before-Delete ordering is preserved (map iteration is non-deterministic).
-	txIDs := make([]uint64, 0, len(txRecords))
-	for txID := range txRecords {
-		if !committed[txID] {
-			continue
-		}
-		txIDs = append(txIDs, txID)
-	}
-	sort.Slice(txIDs, func(i, j int) bool { return txIDs[i] < txIDs[j] })
-	for _, txID := range txIDs {
-		recs := txRecords[txID]
-		for _, rec := range recs {
-			collection := rec.Collection
-			if collection == "" {
-				collection = DefaultCollection
-			}
-
-			// Ensure collection exists (create if needed during recovery)
-			if !db.collections.Exists(collection) {
-				db.collections.mu.Lock()
-				db.collections.collections[collection] = &types.CollectionMetadata{
-					Name:      collection,
-					CreatedAt: time.Now(),
-					DocCount:  0,
-				}
-				db.collections.mu.Unlock()
-			}
-
-			switch rec.OpType {
-			case types.OpCreateCollection:
-				// Collection creation - already handled above
-				continue
-
-			case types.OpDeleteCollection:
-				// Collection deletion - skip during recovery (collections recreated from WAL)
-				continue
-
-			case types.OpCreate:
-				// WriteNoSync during replay; one Sync at end of replay (avoids N fsyncs).
-				offset, err := db.dataFile.WriteNoSync(rec.Payload)
-				if err != nil {
-					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-					continue
-				}
-
-				// Allocate memory for the payload
-				memoryNeeded := uint64(len(rec.Payload))
-				if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-					db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-					continue
-				}
-
-				// Create version with correct offset
-				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-				db.index.Set(collection, version)
-				db.collections.IncrementDocCount(collection)
-
-			case types.OpUpdate, types.OpPatch:
-				existing, exists := db.index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
-				if !exists {
-					// If document doesn't exist, treat as create
-					offset, err := db.dataFile.WriteNoSync(rec.Payload)
-					if err != nil {
-						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-						continue
-					}
-
-					memoryNeeded := uint64(len(rec.Payload))
-					if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-						db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-						continue
-					}
-
-					version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
-					db.index.Set(collection, version)
-					db.collections.IncrementDocCount(collection)
-				} else {
-					// Write new payload to data file (no sync during replay)
-					offset, err := db.dataFile.WriteNoSync(rec.Payload)
-					if err != nil {
-						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
-						continue
-					}
-
-					// Calculate memory change
-					oldMemory := uint64(existing.Length)
-					memoryNeeded := uint64(len(rec.Payload))
-
-					// Try to allocate new memory
-					if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
-						db.logger.Warn("Memory limit reached during WAL replay for doc %d", rec.DocID)
-						continue
-					}
-
-					// Free old memory
-					if oldMemory > 0 {
-						db.memory.Free(db.dbID, oldMemory)
-					}
-
-					// Update version with correct offset
-					version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
-					db.index.Set(collection, version)
-				}
-
-			case types.OpDelete:
-				existing, exists := db.index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
-				if exists {
-					// Free memory for deleted document
-					if existing.Length > 0 {
-						db.memory.Free(db.dbID, uint64(existing.Length))
-					}
-				}
-				version := db.mvcc.DeleteVersion(rec.DocID, txID)
-				db.index.Set(collection, version)
-				db.collections.DecrementDocCount(collection)
-			}
-		}
-	}
-
-	// Single fsync after all replay writes (was N fsyncs during apply).
-	if syncErr := db.dataFile.Sync(); syncErr != nil {
-		db.logger.Warn("Data file sync after replay failed: %v", syncErr)
-	}
-
-	db.logger.Info("Replayed %d WAL records (committed only)", records)
-	// Return replay error so caller can log; state is still consistent (we applied good records).
-	return err
+	// Partition WALs do not expose GetGroupCommitStats; return nil for partitioned mode.
+	return nil
 }

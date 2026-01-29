@@ -30,7 +30,7 @@ func NewValidator(db *LogicalDB, log *logger.Logger) *Validator {
 }
 
 // ValidateDocument checks the health of a document by reading it
-// and verifying CRC32 checksum.
+// and verifying CRC32 checksum. Uses the partition that owns the document.
 func (v *Validator) ValidateDocument(collection string, docID uint64) (DocumentHealth, error) {
 	v.db.mu.RLock()
 	defer v.db.mu.RUnlock()
@@ -38,31 +38,42 @@ func (v *Validator) ValidateDocument(collection string, docID uint64) (DocumentH
 	if v.db.closed {
 		return HealthUnknown, ErrDBNotOpen
 	}
+	if v.db.partitions == nil {
+		return HealthUnknown, ErrDBNotOpen
+	}
 
 	if collection == "" {
 		collection = DefaultCollection
 	}
 
-	version, exists := v.db.index.Get(collection, docID, v.db.mvcc.CurrentSnapshot())
+	partitionID := RouteToPartition(docID, v.db.PartitionCount())
+	if partitionID >= len(v.db.partitions) {
+		return HealthUnknown, nil
+	}
+	partition := v.db.partitions[partitionID]
+	index := partition.GetIndex()
+	dataFile := partition.GetDataFile()
+	if dataFile == nil {
+		return HealthUnknown, nil
+	}
+
+	version, exists := index.Get(collection, docID, v.db.mvcc.CurrentSnapshot())
 	if !exists {
 		return HealthMissing, nil
 	}
-
 	if version.DeletedTxID != nil {
 		return HealthMissing, nil
 	}
 
-	// Try to read the document - this will verify CRC32
-	_, err := v.db.dataFile.Read(version.Offset, version.Length)
+	_, err := dataFile.Read(version.Offset, version.Length)
 	if err != nil {
 		v.logger.Warn("Document %d in collection %s validation failed: %v", docID, collection, err)
 		return HealthCorrupt, err
 	}
-
 	return HealthValid, nil
 }
 
-// ValidateAllDocuments validates all documents in the database.
+// ValidateAllDocuments validates all documents in the database across all partitions.
 func (v *Validator) ValidateAllDocuments() (map[string]map[uint64]DocumentHealth, error) {
 	v.db.mu.RLock()
 	defer v.db.mu.RUnlock()
@@ -70,24 +81,35 @@ func (v *Validator) ValidateAllDocuments() (map[string]map[uint64]DocumentHealth
 	if v.db.closed {
 		return nil, ErrDBNotOpen
 	}
+	if v.db.partitions == nil {
+		return nil, ErrDBNotOpen
+	}
 
 	results := make(map[string]map[uint64]DocumentHealth)
 
-	v.db.index.ForEachCollection(func(collection string, ci *CollectionIndex) {
-		results[collection] = make(map[uint64]DocumentHealth)
-		ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
-			if version.DeletedTxID != nil {
-				return // Skip deleted documents
+	for _, partition := range v.db.partitions {
+		dataFile := partition.GetDataFile()
+		if dataFile == nil {
+			continue
+		}
+		index := partition.GetIndex()
+		index.ForEachCollection(func(collection string, ci *CollectionIndex) {
+			if results[collection] == nil {
+				results[collection] = make(map[uint64]DocumentHealth)
 			}
-
-			_, err := v.db.dataFile.Read(version.Offset, version.Length)
-			if err != nil {
-				results[collection][docID] = HealthCorrupt
-			} else {
-				results[collection][docID] = HealthValid
-			}
+			ci.ForEach(func(docID uint64, version *types.DocumentVersion) {
+				if version.DeletedTxID != nil {
+					return
+				}
+				_, err := dataFile.Read(version.Offset, version.Length)
+				if err != nil {
+					results[collection][docID] = HealthCorrupt
+				} else {
+					results[collection][docID] = HealthValid
+				}
+			})
 		})
-	})
+	}
 
 	return results, nil
 }

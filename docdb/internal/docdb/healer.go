@@ -2,6 +2,7 @@ package docdb
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/types"
@@ -23,7 +24,7 @@ func NewHealer(db *LogicalDB, log *logger.Logger) *Healer {
 }
 
 // HealDocument attempts to heal a corrupted document by finding the latest
-// valid version from WAL records.
+// valid version from the partition's WAL records.
 func (h *Healer) HealDocument(collection string, docID uint64) error {
 	h.db.mu.Lock()
 	defer h.db.mu.Unlock()
@@ -31,65 +32,62 @@ func (h *Healer) HealDocument(collection string, docID uint64) error {
 	if h.db.closed {
 		return ErrDBNotOpen
 	}
+	if h.db.partitions == nil {
+		return ErrDBNotOpen
+	}
 
 	if collection == "" {
 		collection = DefaultCollection
 	}
 
-	// Get all WAL records for this document
-	walBasePath := fmt.Sprintf("%s/%s.wal", h.db.walDir, h.db.dbName)
-	recovery := wal.NewRecovery(walBasePath, h.db.logger)
+	partitionID := RouteToPartition(docID, h.db.PartitionCount())
+	if partitionID >= len(h.db.partitions) {
+		return fmt.Errorf("invalid partition %d for doc %d", partitionID, docID)
+	}
+	partition := h.db.partitions[partitionID]
+	walPath := filepath.Join(h.db.walDir, h.db.dbName, fmt.Sprintf("p%d.wal", partitionID))
 
 	var latestValidVersion *types.WALRecord
 	maxTxID := uint64(0)
 
-	// Scan WAL for all versions of this document in the specified collection
-	err := recovery.Replay(func(rec *types.WALRecord) error {
+	err := wal.ReplayPartitionWAL(walPath, h.db.logger, func(rec *types.WALRecord) error {
 		if rec == nil || rec.DocID != docID {
 			return nil
 		}
-
 		recCollection := rec.Collection
 		if recCollection == "" {
 			recCollection = DefaultCollection
 		}
-
 		if recCollection != collection {
 			return nil
 		}
-
-		// Only consider committed transactions
-		// (We'd need to track commit markers, but for simplicity,
-		// we'll check if we can read the payload)
 		if rec.OpType == types.OpCreate || rec.OpType == types.OpUpdate || rec.OpType == types.OpPatch {
-			// Try to validate the payload by attempting to read it
-			// For now, we'll use the latest record with valid payload
 			if rec.TxID > maxTxID && len(rec.Payload) > 0 {
 				maxTxID = rec.TxID
 				latestValidVersion = rec
 			}
 		}
-
 		return nil
 	})
 
 	if err != nil {
 		return fmt.Errorf("failed to scan WAL for document %d: %w", docID, err)
 	}
-
 	if latestValidVersion == nil {
 		return fmt.Errorf("no valid version found for document %d in collection %s", docID, collection)
 	}
 
-	// Write the valid payload to data file
-	offset, err := h.db.dataFile.Write(latestValidVersion.Payload)
+	dataFile := partition.GetDataFile()
+	if dataFile == nil {
+		return fmt.Errorf("partition %d data file not available", partitionID)
+	}
+	offset, err := dataFile.Write(latestValidVersion.Payload)
 	if err != nil {
 		return fmt.Errorf("failed to write healed payload: %w", err)
 	}
 
-	// Update index with healed version
 	version := h.db.mvcc.CreateVersion(docID, latestValidVersion.TxID, offset, latestValidVersion.PayloadLen)
-	h.db.index.Set(collection, version)
+	partition.GetIndex().Set(collection, version)
 
 	h.logger.Info("Healed document %d in collection %s using version from tx_id=%d", docID, collection, latestValidVersion.TxID)
 	return nil

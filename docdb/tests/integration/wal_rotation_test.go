@@ -184,9 +184,12 @@ func TestRotationDuringCrash(t *testing.T) {
 		}
 	}
 
-	// Get WAL size before potential rotation
-	walPath := filepath.Join(walDir, "testdb.wal")
-	walInfo, _ := os.Stat(walPath)
+	// Get WAL size before potential rotation (v0.4: walDir/dbName/p0.wal)
+	walPath := filepath.Join(walDir, "testdb", "p0.wal")
+	walInfo, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("failed to stat WAL: %v", err)
+	}
 	sizeBefore := walInfo.Size()
 
 	t.Logf("WAL size before crash: %d bytes", sizeBefore)
