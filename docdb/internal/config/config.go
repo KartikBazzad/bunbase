@@ -101,6 +101,7 @@ type QueryConfig struct {
 	MaxConcurrentQueries int           // Maximum concurrent queries per LogicalDB (default: 100)
 	QueryTimeout         time.Duration // Query execution timeout (default: 30s)
 	MaxQueryMemoryMB     uint64        // Maximum memory per query in MB (default: 100MB)
+	MaxQueryLimit        int           // Maximum query result limit; client limit is clamped to this (default: 10000)
 	MaxWALSizePerDB      uint64        // WAL disk cap per DB in bytes (default: 10GB)
 }
 
@@ -161,6 +162,7 @@ func DefaultConfig() *Config {
 			MaxConcurrentQueries: 100,                     // Phase D.7: Sensible default
 			QueryTimeout:         30 * time.Second,        // Phase D.7: Sensible default
 			MaxQueryMemoryMB:     100,                     // Phase D.7: Sensible default (100MB)
+			MaxQueryLimit:        10000,                   // Max rows per query; client limit clamped
 			MaxWALSizePerDB:      10 * 1024 * 1024 * 1024, // Phase D.8: 10GB WAL cap per DB
 		},
 	}

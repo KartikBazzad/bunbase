@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartikbazzad/docdb/internal/catalog"
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
@@ -128,6 +129,11 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 		}
 
 		dbName := string(frame.Ops[0].Payload)
+		if err := catalog.ValidateDBName(dbName); err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid database name")
+			return response
+		}
 		dbID, err := h.pool.OpenOrCreateDB(dbName)
 		if err != nil {
 			response.Status = types.StatusError

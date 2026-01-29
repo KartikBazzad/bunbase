@@ -1,0 +1,8 @@
+[debug] [2026-01-29T17:24:10.311Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-29T17:24:10.312Z] > authorizing via signed-in user (kartikbazzad@gmail.com)
+[debug] [2026-01-29T17:24:10.321Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-29T17:24:10.322Z] > authorizing via signed-in user (kartikbazzad@gmail.com)
+[debug] [2026-01-29T17:24:10.335Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-29T17:24:10.335Z] > authorizing via signed-in user (kartikbazzad@gmail.com)
+[debug] [2026-01-29T17:24:10.336Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-01-29T17:24:10.336Z] > authorizing via signed-in user (kartikbazzad@gmail.com)

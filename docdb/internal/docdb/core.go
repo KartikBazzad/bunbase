@@ -211,8 +211,11 @@ func (db *LogicalDB) executeOnPartition(partition *Partition, task *Task) *Resul
 		collection = DefaultCollection
 	}
 
+	// Ensure collection exists (auto-create if needed)
 	if !db.collections.Exists(collection) {
-		return &Result{Status: types.StatusError, Error: errors.ErrCollectionNotFound}
+		if err := db.collections.EnsureCollection(collection); err != nil {
+			return &Result{Status: types.StatusError, Error: err}
+		}
 	}
 
 	switch task.Op {
@@ -236,6 +239,11 @@ func (db *LogicalDB) executeCreateOnPartition(partition *Partition, collection s
 		return &Result{Status: types.StatusError, Error: err}
 	}
 	if err := validateJSONPayload(payload); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	// Ensure collection exists (auto-create if needed)
+	if err := db.collections.EnsureCollection(collection); err != nil {
 		return &Result{Status: types.StatusError, Error: err}
 	}
 
@@ -321,6 +329,11 @@ func (db *LogicalDB) executeUpdateOnPartition(partition *Partition, collection s
 		return &Result{Status: types.StatusError, Error: err}
 	}
 
+	// Ensure collection exists (auto-create if needed)
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
 	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
@@ -394,6 +407,11 @@ func (db *LogicalDB) executeDeleteOnPartition(partition *Partition, collection s
 func (db *LogicalDB) executePatchOnPartition(partition *Partition, collection string, docID uint64, patchOps []types.PatchOperation) *Result {
 	if len(patchOps) == 0 {
 		return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+	}
+
+	// Ensure collection exists (auto-create if needed)
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
 	}
 
 	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
@@ -665,7 +683,6 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 	}()
 	txRecords := make(map[uint64][]*types.WALRecord)
 	committed := make(map[uint64]bool)
-	lastCheckpointTxID := uint64(0)
 
 	err = wal.ReplayPartitionWAL(walPath, db.logger, func(rec *types.WALRecord) error {
 		if rec == nil {
@@ -676,9 +693,7 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 		}
 		txID := rec.TxID
 		if rec.OpType == types.OpCheckpoint {
-			if txID > lastCheckpointTxID {
-				lastCheckpointTxID = txID
-			}
+			// Checkpoint marker - skip record, do not skip other records
 			return nil
 		}
 		if txID > maxTxID {
@@ -703,9 +718,6 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 	txIDs := make([]uint64, 0, len(txRecords))
 	for txID := range txRecords {
 		if !committed[txID] {
-			continue
-		}
-		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
 			continue
 		}
 		txIDs = append(txIDs, txID)
@@ -960,6 +972,11 @@ func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q quer
 		ctx = context.Background()
 	}
 
+	// Clamp query limit (defense in depth)
+	if db.cfg.Query.MaxQueryLimit > 0 && q.Limit > db.cfg.Query.MaxQueryLimit {
+		q.Limit = db.cfg.Query.MaxQueryLimit
+	}
+
 	snap := db.mvcc.CurrentSnapshot()
 	checkSnapshotMonotonic(db.mvcc, snap)
 	partitionCount := 0
@@ -1025,8 +1042,9 @@ func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q quer
 		return allRows, nil
 	}
 
-	// Legacy: single index + datafile (no streaming)
+	// Legacy: single index + datafile (no streaming), with memory cap
 	partitionsScanned = 1 // Legacy mode = 1 partition
+	var bytesScanned uint64
 	db.index.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
 		select {
 		case <-ctx.Done():
@@ -1038,10 +1056,19 @@ func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q quer
 			db.logger.Warn("query scan doc %d: read: %v", docID, err)
 			return true
 		}
+		bytesScanned += uint64(len(data))
+		if bytesScanned > maxMem {
+			return false // Stop scanning; we'll return ErrQueryMemoryLimit below
+		}
 		allRows = append(allRows, query.Row{DocID: docID, Payload: data})
 		return true
 	})
 	rowsScanned = uint64(len(allRows)) // In legacy mode, all scanned rows are in allRows before filtering
+	if bytesScanned > maxMem {
+		executionTime := time.Since(queryStart)
+		metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+		return nil, ErrQueryMemoryLimit
+	}
 
 	// Apply filter (simple JSON field predicate)
 	if q.Filter.Field != "" {
@@ -1180,14 +1207,17 @@ func (db *LogicalDB) Patch(collection string, docID uint64, ops []types.PatchOpe
 		return ErrDBNotOpen
 	}
 
-	// Normalize collection name
+	// Normalize collection name and ensure it exists
 	if collection == "" {
 		collection = DefaultCollection
 	}
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return err
+	}
 
-	// Validate collection exists
-	if !db.collections.Exists(collection) {
-		return errors.ErrCollectionNotFound
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
 	}
 
 	if len(ops) == 0 {
@@ -1485,14 +1515,12 @@ func (db *LogicalDB) Create(collection string, docID uint64, payload []byte) err
 		return ErrDBNotOpen
 	}
 
-	// Normalize collection name
+	// Normalize collection name and ensure it exists
 	if collection == "" {
 		collection = DefaultCollection
 	}
-
-	// Validate collection exists (uses collections.mu internally)
-	if !db.collections.Exists(collection) {
-		return errors.ErrCollectionNotFound
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return err
 	}
 
 	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
@@ -1591,9 +1619,12 @@ func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) err
 		return ErrDBNotOpen
 	}
 
-	// Validate collection exists (uses collections.mu internally)
-	if !db.collections.Exists(collection) {
-		return errors.ErrCollectionNotFound
+	// Normalize collection name and ensure it exists
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return err
 	}
 
 	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
@@ -1649,14 +1680,12 @@ func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) err
 }
 
 func (db *LogicalDB) Delete(collection string, docID uint64) error {
-	// Normalize collection name
+	// Normalize collection name and ensure it exists
 	if collection == "" {
 		collection = DefaultCollection
 	}
-
-	// Validate collection exists (uses collections.mu internally)
-	if !db.collections.Exists(collection) {
-		return errors.ErrCollectionNotFound
+	if err := db.collections.EnsureCollection(collection); err != nil {
+		return err
 	}
 
 	db.mu.Lock()
@@ -1858,7 +1887,7 @@ func (db *LogicalDB) replayWAL() error {
 	txRecords := make(map[uint64][]*types.WALRecord)
 	committed := make(map[uint64]bool)
 
-	// Single pass: find checkpoint and buffer records (avoids second full WAL read).
+	// Single pass: buffer records (avoids second full WAL read).
 	err := recovery.Replay(func(rec *types.WALRecord) error {
 		if rec == nil {
 			return nil
@@ -1867,9 +1896,7 @@ func (db *LogicalDB) replayWAL() error {
 		txID := rec.TxID
 
 		if rec.OpType == types.OpCheckpoint {
-			if txID > lastCheckpointTxID {
-				lastCheckpointTxID = txID
-			}
+			// Checkpoint marker - skip record, do not skip other records
 			return nil
 		}
 
@@ -1908,9 +1935,6 @@ func (db *LogicalDB) replayWAL() error {
 	txIDs := make([]uint64, 0, len(txRecords))
 	for txID := range txRecords {
 		if !committed[txID] {
-			continue
-		}
-		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
 			continue
 		}
 		txIDs = append(txIDs, txID)

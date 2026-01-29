@@ -25,18 +25,18 @@ This document defines the query snapshot isolation contract for DocDB v0.4.
 
 ## Limits
 
-- **Memory cap**: Total bytes scanned (row payloads) is capped (e.g. 100MB default). Exceeding the cap returns an error.
+- **Memory cap**: Total bytes scanned (row payloads) is capped (e.g. 100MB default) in both **partitioned and legacy** query paths. Exceeding the cap returns `ErrQueryMemoryLimit`.
 - **Time limit**: Query execution is bound by a context timeout (e.g. 30s). Cancellation or timeout returns the context error.
-- **Row limit**: The query spec’s `limit` caps the number of rows returned; streaming merge can stop early when the limit is reached.
+- **Row limit**: The query spec’s `limit` caps the number of rows returned; streaming merge can stop early when the limit is reached. Client-supplied `limit` is **clamped** to the configured `MaxQueryLimit` (e.g. 10000); values above the cap are reduced to the cap rather than rejected.
 
 ## Summary
 
-| Property              | Guarantee                                  |
-| --------------------- | ------------------------------------------ |
-| Snapshot              | Single txID at query start                 |
-| Visibility            | Only commits ≤ snapshot txID visible       |
-| Partition consistency | Same snapshot txID on all partitions       |
-| Read-only             | Queries do not block writers               |
-| Memory                | Capped bytes scanned; over cap → error     |
-| Time                  | Context timeout; over → cancellation error |
-| Row limit             | Spec limit; early termination when reached |
+| Property              | Guarantee                                                             |
+| --------------------- | --------------------------------------------------------------------- |
+| Snapshot              | Single txID at query start                                            |
+| Visibility            | Only commits ≤ snapshot txID visible                                  |
+| Partition consistency | Same snapshot txID on all partitions                                  |
+| Read-only             | Queries do not block writers                                          |
+| Memory                | Capped bytes scanned; over cap → error                                |
+| Time                  | Context timeout; over → cancellation error                            |
+| Row limit             | Spec limit (clamped to MaxQueryLimit); early termination when reached |

@@ -546,19 +546,24 @@ When using partitioned mode (`PartitionCount > 1`), the following defaults and l
 
 ### Query and WAL Limits (Phase D.8)
 
-| Limit                | Default | Description                       |
-| -------------------- | ------- | --------------------------------- |
-| MaxPartitionsPerDB   | 256     | Maximum partitions per LogicalDB  |
-| MaxConcurrentQueries | 100     | Concurrent query semaphore per DB |
-| QueryTimeout         | 30s     | Query execution timeout (context) |
-| MaxQueryMemoryMB     | 100     | Max bytes scanned per query (MB)  |
-| MaxWALSizePerDB      | 10 GB   | Total WAL size cap per DB (bytes) |
+| Limit                | Default | Description                                           |
+| -------------------- | ------- | ----------------------------------------------------- |
+| MaxPartitionsPerDB   | 256     | Maximum partitions per LogicalDB                      |
+| MaxConcurrentQueries | 100     | Concurrent query semaphore per DB                     |
+| QueryTimeout         | 30s     | Query execution timeout (context)                     |
+| MaxQueryMemoryMB     | 100     | Max bytes scanned per query (MB)                      |
+| MaxQueryLimit        | 10000   | Max rows per query; client `limit` is clamped to this |
+| MaxWALSizePerDB      | 10 GB   | Total WAL size cap per DB (bytes)                     |
 
 **Errors:** Exceeding limits returns: `ErrTooManyPartitions`, `ErrTooManyConcurrentQueries`, `ErrQueryTimeout`, `ErrQueryMemoryLimit`, `ErrWALSizeLimit`.
+
+**IPC protocol:** Maximum operations per request frame is capped at `MaxOpsPerFrame` (65535) to prevent DoS/OOM.
 
 ---
 
 ## IPC Configuration
+
+**Database name validation:** Database names (used when creating or opening a DB) are validated to prevent path traversal. Allowed: non-empty, valid UTF-8, at most 64 bytes. Rejected: names containing `/`, `\`, `..`, or null. Invalid names are rejected at catalog create and at IPC OpenDB.
 
 ### SocketPath
 
@@ -585,6 +590,14 @@ cfg.IPC.SocketPath = "/var/run/docdb.sock"
 **Default:** `false`
 
 **Note:** TCP support is explicitly out of scope for v0.
+
+### DebugMode
+
+**Description:** When enabled, the IPC handler logs request/response payload previews (e.g. first 100 bytes of payloads, full query payload for CmdQuery) for debugging.
+
+**Default:** `false`
+
+**Security:** Debug mode must **not** be used in production when handling sensitive data. When enabled, request and response payloads (or previews) may be written to logs and could include PII or secrets. Log aggregation or shared log access increases exposure. Keep DebugMode off in production.
 
 ---
 

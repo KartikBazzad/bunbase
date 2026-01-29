@@ -24,7 +24,8 @@ const (
 	PayloadLenSize  = 4
 	PatchOpsLenSize = 4 // Length of patch operations array (JSON encoded)
 
-	MaxFrameSize = 16 * 1024 * 1024
+	MaxFrameSize   = 16 * 1024 * 1024
+	MaxOpsPerFrame = 65535 // Maximum operations per request frame (DoS/OOM protection)
 )
 
 const (
@@ -168,6 +169,9 @@ func DecodeRequest(data []byte) (*RequestFrame, error) {
 
 	opCount := binary.LittleEndian.Uint32(data[offset:])
 	offset += OpCountSize
+	if opCount > MaxOpsPerFrame {
+		return nil, ErrInvalidFrame
+	}
 
 	frame.Ops = make([]Operation, opCount)
 

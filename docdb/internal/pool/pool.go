@@ -570,6 +570,9 @@ func (p *Pool) ExecuteQuery(ctx context.Context, dbID uint64, collection string,
 			}
 		}
 		q.Limit = spec.Limit
+		if p.cfg.Query.MaxQueryLimit > 0 && spec.Limit > p.cfg.Query.MaxQueryLimit {
+			q.Limit = p.cfg.Query.MaxQueryLimit
+		}
 		if spec.OrderBy != nil {
 			q.OrderBy = &query.OrderSpec{
 				Field: spec.OrderBy.Field,

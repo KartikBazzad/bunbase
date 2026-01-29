@@ -198,7 +198,11 @@ func InsertValue(doc interface{}, path []string, index int, value interface{}) e
 			if arrIndex < 0 || arrIndex >= len(v) {
 				return fmt.Errorf("array index %d out of bounds at path segment %d: %w", arrIndex, i, errors.ErrInvalidPath)
 			}
-			current = v[arrIndex].(map[string]interface{})
+			next, ok := v[arrIndex].(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("path segment at index %d is not an object: %w", i, errors.ErrInvalidPath)
+			}
+			current = next
 		default:
 			return fmt.Errorf("cannot traverse path segment '%s' at index %d: %w", segment, i, errors.ErrInvalidPath)
 		}

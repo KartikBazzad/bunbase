@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	ErrCatalogLoad  = errors.New("failed to load catalog")
-	ErrCatalogWrite = errors.New("failed to write catalog")
-	ErrDBExists     = errors.New("database already exists")
-	ErrDBNotFound   = errors.New("database not found")
+	ErrCatalogLoad   = errors.New("failed to load catalog")
+	ErrCatalogWrite  = errors.New("failed to write catalog")
+	ErrDBExists      = errors.New("database already exists")
+	ErrDBNotFound    = errors.New("database not found")
+	ErrInvalidDBName = errors.New("invalid database name")
 )
 
 const (
@@ -119,6 +120,10 @@ func (c *Catalog) Load() error {
 }
 
 func (c *Catalog) Create(name string) (uint64, error) {
+	if err := ValidateDBName(name); err != nil {
+		return 0, ErrInvalidDBName
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -208,3 +208,29 @@ func (r *CollectionRegistry) EnsureDefault() {
 		}
 	}
 }
+
+// EnsureCollection ensures a collection exists, creating it if necessary.
+func (r *CollectionRegistry) EnsureCollection(name string) error {
+	if name == "" {
+		name = DefaultCollection
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.collections[name]; exists {
+		return nil
+	}
+
+	if err := ValidateCollectionName(name); err != nil {
+		return err
+	}
+
+	r.collections[name] = &types.CollectionMetadata{
+		Name:      name,
+		CreatedAt: time.Now(),
+		DocCount:  0,
+	}
+	r.logger.Info("Auto-created collection: %s", name)
+	return nil
+}
