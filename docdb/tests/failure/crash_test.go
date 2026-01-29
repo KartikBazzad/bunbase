@@ -94,6 +94,50 @@ func (h *CrashTestHelper) ReopenDB(dbName string) *docdb.LogicalDB {
 	return db
 }
 
+// CreateDBWithPartitions creates a new partitioned database (v0.4) for replay testing.
+func (h *CrashTestHelper) CreateDBWithPartitions(dbName string, partitionCount int) *docdb.LogicalDB {
+	cfg := config.DefaultConfig()
+	cfg.DataDir = h.tempDir
+	cfg.WAL.Dir = h.WALDir()
+
+	dbCfg := config.DefaultLogicalDBConfig()
+	dbCfg.PartitionCount = partitionCount
+
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB*1024*1024)
+	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
+
+	db := docdb.NewLogicalDBWithConfig(1, dbName, cfg, dbCfg, memCaps, pool, log)
+	if err := db.Open(h.tempDir, h.WALDir()); err != nil {
+		h.t.Fatalf("Failed to open partitioned database: %v", err)
+	}
+
+	return db
+}
+
+// ReopenDBWithPartitions reopens a partitioned database after a crash (v0.4).
+func (h *CrashTestHelper) ReopenDBWithPartitions(dbName string, partitionCount int) *docdb.LogicalDB {
+	cfg := config.DefaultConfig()
+	cfg.DataDir = h.tempDir
+	cfg.WAL.Dir = h.WALDir()
+
+	dbCfg := config.DefaultLogicalDBConfig()
+	dbCfg.PartitionCount = partitionCount
+
+	log := logger.Default()
+	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB*1024*1024, cfg.Memory.PerDBLimitMB*1024*1024)
+	memCaps.RegisterDB(1, cfg.Memory.PerDBLimitMB*1024*1024)
+	pool := memory.NewBufferPool(cfg.Memory.BufferSizes)
+
+	db := docdb.NewLogicalDBWithConfig(1, dbName, cfg, dbCfg, memCaps, pool, log)
+	if err := db.Open(h.tempDir, h.WALDir()); err != nil {
+		h.t.Fatalf("Failed to reopen partitioned database: %v", err)
+	}
+
+	return db
+}
+
 // WALPath returns the path to the WAL file for a database.
 func (h *CrashTestHelper) WALPath(dbName string) string {
 	return filepath.Join(h.WALDir(), fmt.Sprintf("%s.wal", dbName))
@@ -188,7 +232,7 @@ func (h *CrashTestHelper) CorruptDataFile(dbName string, offset int64, length in
 
 // VerifyDocument verifies that a document exists and has the expected content.
 func (h *CrashTestHelper) VerifyDocument(db *docdb.LogicalDB, docID uint64, expectedPayload []byte) error {
-	data, err := db.Read(docID)
+	data, err := db.Read(docdb.DefaultCollection, docID)
 	if err != nil {
 		return fmt.Errorf("failed to read document %d: %w", docID, err)
 	}
@@ -202,7 +246,7 @@ func (h *CrashTestHelper) VerifyDocument(db *docdb.LogicalDB, docID uint64, expe
 
 // VerifyDocumentMissing verifies that a document does not exist.
 func (h *CrashTestHelper) VerifyDocumentMissing(db *docdb.LogicalDB, docID uint64) error {
-	_, err := db.Read(docID)
+	_, err := db.Read(docdb.DefaultCollection, docID)
 	if err == nil {
 		return fmt.Errorf("document %d should not exist", docID)
 	}
@@ -213,7 +257,7 @@ func (h *CrashTestHelper) VerifyDocumentMissing(db *docdb.LogicalDB, docID uint6
 func (h *CrashTestHelper) CreateTestDocuments(db *docdb.LogicalDB, count int) error {
 	payload := []byte(`{"test":"data"}`)
 	for i := 1; i <= count; i++ {
-		if err := db.Create(uint64(i), payload); err != nil {
+		if err := db.Create(docdb.DefaultCollection, uint64(i), payload); err != nil {
 			return fmt.Errorf("failed to create document %d: %w", i, err)
 		}
 	}

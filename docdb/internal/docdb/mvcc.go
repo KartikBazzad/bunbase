@@ -60,6 +60,15 @@ func (m *MVCC) CurrentSnapshot() uint64 {
 	return m.currentTxID - 1
 }
 
+// MaxVisibleTxID returns the highest txID that may be used as a snapshot (currentTxID - 1).
+// Used by invariant checks to verify snapshot is not in the future.
+func (m *MVCC) MaxVisibleTxID() uint64 {
+	if m.currentTxID == 0 {
+		return 0
+	}
+	return m.currentTxID - 1
+}
+
 func (m *MVCC) IsVisible(version *types.DocumentVersion, snapshotTxID uint64) bool {
 	if version.CreatedTxID > snapshotTxID {
 		return false

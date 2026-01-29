@@ -7,10 +7,13 @@ package docdb
 import (
 	"context"
 	"runtime"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/logger"
+	"github.com/kartikbazzad/docdb/internal/metrics"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
@@ -90,11 +93,29 @@ func (wp *workerPoolImpl) Submit(task *Task) {
 
 	select {
 	case wp.taskQueue <- task:
+		// Record queue depth after submission (Phase C.5)
+		wp.recordQueueDepth()
 	default:
 		// Queue full - send backpressure error
 		task.ResultCh <- &Result{
 			Status: types.StatusError,
 			Error:  ErrQueueFull,
+		}
+		// Record queue depth even when full
+		wp.recordQueueDepth()
+	}
+}
+
+// recordQueueDepth records the current queue depth for all partitions.
+// Since partitions share the worker pool queue, all partitions have the same depth.
+func (wp *workerPoolImpl) recordQueueDepth() {
+	queueDepth := len(wp.taskQueue)
+	// Record for all partitions (they share the same queue)
+	if wp.db != nil && wp.db.partitions != nil {
+		for _, partition := range wp.db.partitions {
+			if partition != nil {
+				metrics.SetPartitionQueueDepth(wp.db.dbName, strconv.Itoa(partition.ID()), queueDepth)
+			}
 		}
 	}
 }
@@ -187,7 +208,11 @@ func (w *worker) executeTask(task *Task) {
 	}
 
 	// Writes: lock partition (exactly one writer at a time)
+	lockStart := time.Now()
 	partition.mu.Lock()
+	lockWait := time.Since(lockStart)
+	metrics.RecordPartitionLockWait(w.db.Name(), strconv.Itoa(partition.ID()), lockWait)
+	checkSingleWriter(partition, task.Op)
 	result := w.db.executeOnPartition(partition, task)
 	partition.mu.Unlock()
 

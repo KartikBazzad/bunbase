@@ -1,13 +1,17 @@
 package ipc
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/errors"
+	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/metrics"
 	"github.com/kartikbazzad/docdb/internal/pool"
 	"github.com/kartikbazzad/docdb/internal/types"
@@ -42,16 +46,75 @@ func validateJSONPayload(payload []byte) error {
 type Handler struct {
 	pool     *pool.Pool
 	exporter *metrics.PrometheusExporter
+	cfg      *config.Config
+	logger   *logger.Logger
 }
 
-func NewHandler(p *pool.Pool) *Handler {
+func NewHandler(p *pool.Pool, cfg *config.Config, log *logger.Logger) *Handler {
+	exporter := metrics.NewPrometheusExporter()
+	metrics.SetGlobalExporter(exporter) // Enable partition metrics from docdb
 	return &Handler{
 		pool:     p,
-		exporter: metrics.NewPrometheusExporter(),
+		exporter: exporter,
+		cfg:      cfg,
+		logger:   log,
+	}
+}
+
+// getCommandName returns a string representation of the command code (Phase E.9).
+func (h *Handler) getCommandName(cmd uint8) string {
+	switch cmd {
+	case CmdOpenDB:
+		return "OpenDB"
+	case CmdCloseDB:
+		return "CloseDB"
+	case CmdExecute:
+		return "Execute"
+	case CmdStats:
+		return "Stats"
+	case CmdCreateCollection:
+		return "CreateCollection"
+	case CmdDeleteCollection:
+		return "DeleteCollection"
+	case CmdListCollections:
+		return "ListCollections"
+	case CmdListDBs:
+		return "ListDBs"
+	case CmdHeal:
+		return "Heal"
+	case CmdHealAll:
+		return "HealAll"
+	case CmdHealStats:
+		return "HealStats"
+	case CmdMetrics:
+		return "Metrics"
+	case CmdQuery:
+		return "Query"
+	default:
+		return fmt.Sprintf("Unknown(%d)", cmd)
 	}
 }
 
 func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
+	// Phase E.9: Debug mode - log request flow
+	if h.cfg != nil && h.cfg.IPC.DebugMode && h.logger != nil {
+		cmdName := h.getCommandName(frame.Command)
+		h.logger.Info("[DEBUG] RequestID=%d Command=%s DBID=%d OpCount=%d",
+			frame.RequestID, cmdName, frame.DBID, frame.OpCount)
+		for i, op := range frame.Ops {
+			payloadPreview := ""
+			if len(op.Payload) > 0 {
+				if len(op.Payload) > 100 {
+					payloadPreview = fmt.Sprintf("%s...", string(op.Payload[:100]))
+				} else {
+					payloadPreview = string(op.Payload)
+				}
+			}
+			h.logger.Info("[DEBUG] RequestID=%d Op[%d] Type=%d Collection=%s DocID=%d PayloadLen=%d Payload=%s",
+				frame.RequestID, i, op.OpType, op.Collection, op.DocID, len(op.Payload), payloadPreview)
+		}
+	}
+
 	response := &ResponseFrame{
 		RequestID: frame.RequestID,
 	}
@@ -145,6 +208,12 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 		response.Status = types.StatusOK
 		response.Data = serializeResponses(responses)
 
+		// Phase E.9: Debug mode - log response
+		if h.cfg != nil && h.cfg.IPC.DebugMode && h.logger != nil {
+			h.logger.Info("[DEBUG] RequestID=%d Command=Execute Status=%d ResponseCount=%d Duration=%v",
+				frame.RequestID, response.Status, len(responses), duration)
+		}
+
 	case CmdQuery:
 		if frame.DBID == 0 || len(frame.Ops) == 0 {
 			response.Status = types.StatusError
@@ -156,7 +225,13 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 			collection = "_default"
 		}
 		queryPayload := frame.Ops[0].Payload
-		data, err := h.pool.ExecuteQuery(frame.DBID, collection, queryPayload)
+		timeout := 30 * time.Second
+		if h.cfg != nil && h.cfg.Query.QueryTimeout > 0 {
+			timeout = h.cfg.Query.QueryTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		data, err := h.pool.ExecuteQuery(ctx, frame.DBID, collection, queryPayload)
 		if err != nil {
 			response.Status = types.StatusError
 			response.Data = []byte(err.Error())
@@ -164,6 +239,18 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 		}
 		response.Status = types.StatusOK
 		response.Data = data
+
+		// Phase E.9: Debug mode - log query response
+		if h.cfg != nil && h.cfg.IPC.DebugMode && h.logger != nil {
+			var queryPreview string
+			if len(queryPayload) > 100 {
+				queryPreview = fmt.Sprintf("%s...", string(queryPayload[:100]))
+			} else {
+				queryPreview = string(queryPayload)
+			}
+			h.logger.Info("[DEBUG] RequestID=%d Command=Query Collection=%s Query=%s Status=%d ResponseLen=%d",
+				frame.RequestID, collection, queryPreview, response.Status, len(data))
+		}
 
 	case CmdCreateCollection:
 		if frame.DBID == 0 || len(frame.Ops) == 0 || frame.Ops[0].Collection == "" {

@@ -28,7 +28,7 @@ type Server struct {
 
 func NewServer(cfg *config.Config, log *logger.Logger) (*Server, error) {
 	p := pool.NewPool(cfg, log)
-	h := NewHandler(p)
+	h := NewHandler(p, cfg, log) // Phase E.9: Pass config and logger for debug mode
 
 	return &Server{
 		cfg:         cfg,

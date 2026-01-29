@@ -9,6 +9,77 @@ import (
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
+// globalExporter is set by the IPC handler so docdb can record partition metrics.
+var globalExporter *PrometheusExporter
+var globalExporterMu sync.RWMutex
+
+// SetGlobalExporter sets the global exporter for partition metrics (called by IPC handler).
+func SetGlobalExporter(pe *PrometheusExporter) {
+	globalExporterMu.Lock()
+	defer globalExporterMu.Unlock()
+	globalExporter = pe
+}
+
+// RecordPartitionLockWait records lock wait time (called from docdb).
+func RecordPartitionLockWait(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionLockWait(db, partition, duration)
+	}
+}
+
+// RecordPartitionWALFsync records WAL fsync latency (called from docdb).
+func RecordPartitionWALFsync(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionWALFsync(db, partition, duration)
+	}
+}
+
+// RecordPartitionReplay records replay duration (called from docdb).
+func RecordPartitionReplay(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionReplay(db, partition, duration)
+	}
+}
+
+// RecordPartitionIndexScan records index scan duration (called from docdb).
+func RecordPartitionIndexScan(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionIndexScan(db, partition, duration)
+	}
+}
+
+// SetPartitionQueueDepth sets queue depth (called from docdb).
+func SetPartitionQueueDepth(db, partition string, depth int) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.SetPartitionQueueDepth(db, partition, depth)
+	}
+}
+
+// RecordQueryMetrics records query execution metrics (Phase C.6).
+func RecordQueryMetrics(db string, partitionsScanned, rowsScanned, rowsReturned uint64, executionTime time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordQueryMetrics(db, partitionsScanned, rowsScanned, rowsReturned, executionTime)
+	}
+}
+
 // PrometheusExporter provides Prometheus/OpenMetrics format metrics.
 type PrometheusExporter struct {
 	mu sync.RWMutex
@@ -30,14 +101,36 @@ type PrometheusExporter struct {
 	// Healing metrics
 	healingOperationsTotal uint64
 	documentsHealedTotal   uint64
+
+	// Partition metrics (Phase C.5)
+	partitionLockWaitDurations  map[string]map[string][]float64 // db -> partition -> durations
+	partitionWALFsyncDurations  map[string]map[string][]float64 // db -> partition -> durations
+	partitionReplayDurations    map[string]map[string][]float64 // db -> partition -> durations
+	partitionIndexScanDurations map[string]map[string][]float64 // db -> partition -> durations
+	partitionQueueDepth         map[string]map[string]int       // db -> partition -> depth
+
+	// Query metrics (Phase C.6)
+	queryPartitionsScanned map[string]uint64    // db -> count
+	queryRowsScanned       map[string]uint64    // db -> count
+	queryRowsReturned      map[string]uint64    // db -> count
+	queryExecutionTimes    map[string][]float64 // db -> durations (seconds)
 }
 
 // NewPrometheusExporter creates a new Prometheus metrics exporter.
 func NewPrometheusExporter() *PrometheusExporter {
 	return &PrometheusExporter{
-		operationsTotal:    make(map[string]map[string]uint64),
-		operationDurations: make(map[string][]float64),
-		errorsTotal:        make(map[errors.ErrorCategory]uint64),
+		operationsTotal:             make(map[string]map[string]uint64),
+		operationDurations:          make(map[string][]float64),
+		errorsTotal:                 make(map[errors.ErrorCategory]uint64),
+		partitionLockWaitDurations:  make(map[string]map[string][]float64),
+		partitionWALFsyncDurations:  make(map[string]map[string][]float64),
+		partitionReplayDurations:    make(map[string]map[string][]float64),
+		partitionIndexScanDurations: make(map[string]map[string][]float64),
+		partitionQueueDepth:         make(map[string]map[string]int),
+		queryPartitionsScanned:      make(map[string]uint64),
+		queryRowsScanned:            make(map[string]uint64),
+		queryRowsReturned:           make(map[string]uint64),
+		queryExecutionTimes:         make(map[string][]float64),
 	}
 }
 
@@ -174,6 +267,212 @@ func (pe *PrometheusExporter) Export(stats *types.Stats) string {
 	output += "# HELP docdb_documents_healed_total Total number of documents healed\n"
 	output += "# TYPE docdb_documents_healed_total counter\n"
 	output += fmt.Sprintf("docdb_documents_healed_total %d\n", pe.documentsHealedTotal)
+
+	// Partition metrics (Phase C.5)
+	output += exportPartitionMetrics(pe)
+
+	// Query metrics (Phase C.6)
+	output += exportQueryMetrics(pe)
+
+	return output
+}
+
+// exportPartitionMetrics exports partition-level metrics.
+func exportPartitionMetrics(pe *PrometheusExporter) string {
+	var output string
+
+	// Queue depth (gauge)
+	output += "# HELP docdb_partition_queue_depth Current queue depth per partition\n"
+	output += "# TYPE docdb_partition_queue_depth gauge\n"
+	for db, partitions := range pe.partitionQueueDepth {
+		for partition, depth := range partitions {
+			output += fmt.Sprintf("docdb_partition_queue_depth{db=\"%s\",partition=\"%s\"} %d\n", db, partition, depth)
+		}
+	}
+
+	// Lock wait (summary)
+	output += exportPartitionDurations("docdb_partition_lock_wait_seconds", "Write lock wait time per partition", pe.partitionLockWaitDurations)
+
+	// WAL fsync (summary)
+	output += exportPartitionDurations("docdb_partition_wal_fsync_seconds", "WAL fsync latency per partition", pe.partitionWALFsyncDurations)
+
+	// Replay (summary)
+	output += exportPartitionDurations("docdb_partition_replay_seconds", "Recovery replay duration per partition", pe.partitionReplayDurations)
+
+	// Index scan (summary)
+	output += exportPartitionDurations("docdb_partition_index_scan_seconds", "Index scan duration per partition", pe.partitionIndexScanDurations)
+
+	return output
+}
+
+func exportPartitionDurations(metricName, help string, data map[string]map[string][]float64) string {
+	var output string
+	output += fmt.Sprintf("# HELP %s %s\n", metricName, help)
+	output += fmt.Sprintf("# TYPE %s summary\n", metricName)
+	for db, partitions := range data {
+		for partition, durations := range partitions {
+			if len(durations) == 0 {
+				continue
+			}
+			var sum float64
+			var min, max float64 = durations[0], durations[0]
+			for _, d := range durations {
+				sum += d
+				if d < min {
+					min = d
+				}
+				if d > max {
+					max = d
+				}
+			}
+			avg := sum / float64(len(durations))
+			labels := fmt.Sprintf("db=\"%s\",partition=\"%s\"", db, partition)
+			output += fmt.Sprintf("%s{%s,quantile=\"0\"} %f\n", metricName, labels, min)
+			output += fmt.Sprintf("%s{%s,quantile=\"0.5\"} %f\n", metricName, labels, avg)
+			output += fmt.Sprintf("%s{%s,quantile=\"1\"} %f\n", metricName, labels, max)
+			output += fmt.Sprintf("%s_sum{%s} %f\n", metricName, labels, sum)
+			output += fmt.Sprintf("%s_count{%s} %d\n", metricName, labels, len(durations))
+		}
+	}
+	return output
+}
+
+// RecordPartitionLockWait records lock wait time for a partition.
+func (pe *PrometheusExporter) RecordPartitionLockWait(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionLockWaitDurations[db] == nil {
+		pe.partitionLockWaitDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionLockWaitDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionLockWaitDurations[db][partition] = durations
+}
+
+// RecordPartitionWALFsync records WAL fsync latency for a partition.
+func (pe *PrometheusExporter) RecordPartitionWALFsync(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionWALFsyncDurations[db] == nil {
+		pe.partitionWALFsyncDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionWALFsyncDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionWALFsyncDurations[db][partition] = durations
+}
+
+// RecordPartitionReplay records replay duration for a partition.
+func (pe *PrometheusExporter) RecordPartitionReplay(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionReplayDurations[db] == nil {
+		pe.partitionReplayDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionReplayDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionReplayDurations[db][partition] = durations
+}
+
+// RecordPartitionIndexScan records index scan duration for a partition.
+func (pe *PrometheusExporter) RecordPartitionIndexScan(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionIndexScanDurations[db] == nil {
+		pe.partitionIndexScanDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionIndexScanDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionIndexScanDurations[db][partition] = durations
+}
+
+// SetPartitionQueueDepth sets the queue depth for a partition.
+func (pe *PrometheusExporter) SetPartitionQueueDepth(db, partition string, depth int) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionQueueDepth[db] == nil {
+		pe.partitionQueueDepth[db] = make(map[string]int)
+	}
+	pe.partitionQueueDepth[db][partition] = depth
+}
+
+// RecordQueryMetrics records query execution metrics (Phase C.6).
+func (pe *PrometheusExporter) RecordQueryMetrics(db string, partitionsScanned, rowsScanned, rowsReturned uint64, executionTime time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.queryPartitionsScanned[db] += partitionsScanned
+	pe.queryRowsScanned[db] += rowsScanned
+	pe.queryRowsReturned[db] += rowsReturned
+	durations := pe.queryExecutionTimes[db]
+	durations = append(durations, executionTime.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.queryExecutionTimes[db] = durations
+}
+
+// exportQueryMetrics exports query metrics in Prometheus format.
+func exportQueryMetrics(pe *PrometheusExporter) string {
+	var output string
+
+	// Query partitions scanned (counter)
+	output += "# HELP docdb_query_partitions_scanned_total Total number of partitions scanned across all queries\n"
+	output += "# TYPE docdb_query_partitions_scanned_total counter\n"
+	for db, count := range pe.queryPartitionsScanned {
+		output += fmt.Sprintf("docdb_query_partitions_scanned_total{db=\"%s\"} %d\n", db, count)
+	}
+
+	// Query rows scanned (counter)
+	output += "# HELP docdb_query_rows_scanned_total Total number of rows scanned across all queries\n"
+	output += "# TYPE docdb_query_rows_scanned_total counter\n"
+	for db, count := range pe.queryRowsScanned {
+		output += fmt.Sprintf("docdb_query_rows_scanned_total{db=\"%s\"} %d\n", db, count)
+	}
+
+	// Query rows returned (counter)
+	output += "# HELP docdb_query_rows_returned_total Total number of rows returned across all queries\n"
+	output += "# TYPE docdb_query_rows_returned_total counter\n"
+	for db, count := range pe.queryRowsReturned {
+		output += fmt.Sprintf("docdb_query_rows_returned_total{db=\"%s\"} %d\n", db, count)
+	}
+
+	// Query execution time (summary)
+	output += "# HELP docdb_query_execution_seconds Query execution time\n"
+	output += "# TYPE docdb_query_execution_seconds summary\n"
+	for db, durations := range pe.queryExecutionTimes {
+		if len(durations) == 0 {
+			continue
+		}
+		var sum float64
+		var min, max float64 = durations[0], durations[0]
+		for _, d := range durations {
+			sum += d
+			if d < min {
+				min = d
+			}
+			if d > max {
+				max = d
+			}
+		}
+		avg := sum / float64(len(durations))
+		labels := fmt.Sprintf("db=\"%s\"", db)
+		output += fmt.Sprintf("docdb_query_execution_seconds{%s,quantile=\"0\"} %f\n", labels, min)
+		output += fmt.Sprintf("docdb_query_execution_seconds{%s,quantile=\"0.5\"} %f\n", labels, avg)
+		output += fmt.Sprintf("docdb_query_execution_seconds{%s,quantile=\"1\"} %f\n", labels, max)
+		output += fmt.Sprintf("docdb_query_execution_seconds_sum{%s} %f\n", labels, sum)
+		output += fmt.Sprintf("docdb_query_execution_seconds_count{%s} %d\n", labels, len(durations))
+	}
 
 	return output
 }

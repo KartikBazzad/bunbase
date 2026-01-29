@@ -50,6 +50,16 @@ func (mr *MatrixRunner) Run() error {
 	for i, testConfig := range mr.testConfigs {
 		log.Printf("[%d/%d] Running test: %s", i+1, totalTests, testConfig.Name)
 
+		// Phase E.10: Verbose mode - log test configuration details
+		if mr.config.Verbose {
+			log.Printf("[VERBOSE] Test config: %d databases, %d connections/DB, %d workers/DB, duration=%v",
+				testConfig.Databases, testConfig.ConnectionsPerDB, testConfig.WorkersPerDB, mr.config.Duration)
+			log.Printf("[VERBOSE] Workload: Read=%d%% Write=%d%% Update=%d%% Delete=%d%%",
+				mr.config.ReadPercent, mr.config.WritePercent, mr.config.UpdatePercent, mr.config.DeletePercent)
+			log.Printf("[VERBOSE] Document: size=%d bytes, count=%d per DB",
+				mr.config.DocumentSize, mr.config.DocumentCount)
+		}
+
 		result := mr.runTestConfiguration(testConfig)
 		mr.results = append(mr.results, result)
 

@@ -14,6 +14,7 @@ type Config struct {
 	DB      DBConfig
 	IPC     IPCConfig
 	Healing HealingConfig
+	Query   QueryConfig // Phase D.7/D.8: Query limits and defaults
 }
 
 type MemoryConfig struct {
@@ -83,7 +84,8 @@ type IPCConfig struct {
 	SocketPath     string
 	EnableTCP      bool
 	TCPPort        int
-	MaxConnections int // Max concurrent connections (0 = unlimited, used with ants)
+	MaxConnections int  // Max concurrent connections (0 = unlimited, used with ants)
+	DebugMode      bool // Phase E.9: Enable request flow logging
 }
 
 type HealingConfig struct {
@@ -91,6 +93,15 @@ type HealingConfig struct {
 	Interval         time.Duration // Periodic health scan interval
 	OnReadCorruption bool          // Trigger healing on corruption detection during read
 	MaxBatchSize     int           // Maximum documents to heal in one batch
+}
+
+// QueryConfig configures query execution limits (Phase D.7/D.8).
+type QueryConfig struct {
+	MaxPartitionsPerDB   int           // Maximum partitions per LogicalDB (default: 256)
+	MaxConcurrentQueries int           // Maximum concurrent queries per LogicalDB (default: 100)
+	QueryTimeout         time.Duration // Query execution timeout (default: 30s)
+	MaxQueryMemoryMB     uint64        // Maximum memory per query in MB (default: 100MB)
+	MaxWALSizePerDB      uint64        // WAL disk cap per DB in bytes (default: 10GB)
 }
 
 func DefaultConfig() *Config {
@@ -137,6 +148,7 @@ func DefaultConfig() *Config {
 			SocketPath: "/tmp/docdb.sock",
 			EnableTCP:  false,
 			TCPPort:    0,
+			DebugMode:  false, // Phase E.9: Debug mode disabled by default
 		},
 		Healing: HealingConfig{
 			Enabled:          true,
@@ -144,15 +156,23 @@ func DefaultConfig() *Config {
 			OnReadCorruption: true,
 			MaxBatchSize:     100,
 		},
+		Query: QueryConfig{
+			MaxPartitionsPerDB:   256,                     // Phase D.7: Sensible default
+			MaxConcurrentQueries: 100,                     // Phase D.7: Sensible default
+			QueryTimeout:         30 * time.Second,        // Phase D.7: Sensible default
+			MaxQueryMemoryMB:     100,                     // Phase D.7: Sensible default (100MB)
+			MaxWALSizePerDB:      10 * 1024 * 1024 * 1024, // Phase D.8: 10GB WAL cap per DB
+		},
 	}
 }
 
 // DefaultLogicalDBConfig returns default configuration for a LogicalDB (v0.4).
+// Phase D.7: Ship-ready defaults (PartitionCount = 2×CPU, WorkerCount = 1×CPU, QueueSize = 1024).
 func DefaultLogicalDBConfig() *LogicalDBConfig {
 	return &LogicalDBConfig{
-		PartitionCount:      16,
-		WorkerCount:         runtime.NumCPU(),
-		QueueSize:           1024,
+		PartitionCount:      2 * runtime.NumCPU(), // Write parallelism
+		WorkerCount:         runtime.NumCPU(),     // Execution concurrency
+		QueueSize:           1024,                 // Backpressure buffer
 		GroupCommitInterval: 1 * time.Millisecond,
 		MaxSegmentSize:      64 * 1024 * 1024, // 64MB default
 	}

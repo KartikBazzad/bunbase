@@ -28,6 +28,7 @@ func main() {
 	csvOutput := flag.Bool("csv", true, "Generate CSV output files")
 	seed := flag.Int64("seed", 0, "Random seed (0 = use timestamp)")
 	restartDB := flag.Bool("restart-db", false, "Restart DocDB server between tests (not implemented)")
+	verbose := flag.Bool("verbose", false, "Phase E.10: Verbose mode - log queries and payloads in console")
 	flag.Parse()
 
 	// Parse comma-separated lists
@@ -57,6 +58,7 @@ func main() {
 		CSVOutput:        *csvOutput,
 		Seed:             *seed,
 		RestartDB:        *restartDB,
+		Verbose:          *verbose, // Phase E.10: Verbose mode
 	}
 
 	// Create and run matrix runner

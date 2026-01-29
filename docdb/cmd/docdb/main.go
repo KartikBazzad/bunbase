@@ -17,11 +17,13 @@ func main() {
 	cfgPath := flag.String("config", "", "Path to config file (optional)")
 	dataDir := flag.String("data-dir", "./data", "Directory for database files")
 	socketPath := flag.String("socket", "/tmp/docdb.sock", "Unix socket path")
+	debugMode := flag.Bool("debug", false, "Enable debug mode (request flow logging with requestID)")
 	flag.Parse()
 
 	cfg := config.DefaultConfig()
 	cfg.DataDir = *dataDir
 	cfg.IPC.SocketPath = *socketPath
+	cfg.IPC.DebugMode = *debugMode
 
 	if cfgPath != nil && *cfgPath != "" {
 		fmt.Printf("Config file not yet implemented, using defaults\n")
@@ -31,6 +33,9 @@ func main() {
 	logr.Info("Starting DocDB...")
 	logr.Info("Data directory: %s", cfg.DataDir)
 	logr.Info("Socket: %s", cfg.IPC.SocketPath)
+	if cfg.IPC.DebugMode {
+		logr.Info("Debug mode: enabled (request flow logging)")
+	}
 
 	server, err := ipc.NewServer(cfg, logr)
 	if err != nil {

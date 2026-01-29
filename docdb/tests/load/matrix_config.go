@@ -30,6 +30,7 @@ type TestMatrixConfig struct {
 	CSVOutput bool  // Generate CSV files
 	Seed      int64 // Random seed (0 = use timestamp)
 	RestartDB bool  // Restart DocDB server between tests
+	Verbose   bool  // Phase E.10: Verbose mode - log queries and payloads
 }
 
 // DefaultTestMatrixConfig returns a default test matrix configuration.
@@ -51,6 +52,7 @@ func DefaultTestMatrixConfig() *TestMatrixConfig {
 		CSVOutput:        true,
 		Seed:             0,
 		RestartDB:        false,
+		Verbose:          false, // Phase E.10: Verbose mode disabled by default
 	}
 }
 

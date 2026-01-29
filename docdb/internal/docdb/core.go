@@ -23,8 +23,10 @@
 package docdb
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +39,7 @@ import (
 	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
+	"github.com/kartikbazzad/docdb/internal/metrics"
 	"github.com/kartikbazzad/docdb/internal/query"
 	"github.com/kartikbazzad/docdb/internal/types"
 	"github.com/kartikbazzad/docdb/internal/wal"
@@ -87,21 +90,29 @@ type LogicalDB struct {
 	healingService *HealingService        // Automatic document healing service
 	walTrimmer     *wal.Trimmer           // Legacy WAL trimmer (for PartitionCount=1)
 	collections    *CollectionRegistry    // Collection management
+	querySemaphore chan struct{}          // Phase D.8: Semaphore for concurrent query limiting
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
+	maxConcurrentQueries := cfg.Query.MaxConcurrentQueries
+	if maxConcurrentQueries <= 0 {
+		maxConcurrentQueries = 100 // Fallback default
+	}
+	querySemaphore := make(chan struct{}, maxConcurrentQueries)
+
 	db := &LogicalDB{
-		dbID:         dbID,
-		dbName:       dbName,
-		mvcc:         NewMVCC(),
-		txManager:    NewTransactionManager(NewMVCC()),
-		memory:       memCaps,
-		pool:         pool,
-		cfg:          cfg,
-		logger:       log,
-		closed:       false,
-		errorTracker: errors.NewErrorTracker(),
-		collections:  NewCollectionRegistry(log),
+		dbID:           dbID,
+		dbName:         dbName,
+		mvcc:           NewMVCC(),
+		txManager:      NewTransactionManager(NewMVCC()),
+		memory:         memCaps,
+		pool:           pool,
+		cfg:            cfg,
+		logger:         log,
+		closed:         false,
+		errorTracker:   errors.NewErrorTracker(),
+		collections:    NewCollectionRegistry(log),
+		querySemaphore: querySemaphore, // Phase D.8: Initialize semaphore
 	}
 
 	// Use default LogicalDB config (PartitionCount=1 for backward compatibility)
@@ -113,19 +124,26 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 
 // NewLogicalDBWithConfig creates a LogicalDB with explicit LogicalDBConfig (v0.4).
 func NewLogicalDBWithConfig(dbID uint64, dbName string, cfg *config.Config, dbCfg *config.LogicalDBConfig, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
+	maxConcurrentQueries := cfg.Query.MaxConcurrentQueries
+	if maxConcurrentQueries <= 0 {
+		maxConcurrentQueries = 100 // Fallback default
+	}
+	querySemaphore := make(chan struct{}, maxConcurrentQueries)
+
 	db := &LogicalDB{
-		dbID:         dbID,
-		dbName:       dbName,
-		dbConfig:     dbCfg,
-		mvcc:         NewMVCC(),
-		txManager:    NewTransactionManager(NewMVCC()),
-		memory:       memCaps,
-		pool:         pool,
-		cfg:          cfg,
-		logger:       log,
-		closed:       false,
-		errorTracker: errors.NewErrorTracker(),
-		collections:  NewCollectionRegistry(log),
+		dbID:           dbID,
+		dbName:         dbName,
+		dbConfig:       dbCfg,
+		mvcc:           NewMVCC(),
+		txManager:      NewTransactionManager(NewMVCC()),
+		memory:         memCaps,
+		pool:           pool,
+		cfg:            cfg,
+		logger:         log,
+		closed:         false,
+		errorTracker:   errors.NewErrorTracker(),
+		collections:    NewCollectionRegistry(log),
+		querySemaphore: querySemaphore, // Phase D.8: Initialize semaphore
 	}
 
 	return db
@@ -214,6 +232,9 @@ func (db *LogicalDB) executeOnPartition(partition *Partition, task *Task) *Resul
 }
 
 func (db *LogicalDB) executeCreateOnPartition(partition *Partition, collection string, docID uint64, payload []byte) *Result {
+	if err := db.checkWALSizeLimit(); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
 	if err := validateJSONPayload(payload); err != nil {
 		return &Result{Status: types.StatusError, Error: err}
 	}
@@ -289,6 +310,9 @@ func (db *LogicalDB) executeReadOnPartitionLockFree(partition *Partition, collec
 }
 
 func (db *LogicalDB) executeUpdateOnPartition(partition *Partition, collection string, docID uint64, payload []byte) *Result {
+	if err := db.checkWALSizeLimit(); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
 	if err := validateJSONPayload(payload); err != nil {
 		return &Result{Status: types.StatusError, Error: err}
 	}
@@ -329,6 +353,9 @@ func (db *LogicalDB) executeUpdateOnPartition(partition *Partition, collection s
 }
 
 func (db *LogicalDB) executeDeleteOnPartition(partition *Partition, collection string, docID uint64) *Result {
+	if err := db.checkWALSizeLimit(); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
 	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
@@ -515,6 +542,12 @@ func (db *LogicalDB) openLegacy(dataDir string, walDir string) error {
 
 // openPartitioned opens a LogicalDB in partitioned mode (v0.4, PartitionCount > 1).
 func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCount int) error {
+	// Phase D.8: Validate partition count limit
+	maxPartitions := db.cfg.Query.MaxPartitionsPerDB
+	if maxPartitions > 0 && partitionCount > maxPartitions {
+		return ErrTooManyPartitions
+	}
+
 	// Ensure checkpoint directory exists
 	checkpointDir := filepath.Join(walDir, "checkpoints")
 	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
@@ -534,6 +567,11 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		}
 		partitionWAL := wal.NewPartitionWAL(i, walPath, uint64(maxSize), &db.cfg.WAL, db.logger)
 		partitionWAL.GetCheckpointManager().SetCheckpointPath(checkpointDir)
+		// Set fsync callback for metrics (Phase C.5)
+		partitionIDStr := strconv.Itoa(i)
+		partitionWAL.SetFsyncCallback(func(duration time.Duration) {
+			metrics.RecordPartitionWALFsync(db.dbName, partitionIDStr, duration)
+		})
 		if err := partitionWAL.Open(); err != nil {
 			return fmt.Errorf("failed to open partition %d WAL: %w", i, err)
 		}
@@ -605,6 +643,11 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 // records to the partition's datafile and index, and syncs the datafile.
 // Returns the max txID, max LSN seen, and any error.
 func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPath string) (maxTxID, maxLSN uint64, err error) {
+	replayStart := time.Now()
+	defer func() {
+		replayDuration := time.Since(replayStart)
+		metrics.RecordPartitionReplay(db.dbName, strconv.Itoa(partition.ID()), replayDuration)
+	}()
 	txRecords := make(map[uint64][]*types.WALRecord)
 	committed := make(map[uint64]bool)
 	lastCheckpointTxID := uint64(0)
@@ -649,6 +692,7 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 			continue
 		}
 		for _, rec := range recs {
+			checkRecoveryCommittedOnly(txID, committed)
 			collection := rec.Collection
 			if collection == "" {
 				collection = DefaultCollection
@@ -737,6 +781,7 @@ func (db *LogicalDB) scanPartitionRows(partition *Partition, collection string, 
 	idx := partition.GetIndex()
 	dataFile := partition.GetDataFile()
 	var rows []query.Row
+	scanStart := time.Now()
 	idx.ScanCollection(collection, snapshotTxID, func(docID uint64, version *types.DocumentVersion) bool {
 		data, err := dataFile.Read(version.Offset, version.Length)
 		if err != nil {
@@ -746,11 +791,129 @@ func (db *LogicalDB) scanPartitionRows(partition *Partition, collection string, 
 		rows = append(rows, query.Row{DocID: docID, Payload: data})
 		return true
 	})
+	scanDuration := time.Since(scanStart)
+	metrics.RecordPartitionIndexScan(db.dbName, strconv.Itoa(partition.ID()), scanDuration)
 	return rows, nil
 }
 
-// ExecuteQuery runs a server-side query: snapshot, partition fan-out (or legacy scan), merge, filter/order/limit.
-func (db *LogicalDB) ExecuteQuery(collection string, q query.Query) ([]query.Row, error) {
+// partitionRowStream implements query.RowStream by scanning one partition and yielding rows one at a time.
+type partitionRowStream struct {
+	ch     chan streamResult
+	closed bool
+	mu     sync.Mutex
+}
+
+type streamResult struct {
+	row query.Row
+	err error
+}
+
+// newPartitionRowStream returns a RowStream that lazily yields rows from the partition.
+func (db *LogicalDB) newPartitionRowStream(partition *Partition, collection string, snap uint64) query.RowStream {
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	ch := make(chan streamResult, 1)
+	stream := &partitionRowStream{ch: ch}
+	idx := partition.GetIndex()
+	dataFile := partition.GetDataFile()
+	go func() {
+		defer close(ch)
+		idx.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
+			data, err := dataFile.Read(version.Offset, version.Length)
+			if err != nil {
+				ch <- streamResult{err: err}
+				return true
+			}
+			ch <- streamResult{row: query.Row{DocID: docID, Payload: data}}
+			return true
+		})
+		ch <- streamResult{err: io.EOF}
+	}()
+	return stream
+}
+
+func (s *partitionRowStream) Next() (query.Row, error) {
+	r, ok := <-s.ch
+	if !ok {
+		return query.Row{}, io.EOF
+	}
+	return r.row, r.err
+}
+
+func (s *partitionRowStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	for range s.ch {
+		// drain so goroutine can exit
+	}
+	return nil
+}
+
+// totalPartitionWALSize returns the sum of all partition WAL sizes (0 if not partitioned).
+// Phase D.8: Used to enforce MaxWALSizePerDB.
+func (db *LogicalDB) totalPartitionWALSize() uint64 {
+	if db.partitions == nil {
+		return 0
+	}
+	var total uint64
+	for _, p := range db.partitions {
+		if w := p.GetWAL(); w != nil {
+			total += w.Size()
+		}
+	}
+	return total
+}
+
+// checkWALSizeLimit returns ErrWALSizeLimit if total partition WAL size >= MaxWALSizePerDB.
+// No-op if MaxWALSizePerDB is 0 or not partitioned.
+func (db *LogicalDB) checkWALSizeLimit() error {
+	if db.cfg == nil || db.cfg.Query.MaxWALSizePerDB == 0 || db.partitions == nil {
+		return nil
+	}
+	if db.totalPartitionWALSize() >= db.cfg.Query.MaxWALSizePerDB {
+		return ErrWALSizeLimit
+	}
+	return nil
+}
+
+// Default max query memory (100MB) when not set in config. Phase D.8 wires config.
+// This is now read from db.cfg.Query.MaxQueryMemoryMB in ExecuteQuery.
+const defaultMaxQueryMemoryBytes = 100 * 1024 * 1024
+
+// ExecuteQuery runs a server-side query: snapshot, partition fan-out (or legacy scan), streaming merge, filter/order/limit.
+// Context is used for cancellation and timeout (Phase B.3). Memory is capped at defaultMaxQueryMemoryBytes.
+func (db *LogicalDB) ExecuteQuery(ctx context.Context, collection string, q query.Query) ([]query.Row, error) {
+	// Phase D.8: Acquire query semaphore (concurrent query limiting)
+	if db.querySemaphore != nil {
+		select {
+		case db.querySemaphore <- struct{}{}:
+			defer func() { <-db.querySemaphore }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			return nil, ErrTooManyConcurrentQueries
+		}
+	}
+
+	// Phase D.8: Apply query timeout if configured
+	if db.cfg.Query.QueryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, db.cfg.Query.QueryTimeout)
+		defer cancel()
+	}
+
+	queryStart := time.Now()
+	defer func() {
+		executionTime := time.Since(queryStart)
+		// Query metrics will be recorded at the end with final counts
+		_ = executionTime // Will be used when recording metrics
+	}()
+
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -763,41 +926,92 @@ func (db *LogicalDB) ExecuteQuery(collection string, q query.Query) ([]query.Row
 	if !db.collections.Exists(collection) {
 		return nil, errors.ErrCollectionNotFound
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	snap := db.mvcc.CurrentSnapshot()
+	checkSnapshotMonotonic(db.mvcc, snap)
+	partitionCount := 0
+	if db.partitions != nil {
+		partitionCount = len(db.partitions)
+	}
+	checkQuerySnapshotConsistent(snap, partitionCount)
+
+	// Phase D.8: Use configured query memory limit
+	var maxMem uint64 = defaultMaxQueryMemoryBytes
+	if db.cfg.Query.MaxQueryMemoryMB > 0 {
+		maxMem = uint64(db.cfg.Query.MaxQueryMemoryMB) * 1024 * 1024
+	}
 	var allRows []query.Row
+	var partitionsScanned uint64
+	var rowsScanned uint64
 
 	if db.partitions != nil {
-		// Partitioned: fan-out to all partitions in parallel
-		var wg sync.WaitGroup
-		mu := sync.Mutex{}
+		// Partitioned: streaming k-way merge with memory cap
+		partitionsScanned = uint64(len(db.partitions))
+		streams := make([]query.RowStream, len(db.partitions))
 		for i := range db.partitions {
-			i := i
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				partRows, err := db.scanPartitionRows(db.partitions[i], collection, snap)
-				if err != nil {
-					return
-				}
-				mu.Lock()
-				allRows = append(allRows, partRows...)
-				mu.Unlock()
-			}()
+			streams[i] = db.newPartitionRowStream(db.partitions[i], collection, snap)
 		}
-		wg.Wait()
-	} else {
-		// Legacy: single index + datafile
-		db.index.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
-			data, err := db.dataFile.Read(version.Offset, version.Length)
-			if err != nil {
-				db.logger.Warn("query scan doc %d: read: %v", docID, err)
-				return true
+		merger := query.NewKWayMerger(streams, q.OrderBy, 0) // limit applied when collecting
+		defer merger.Close()
+
+		var bytesScanned uint64
+		for {
+			select {
+			case <-ctx.Done():
+				executionTime := time.Since(queryStart)
+				metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+				return nil, ctx.Err()
+			default:
 			}
-			allRows = append(allRows, query.Row{DocID: docID, Payload: data})
-			return true
-		})
+			row, ok := merger.Next()
+			if !ok {
+				break
+			}
+			rowsScanned++ // Count all rows from merger (before filtering)
+			if q.Filter.Field != "" && !db.rowMatchesFilter(row, &q.Filter) {
+				continue
+			}
+			bytesScanned += uint64(len(row.Payload))
+			if bytesScanned > maxMem {
+				executionTime := time.Since(queryStart)
+				metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+				return nil, ErrQueryMemoryLimit
+			}
+			allRows = append(allRows, row)
+			if q.Limit > 0 && len(allRows) >= q.Limit {
+				break
+			}
+		}
+
+		// Merger already yielded in sorted order when OrderBy set
+		if q.Limit > 0 && len(allRows) > q.Limit {
+			allRows = allRows[:q.Limit]
+		}
+		executionTime := time.Since(queryStart)
+		metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
+		return allRows, nil
 	}
+
+	// Legacy: single index + datafile (no streaming)
+	partitionsScanned = 1 // Legacy mode = 1 partition
+	db.index.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		data, err := db.dataFile.Read(version.Offset, version.Length)
+		if err != nil {
+			db.logger.Warn("query scan doc %d: read: %v", docID, err)
+			return true
+		}
+		allRows = append(allRows, query.Row{DocID: docID, Payload: data})
+		return true
+	})
+	rowsScanned = uint64(len(allRows)) // In legacy mode, all scanned rows are in allRows before filtering
 
 	// Apply filter (simple JSON field predicate)
 	if q.Filter.Field != "" {
@@ -820,6 +1034,8 @@ func (db *LogicalDB) ExecuteQuery(collection string, q query.Query) ([]query.Row
 		allRows = allRows[:q.Limit]
 	}
 
+	executionTime := time.Since(queryStart)
+	metrics.RecordQueryMetrics(db.dbName, partitionsScanned, rowsScanned, uint64(len(allRows)), executionTime)
 	return allRows, nil
 }
 

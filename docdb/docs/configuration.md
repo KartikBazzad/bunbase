@@ -524,6 +524,40 @@ cfg.DB.IdleTimeout = 30 * time.Minute // Keep open for 30 minutes
 
 ---
 
+## LogicalDB (v0.4) Defaults and Limits
+
+When using partitioned mode (`PartitionCount > 1`), the following defaults and limits apply.
+
+### DefaultLogicalDBConfig
+
+**Defaults (Phase D.7):**
+
+| Option         | Default                | Rationale                                            |
+| -------------- | ---------------------- | ---------------------------------------------------- |
+| PartitionCount | `2 × runtime.NumCPU()` | Write parallelism; balances throughput vs contention |
+| WorkerCount    | `runtime.NumCPU()`     | Execution concurrency; matches scaling matrix        |
+| QueueSize      | `1024`                 | Backpressure buffer; tested value                    |
+
+**Tuning:**
+
+- **Higher write throughput:** Increase `PartitionCount` (e.g. 4× CPU); stay ≤ `Query.MaxPartitionsPerDB`.
+- **Lower latency:** Keep `WorkerCount` at NumCPU; increase `QueueSize` for bursts.
+- **Many small DBs:** Use lower `PartitionCount` (e.g. 2) to reduce WAL files.
+
+### Query and WAL Limits (Phase D.8)
+
+| Limit                | Default | Description                       |
+| -------------------- | ------- | --------------------------------- |
+| MaxPartitionsPerDB   | 256     | Maximum partitions per LogicalDB  |
+| MaxConcurrentQueries | 100     | Concurrent query semaphore per DB |
+| QueryTimeout         | 30s     | Query execution timeout (context) |
+| MaxQueryMemoryMB     | 100     | Max bytes scanned per query (MB)  |
+| MaxWALSizePerDB      | 10 GB   | Total WAL size cap per DB (bytes) |
+
+**Errors:** Exceeding limits returns: `ErrTooManyPartitions`, `ErrTooManyConcurrentQueries`, `ErrQueryTimeout`, `ErrQueryMemoryLimit`, `ErrWALSizeLimit`.
+
+---
+
 ## IPC Configuration
 
 ### SocketPath

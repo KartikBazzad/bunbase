@@ -7,7 +7,7 @@ Failed: 0
 
 Test Results:
 -------------
-✓ 1db_1conn_1w (duration: 1m0.924103292s)
-✓ 1db_5conn_1w (duration: 1m1.088664958s)
-✓ 3db_1conn_1w (duration: 1m0.763681875s)
-✓ 3db_5conn_1w (duration: 1m0.827885291s)
+✓ 1db_1conn_1w (duration: 1m1.177917416s)
+✓ 1db_5conn_1w (duration: 1m0.960122417s)
+✓ 3db_1conn_1w (duration: 1m0.953125667s)
+✓ 3db_5conn_1w (duration: 1m1.131098833s)

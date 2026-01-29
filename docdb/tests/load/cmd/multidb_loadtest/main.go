@@ -48,7 +48,7 @@ func main() {
 		}
 	} else if *databasesFlag != "" {
 		// Create config from command-line flags
-		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *connectionsPerDB, *duration, *socketPath, *walDir, *outputPath, *csvOutput, *seed, *docSize, *docCount, *readPercent, *writePercent, *updatePercent, *deletePercent)
+		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *connectionsPerDB, *duration, *socketPath, *walDir, *outputPath, *outputDir, *csvOutput, *seed, *docSize, *docCount, *readPercent, *writePercent, *updatePercent, *deletePercent)
 	} else {
 		log.Fatalf("Must specify either -config or -databases")
 	}
@@ -59,12 +59,12 @@ func main() {
 	}
 
 	// Ensure output directory layout exists and derive full output path
-	jsonDir, _, _, _, err := load.EnsureOutputDirs(*outputDir)
+	jsonDir, _, _, _, err := load.EnsureOutputDirs(cfg.OutputDir)
 	if err != nil {
-		log.Fatalf("Failed to create output directories under %s: %v", *outputDir, err)
+		log.Fatalf("Failed to create output directories under %s: %v", cfg.OutputDir, err)
 	}
 	if !filepath.IsAbs(cfg.OutputPath) {
-		cfg.OutputPath = filepath.Join(jsonDir, *outputPath)
+		cfg.OutputPath = filepath.Join(jsonDir, cfg.OutputPath)
 	}
 
 	log.Printf("Starting multi-database load test with %d databases", len(cfg.Databases))
@@ -223,12 +223,13 @@ func main() {
 	}
 }
 
-func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB int, duration time.Duration, socketPath, walDir, outputPath string, csvOutput bool, seed int64, docSize, docCount, readPercent, writePercent, updatePercent, deletePercent int) *load.MultiDBLoadTestConfig {
+func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB int, duration time.Duration, socketPath, walDir, outputPath, outputDir string, csvOutput bool, seed int64, docSize, docCount, readPercent, writePercent, updatePercent, deletePercent int) *load.MultiDBLoadTestConfig {
 	cfg := load.NewMultiDBConfig()
 	cfg.Duration = duration
 	cfg.SocketPath = socketPath
 	cfg.WALDir = walDir
 	cfg.OutputPath = outputPath
+	cfg.OutputDir = outputDir
 	cfg.CSVOutput = csvOutput
 	cfg.Seed = seed
 	cfg.MetricsInterval = 1 * time.Second

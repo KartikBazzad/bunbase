@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/errors"
@@ -40,6 +41,7 @@ type PartitionWAL struct {
 	retryCtrl     *errors.RetryController
 	classifier    *errors.Classifier
 	errorTracker  *errors.ErrorTracker
+	onFsync       func(duration time.Duration) // Callback for fsync metrics
 }
 
 // NewPartitionWAL creates a new partition WAL.
@@ -91,6 +93,10 @@ func (pw *PartitionWAL) Open() error {
 	// Initialize group commit if configured
 	if pw.fsyncConfig != nil && (pw.fsyncConfig.Mode == config.FsyncGroup || pw.fsyncConfig.Mode == config.FsyncInterval) {
 		pw.groupCommit = NewGroupCommit(file, pw.fsyncConfig, pw.logger)
+		// Set fsync callback if configured
+		if pw.onFsync != nil {
+			pw.groupCommit.OnFsync = pw.onFsync
+		}
 		pw.groupCommit.Start()
 	}
 
@@ -119,9 +125,11 @@ func (pw *PartitionWAL) Write(txID uint64, dbID uint64, collection string, docID
 			return err
 		}
 
-		// Increment LSN
+		// Increment LSN (invariant: strictly monotonic)
+		prevLSN := pw.lsn
 		pw.lsn++
 		lsn := pw.lsn
+		checkLSNMonotonic(prevLSN, lsn)
 
 		// Encode v0.4 record format
 		record, err := EncodeRecordV4(lsn, txID, dbID, collection, docID, opType, payload)
@@ -147,11 +155,16 @@ func (pw *PartitionWAL) Write(txID uint64, dbID uint64, collection string, docID
 				return err
 			}
 			if pw.fsyncConfig != nil && pw.fsyncConfig.Mode == config.FsyncAlways {
+				fsyncStart := time.Now()
 				if err := pw.file.Sync(); err != nil {
 					err = errors.ErrFileWrite
 					category := pw.classifier.Classify(err)
 					pw.errorTracker.RecordError(err, category)
 					return err
+				}
+				fsyncDuration := time.Since(fsyncStart)
+				if pw.onFsync != nil {
+					pw.onFsync(fsyncDuration)
 				}
 			}
 		}
@@ -199,6 +212,9 @@ func (pw *PartitionWAL) rotate() error {
 	if pw.groupCommit != nil {
 		pw.groupCommit.Stop()
 		pw.groupCommit = NewGroupCommit(file, pw.fsyncConfig, pw.logger)
+		if pw.onFsync != nil {
+			pw.groupCommit.OnFsync = pw.onFsync
+		}
 		pw.groupCommit.Start()
 	}
 
@@ -245,6 +261,16 @@ func (pw *PartitionWAL) CurrentLSN() uint64 {
 // GetCheckpointManager returns the checkpoint manager for this partition.
 func (pw *PartitionWAL) GetCheckpointManager() *PartitionCheckpointManager {
 	return pw.checkpointMgr
+}
+
+// SetFsyncCallback sets the callback function to be called after each fsync with the duration.
+func (pw *PartitionWAL) SetFsyncCallback(callback func(duration time.Duration)) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	pw.onFsync = callback
+	if pw.groupCommit != nil {
+		pw.groupCommit.OnFsync = callback
+	}
 }
 
 // SetNextLSN sets the next LSN to use (e.g. after recovery).

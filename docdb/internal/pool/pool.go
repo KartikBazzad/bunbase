@@ -16,6 +16,7 @@
 package pool
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -544,7 +545,8 @@ type querySpec struct {
 
 // ExecuteQuery runs a server-side query on the database and returns rows as JSON.
 // queryPayload is JSON: {"filter":{"field":"x","op":"eq","value":1},"limit":10,"orderBy":{"field":"id","asc":true}}
-func (p *Pool) ExecuteQuery(dbID uint64, collection string, queryPayload []byte) ([]byte, error) {
+// ctx is used for cancellation and timeout (Phase B.3).
+func (p *Pool) ExecuteQuery(ctx context.Context, dbID uint64, collection string, queryPayload []byte) ([]byte, error) {
 	if p.stopped {
 		return nil, ErrPoolStopped
 	}
@@ -576,7 +578,7 @@ func (p *Pool) ExecuteQuery(dbID uint64, collection string, queryPayload []byte)
 		}
 	}
 
-	rows, err := db.ExecuteQuery(collection, q)
+	rows, err := db.ExecuteQuery(ctx, collection, q)
 	if err != nil {
 		return nil, err
 	}

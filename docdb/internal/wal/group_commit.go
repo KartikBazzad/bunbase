@@ -35,6 +35,9 @@ type GroupCommit struct {
 	wg         sync.WaitGroup
 
 	stats GroupCommitStats
+
+	// OnFsync callback is called after each fsync with the duration
+	OnFsync func(duration time.Duration)
 }
 
 // GroupCommitStats tracks group commit performance metrics.
@@ -111,11 +114,16 @@ func (gc *GroupCommit) Write(record []byte) error {
 			gc.mu.Unlock()
 			return err
 		}
+		fsyncStart := time.Now()
 		if err := gc.file.Sync(); err != nil {
 			gc.mu.Unlock()
 			return err
 		}
+		fsyncDuration := time.Since(fsyncStart)
 		gc.mu.Unlock()
+		if gc.OnFsync != nil {
+			gc.OnFsync(fsyncDuration)
+		}
 
 		return nil
 
@@ -181,8 +189,13 @@ func (gc *GroupCommit) flushUnsafe() error {
 
 	// Sync based on mode
 	if gc.mode == config.FsyncGroup || gc.mode == config.FsyncInterval {
+		fsyncStart := time.Now()
 		if err := gc.file.Sync(); err != nil {
 			return err
+		}
+		fsyncDuration := time.Since(fsyncStart)
+		if gc.OnFsync != nil {
+			gc.OnFsync(fsyncDuration)
 		}
 	}
 
