@@ -4,10 +4,12 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/pool"
+	"github.com/panjf2000/ants/v2"
 )
 
 type Server struct {
@@ -21,6 +23,7 @@ type Server struct {
 	running     bool
 	connections map[net.Conn]bool
 	connMu      sync.Mutex
+	connPool    *ants.Pool // Optional: bounds concurrent connection handlers (nil = unlimited)
 }
 
 func NewServer(cfg *config.Config, log *logger.Logger) (*Server, error) {
@@ -61,6 +64,15 @@ func (s *Server) Start() error {
 	s.listener = listener
 	s.running = true
 
+	if s.cfg.IPC.MaxConnections > 0 {
+		connPool, err := ants.NewPool(s.cfg.IPC.MaxConnections, ants.WithPanicHandler(func(v any) {
+			s.logger.Error("IPC connection handler panic: %v", v)
+		}))
+		if err == nil {
+			s.connPool = connPool
+		}
+	}
+
 	s.logger.Info("IPC server listening on %s", s.cfg.IPC.SocketPath)
 
 	s.wg.Add(1)
@@ -93,6 +105,11 @@ func (s *Server) Stop() error {
 
 	s.wg.Wait()
 
+	if s.connPool != nil {
+		_ = s.connPool.ReleaseTimeout(3 * time.Second)
+		s.connPool = nil
+	}
+
 	s.logger.Info("IPC server stopped")
 	return nil
 }
@@ -118,12 +135,30 @@ func (s *Server) acceptLoop() {
 		s.connMu.Unlock()
 
 		s.wg.Add(1)
-		go s.handleConnection(conn)
+		if s.connPool != nil {
+			conn := conn
+			if err := s.connPool.Submit(func() {
+				defer s.wg.Done()
+				s.handleConnection(conn)
+			}); err != nil {
+				// If submission fails, balance the WaitGroup and close connection
+				s.wg.Done()
+				conn.Close()
+				s.connMu.Lock()
+				delete(s.connections, conn)
+				s.connMu.Unlock()
+				s.logger.Error("Failed to submit connection handler to pool: %v", err)
+			}
+		} else {
+			go func() {
+				defer s.wg.Done()
+				s.handleConnection(conn)
+			}()
+		}
 	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer s.wg.Done()
 	defer func() {
 		conn.Close()
 		s.connMu.Lock()

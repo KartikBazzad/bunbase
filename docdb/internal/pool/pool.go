@@ -122,6 +122,7 @@ func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	catalog := catalog.NewCatalog(cfg.DataDir+"/.catalog", log)
 	sched := NewScheduler(cfg.Sched.QueueDepth, log)
 	sched.SetWorkerConfig(cfg.Sched.WorkerCount, cfg.Sched.MaxWorkers)
+	sched.SetAntsOptions(cfg.Sched.WorkerExpiry, cfg.Sched.PreAlloc)
 
 	return &Pool{
 		dbs:          make(map[uint64]*docdb.LogicalDB),
@@ -401,6 +402,9 @@ func (p *Pool) GetSchedulerStats() map[string]interface{} {
 		"queue_depths":    queueStats,
 		"avg_queue_depth": avgDepth,
 		"worker_count":    p.sched.GetCurrentWorkerCount(),
+	}
+	if antsStats := p.sched.GetAntsStats(); antsStats != nil {
+		out["ants_pool"] = antsStats
 	}
 
 	// Aggregate WAL/group-commit stats per DB (when group commit is active)

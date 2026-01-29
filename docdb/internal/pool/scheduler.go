@@ -23,6 +23,10 @@ package pool
 import (
 	"runtime"
 	"sync"
+	"time"
+
+	"github.com/kartikbazzad/docdb/internal/logger"
+	"github.com/panjf2000/ants/v2"
 )
 
 // Scheduler manages request distribution and worker pool.
@@ -49,6 +53,9 @@ type Scheduler struct {
 	workerCount       int                      // Current number of workers
 	maxWorkers        int                      // Maximum workers (auto-tuning cap)
 	configuredWorkers int                      // Configured worker count (0 = auto)
+	workerExpiry      time.Duration            // Idle goroutine expiry for ants
+	preAlloc          bool                     // Pre-allocate ants worker queue
+	antsPool          *ants.Pool               // Ants goroutine pool (nil until Start)
 }
 
 // NewScheduler creates a new scheduler.
@@ -89,6 +96,15 @@ func (s *Scheduler) SetWorkerConfig(workerCount int, maxWorkers int) {
 	}
 }
 
+// SetAntsOptions sets options for the ants goroutine pool (WorkerExpiry, PreAlloc).
+// Call before Start(). Defaults: WorkerExpiry=1s, PreAlloc=false.
+func (s *Scheduler) SetAntsOptions(workerExpiry time.Duration, preAlloc bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workerExpiry = workerExpiry
+	s.preAlloc = preAlloc
+}
+
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	s.stopped = false
@@ -97,9 +113,32 @@ func (s *Scheduler) Start() {
 	// Calculate dynamic worker count
 	s.calculateWorkerCount()
 
+	expiry := s.workerExpiry
+	if expiry <= 0 {
+		expiry = time.Second
+	}
+	opts := []ants.Option{
+		ants.WithExpiryDuration(expiry),
+		ants.WithPreAlloc(s.preAlloc),
+		ants.WithPanicHandler(func(v any) {
+			if l, ok := s.logger.(*logger.Logger); ok {
+				l.Error("scheduler worker panic: %v", v)
+			}
+		}),
+	}
+	antsPool, err := ants.NewPool(s.workerCount, opts...)
+	if err != nil {
+		// Fallback: start goroutines without ants (e.g. invalid size)
+		for i := 0; i < s.workerCount; i++ {
+			s.wg.Add(1)
+			go s.worker()
+		}
+		return
+	}
+	s.antsPool = antsPool
 	for i := 0; i < s.workerCount; i++ {
 		s.wg.Add(1)
-		go s.worker()
+		_ = s.antsPool.Submit(func() { s.worker() })
 	}
 }
 
@@ -145,6 +184,7 @@ func (s *Scheduler) calculateWorkerCount() {
 
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
+	ap := s.antsPool
 	s.stopped = true
 	s.mu.Unlock()
 
@@ -158,6 +198,12 @@ func (s *Scheduler) Stop() {
 	s.dbMu.Unlock()
 
 	s.wg.Wait()
+	if ap != nil {
+		_ = ap.ReleaseTimeout(3 * time.Second)
+		s.mu.Lock()
+		s.antsPool = nil
+		s.mu.Unlock()
+	}
 }
 
 // GetQueueDepthStats returns current queue depth for all databases.
@@ -193,6 +239,23 @@ func (s *Scheduler) GetCurrentWorkerCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.workerCount
+}
+
+// GetAntsStats returns ants pool metrics when using ants (Running, Waiting, Free, Cap).
+// Returns nil when not using ants.
+func (s *Scheduler) GetAntsStats() map[string]interface{} {
+	s.mu.Lock()
+	ap := s.antsPool
+	s.mu.Unlock()
+	if ap == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"running_workers": ap.Running(),
+		"waiting_tasks":   ap.Waiting(),
+		"free_workers":   ap.Free(),
+		"pool_capacity":  ap.Cap(),
+	}
 }
 
 // PickNextQueue returns the database ID and queue with the largest pending depth,

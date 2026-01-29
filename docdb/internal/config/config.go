@@ -53,8 +53,10 @@ type CheckpointConfig struct {
 type SchedulerConfig struct {
 	QueueDepth    int
 	RoundRobinDBs bool
-	WorkerCount   int // Number of scheduler workers (0 = auto-scale)
-	MaxWorkers    int // Maximum workers for auto-tuning (default: 256)
+	WorkerCount   int         // Number of scheduler workers (0 = auto-scale)
+	MaxWorkers    int         // Maximum workers for auto-tuning (default: 256)
+	WorkerExpiry  time.Duration // Goroutine expiry for ants pool (default: 1s)
+	PreAlloc      bool        // Pre-allocate goroutine queue (default: false)
 }
 
 type DBConfig struct {
@@ -65,9 +67,10 @@ type DBConfig struct {
 }
 
 type IPCConfig struct {
-	SocketPath string
-	EnableTCP  bool
-	TCPPort    int
+	SocketPath     string
+	EnableTCP      bool
+	TCPPort        int
+	MaxConnections int // Max concurrent connections (0 = unlimited, used with ants)
 }
 
 type HealingConfig struct {
@@ -105,8 +108,10 @@ func DefaultConfig() *Config {
 		Sched: SchedulerConfig{
 			QueueDepth:    100,
 			RoundRobinDBs: true,
-			WorkerCount:   0,   // 0 = dynamic auto-scaling
-			MaxWorkers:    256, // Cap auto-tuning
+			WorkerCount:   0,           // 0 = dynamic auto-scaling
+			MaxWorkers:    256,         // Cap auto-tuning
+			WorkerExpiry:  time.Second, // Idle goroutine expiry for ants
+			PreAlloc:      false,       // Pre-allocate ring buffer
 		},
 		DB: DBConfig{
 			CompactionSizeThresholdMB: 100,

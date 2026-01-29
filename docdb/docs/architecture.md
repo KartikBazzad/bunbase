@@ -992,7 +992,7 @@ DocDB v0.2 provides comprehensive observability through Prometheus metrics.
 - Graceful shutdown
 - Document corruption detection
 
-### v0.2 (Current)
+### v0.2 (Completed)
 
 - **Collections** - Collection management and collection-aware operations
 - **Path-Based Updates** - JSON patch operations (set, delete, insert)
@@ -1001,6 +1001,16 @@ DocDB v0.2 provides comprehensive observability through Prometheus metrics.
 - Error classification and retry
 - Prometheus/OpenMetrics metrics
 - Enhanced observability
+
+### v0.3 (Current)
+
+- **Ants goroutine pool** - Scheduler workers use ants (recycling, panic recovery, expiry)
+- **WAL group commit** - Batched fsync via FsyncConfig (group/interval modes)
+- **Fast WAL replay** - Single-pass replay, WriteNoSync during apply, one Sync at end
+- **Scheduler fairness** - Queue-depth–aware scheduling (PickNextQueue)
+- **Parallel healing** - Ants PoolWithFunc for batch healing
+- **Optional IPC pool** - Bounded connection handlers via MaxConnections
+- **Metrics** - Ants pool (running/waiting/free) and WAL group-commit stats
 
 ### v1 (Future)
 

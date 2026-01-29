@@ -6,7 +6,23 @@ import (
 
 	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/logger"
+	"github.com/panjf2000/ants/v2"
 )
+
+// healTask is a single document to heal (used with ants pool).
+type healTask struct {
+	Collection string
+	DocID      uint64
+}
+
+// healTaskWithWg carries a task and WaitGroup for parallel HealAll.
+type healTaskWithWg struct {
+	Collection string
+	DocID      uint64
+	Wg         *sync.WaitGroup
+	Healed     *[]uint64
+	HealedMu   *sync.Mutex
+}
 
 // HealingService provides automatic document healing capabilities.
 type HealingService struct {
@@ -21,6 +37,8 @@ type HealingService struct {
 	healingStats HealingStats
 	healingQueue []uint64
 	queueMu      sync.Mutex
+	healPool     *ants.PoolWithFunc // Pool for parallel healing (nil until first use)
+	healPoolMu   sync.Mutex
 }
 
 // HealingStats tracks healing statistics.
@@ -57,7 +75,7 @@ func (hs *HealingService) Start() {
 	hs.logger.Info("Healing service started (interval: %v)", hs.cfg.Interval)
 }
 
-// Stop stops the background healing service.
+// Stop stops the background healing service and releases the ants heal pool.
 func (hs *HealingService) Stop() {
 	if !hs.cfg.Enabled {
 		return
@@ -65,6 +83,12 @@ func (hs *HealingService) Stop() {
 
 	close(hs.stopCh)
 	hs.wg.Wait()
+	hs.healPoolMu.Lock()
+	if hs.healPool != nil {
+		hs.healPool.Release()
+		hs.healPool = nil
+	}
+	hs.healPoolMu.Unlock()
 	hs.logger.Info("Healing service stopped")
 }
 
@@ -115,14 +139,72 @@ func (hs *HealingService) HealDocument(collection string, docID uint64) error {
 	return nil
 }
 
-// HealAll triggers a full database healing scan.
+// getHealPool returns (or creates) the ants pool for parallel healing.
+func (hs *HealingService) getHealPool() *ants.PoolWithFunc {
+	hs.healPoolMu.Lock()
+	defer hs.healPoolMu.Unlock()
+	if hs.healPool != nil {
+		return hs.healPool
+	}
+	capacity := hs.cfg.MaxBatchSize
+	if capacity <= 0 {
+		capacity = 4
+	}
+	pool, err := ants.NewPoolWithFunc(capacity, func(arg any) {
+		t := arg.(*healTaskWithWg)
+		if err := hs.healer.HealDocument(t.Collection, t.DocID); err == nil && t.Healed != nil {
+			t.HealedMu.Lock()
+			*t.Healed = append(*t.Healed, t.DocID)
+			t.HealedMu.Unlock()
+		}
+		t.Wg.Done()
+	}, ants.WithPanicHandler(func(v any) {
+		hs.logger.Error("healing worker panic: %v", v)
+	}))
+	if err != nil {
+		return nil
+	}
+	hs.healPool = pool
+	return hs.healPool
+}
+
+// HealAll triggers a full database healing scan using parallel workers when ants pool is available.
 func (hs *HealingService) HealAll() ([]uint64, error) {
 	hs.logger.Info("Starting full database healing scan")
 
-	healed, err := hs.healer.HealAllCorruptedDocuments()
+	healthMap, err := hs.validator.ValidateAllDocuments()
 	if err != nil {
-		hs.logger.Error("Failed to heal all documents: %v", err)
+		hs.logger.Error("Failed to validate documents: %v", err)
 		return nil, err
+	}
+
+	var tasks []*healTask
+	for collection, docs := range healthMap {
+		for docID, health := range docs {
+			if health == HealthCorrupt {
+				tasks = append(tasks, &healTask{Collection: collection, DocID: docID})
+			}
+		}
+	}
+
+	healed := make([]uint64, 0, len(tasks))
+	pool := hs.getHealPool()
+	if pool == nil || len(tasks) == 0 {
+		for _, t := range tasks {
+			if err := hs.healer.HealDocument(t.Collection, t.DocID); err != nil {
+				hs.logger.Warn("Failed to heal document %d in collection %s: %v", t.DocID, t.Collection, err)
+				continue
+			}
+			healed = append(healed, t.DocID)
+		}
+	} else {
+		var wg sync.WaitGroup
+		var healedMu sync.Mutex
+		for _, t := range tasks {
+			wg.Add(1)
+			_ = pool.Invoke(&healTaskWithWg{Collection: t.Collection, DocID: t.DocID, Wg: &wg, Healed: &healed, HealedMu: &healedMu})
+		}
+		wg.Wait()
 	}
 
 	hs.mu.Lock()
@@ -162,6 +244,7 @@ func (hs *HealingService) backgroundHealingLoop() {
 }
 
 // performHealthScan performs a periodic health scan of all documents.
+// Uses ants pool for parallel healing when available.
 func (hs *HealingService) performHealthScan() {
 	hs.logger.Debug("Starting periodic health scan")
 
@@ -171,19 +254,32 @@ func (hs *HealingService) performHealthScan() {
 		return
 	}
 
-	corruptedCount := 0
+	var tasks []*healTask
 	for collection, docs := range healthMap {
 		for docID, health := range docs {
 			if health == HealthCorrupt {
-				corruptedCount++
-				// Heal immediately during scan
-				if err := hs.healer.HealDocument(collection, docID); err != nil {
-					hs.logger.Warn("Failed to heal document %d in collection %s: %v", docID, collection, err)
-				}
+				tasks = append(tasks, &healTask{Collection: collection, DocID: docID})
 			}
 		}
 	}
 
+	pool := hs.getHealPool()
+	if pool == nil || len(tasks) == 0 {
+		for _, t := range tasks {
+			_ = hs.healer.HealDocument(t.Collection, t.DocID)
+		}
+	} else {
+		var wg sync.WaitGroup
+		var healedMu sync.Mutex
+		healed := make([]uint64, 0, len(tasks))
+		for _, t := range tasks {
+			wg.Add(1)
+			_ = pool.Invoke(&healTaskWithWg{Collection: t.Collection, DocID: t.DocID, Wg: &wg, Healed: &healed, HealedMu: &healedMu})
+		}
+		wg.Wait()
+	}
+
+	corruptedCount := len(tasks)
 	hs.mu.Lock()
 	hs.healingStats.TotalScans++
 	hs.healingStats.DocumentsCorrupted = uint64(corruptedCount)
