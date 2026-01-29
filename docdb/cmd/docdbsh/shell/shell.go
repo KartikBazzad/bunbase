@@ -169,7 +169,7 @@ func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 		return commands.Exit()
 	case ".clear":
 		return commands.Clear(s)
-	case ".open", ".use":
+	case ".open":
 		return commands.Open(s, cmd)
 	case ".close":
 		return commands.Close(s)
@@ -202,6 +202,11 @@ func (s *Shell) Execute(cmd *parser.Command) commands.Result {
 	case ".heal-stats":
 		return commands.HealStats(s)
 	case ".use":
+		// .use can either open a database or switch collections
+		// If no database is open, open one; otherwise switch collection
+		if s.GetDB() == 0 {
+			return commands.Open(s, cmd)
+		}
 		return commands.UseCollection(s, cmd)
 	case ".collections":
 		return commands.ListCollections(s)

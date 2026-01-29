@@ -1,0 +1,4 @@
+database,initial_mb,final_mb,growth_mb,growth_rate_kbps
+db2,6.47,12.39,5.92,20.20
+db3,6.52,12.51,5.99,20.45
+db1,6.48,12.38,5.89,20.11
