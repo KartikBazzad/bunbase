@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	DefaultNumShards = 256 // Number of index shards (tunable for performance)
+	DefaultNumShards = 512 // Number of index shards (tunable for performance) - increased from 256 for better concurrency
 )
 
 // IndexShard manages a subset of document versions.

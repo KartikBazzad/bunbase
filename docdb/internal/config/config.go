@@ -19,13 +19,29 @@ type MemoryConfig struct {
 	BufferSizes      []uint64
 }
 
+type FsyncMode int
+
+const (
+	FsyncAlways   FsyncMode = iota // Sync on every write (safest, slowest)
+	FsyncGroup                     // Batch syncs with group commit (recommended)
+	FsyncInterval                  // Sync at fixed intervals
+	FsyncNone                      // Never sync (for benchmarks only, unsafe)
+)
+
+type FsyncConfig struct {
+	Mode         FsyncMode // Sync strategy: always | group | interval | none
+	IntervalMS   int       // Milliseconds for interval mode (default: 1ms)
+	MaxBatchSize int       // Max records per group commit batch (default: 100)
+}
+
 type WALConfig struct {
 	Dir                 string
 	MaxFileSizeMB       uint64
-	FsyncOnCommit       bool
+	FsyncOnCommit       bool // Deprecated: Use FsyncConfig instead
 	Checkpoint          CheckpointConfig
-	TrimAfterCheckpoint bool // Automatically trim WAL segments after checkpoint
-	KeepSegments        int  // Number of segments to keep before checkpoint
+	TrimAfterCheckpoint bool        // Automatically trim WAL segments after checkpoint
+	KeepSegments        int         // Number of segments to keep before checkpoint
+	Fsync               FsyncConfig // New: Fsync configuration
 }
 
 type CheckpointConfig struct {
@@ -37,6 +53,8 @@ type CheckpointConfig struct {
 type SchedulerConfig struct {
 	QueueDepth    int
 	RoundRobinDBs bool
+	WorkerCount   int // Number of scheduler workers (0 = auto-scale)
+	MaxWorkers    int // Maximum workers for auto-tuning (default: 256)
 }
 
 type DBConfig struct {
@@ -70,7 +88,7 @@ func DefaultConfig() *Config {
 		WAL: WALConfig{
 			Dir:                 "./data/wal",
 			MaxFileSizeMB:       64,
-			FsyncOnCommit:       true,
+			FsyncOnCommit:       true, // Deprecated: kept for backward compatibility
 			TrimAfterCheckpoint: true,
 			KeepSegments:        2,
 			Checkpoint: CheckpointConfig{
@@ -78,10 +96,17 @@ func DefaultConfig() *Config {
 				AutoCreate:     true,
 				MaxCheckpoints: 0, // Unlimited for v0.1
 			},
+			Fsync: FsyncConfig{
+				Mode:         FsyncGroup, // Conservative default: 1ms group commit
+				IntervalMS:   1,          // Default batch interval
+				MaxBatchSize: 100,        // Max records per batch
+			},
 		},
 		Sched: SchedulerConfig{
 			QueueDepth:    100,
 			RoundRobinDBs: true,
+			WorkerCount:   0,   // 0 = dynamic auto-scaling
+			MaxWorkers:    256, // Cap auto-tuning
 		},
 		DB: DBConfig{
 			CompactionSizeThresholdMB: 100,

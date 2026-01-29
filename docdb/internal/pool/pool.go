@@ -121,6 +121,7 @@ func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	bufferPool := memory.NewBufferPool(cfg.Memory.BufferSizes)
 	catalog := catalog.NewCatalog(cfg.DataDir+"/.catalog", log)
 	sched := NewScheduler(cfg.Sched.QueueDepth, log)
+	sched.SetWorkerConfig(cfg.Sched.WorkerCount, cfg.Sched.MaxWorkers)
 
 	return &Pool{
 		dbs:          make(map[uint64]*docdb.LogicalDB),
@@ -389,6 +390,31 @@ func (p *Pool) ListDBs() []*types.DBInfo {
 	}
 
 	return infos
+}
+
+// GetSchedulerStats returns scheduler queue depth statistics and WAL group-commit metrics.
+func (p *Pool) GetSchedulerStats() map[string]interface{} {
+	queueStats := p.sched.GetQueueDepthStats()
+	avgDepth := p.sched.GetAvgQueueDepth()
+
+	out := map[string]interface{}{
+		"queue_depths":    queueStats,
+		"avg_queue_depth": avgDepth,
+		"worker_count":    p.sched.GetCurrentWorkerCount(),
+	}
+
+	// Aggregate WAL/group-commit stats per DB (when group commit is active)
+	walStats := make(map[uint64]map[string]interface{})
+	for dbID, db := range p.dbs {
+		if st := db.GetWALStats(); st != nil {
+			walStats[dbID] = st
+		}
+	}
+	if len(walStats) > 0 {
+		out["wal_group_commit"] = walStats
+	}
+
+	return out
 }
 
 func (p *Pool) Stats() *types.Stats {

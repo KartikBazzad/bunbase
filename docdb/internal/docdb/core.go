@@ -131,7 +131,7 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	}
 
 	walFile := filepath.Join(walDir, fmt.Sprintf("%s.wal", db.dbName))
-	db.wal = wal.NewWriter(walFile, db.dbID, db.cfg.WAL.MaxFileSizeMB*1024*1024, db.cfg.WAL.FsyncOnCommit, db.logger)
+	db.wal = wal.NewWriterFromConfig(walFile, db.dbID, db.cfg.WAL.MaxFileSizeMB*1024*1024, &db.cfg.WAL, db.logger)
 	if err := db.wal.Open(); err != nil {
 		return fmt.Errorf("failed to open WAL: %w", err)
 	}
@@ -450,6 +450,11 @@ func (db *LogicalDB) Name() string {
 }
 
 func (db *LogicalDB) Create(collection string, docID uint64, payload []byte) error {
+	// Validate JSON-only payload outside lock to reduce contention
+	if err := validateJSONPayload(payload); err != nil {
+		return err
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -462,15 +467,9 @@ func (db *LogicalDB) Create(collection string, docID uint64, payload []byte) err
 		collection = DefaultCollection
 	}
 
-	// Validate collection exists
+	// Validate collection exists (uses collections.mu internally)
 	if !db.collections.Exists(collection) {
 		return errors.ErrCollectionNotFound
-	}
-
-	// Enforce JSON-only payloads at the engine level before any WAL or
-	// data file writes, so invalid inputs cannot corrupt durable state.
-	if err := validateJSONPayload(payload); err != nil {
-		return err
 	}
 
 	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
@@ -552,6 +551,16 @@ func (db *LogicalDB) Read(collection string, docID uint64) ([]byte, error) {
 }
 
 func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) error {
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate JSON-only payload outside lock to reduce contention
+	if err := validateJSONPayload(payload); err != nil {
+		return err
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -559,20 +568,9 @@ func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) err
 		return ErrDBNotOpen
 	}
 
-	// Normalize collection name
-	if collection == "" {
-		collection = DefaultCollection
-	}
-
-	// Validate collection exists
+	// Validate collection exists (uses collections.mu internally)
 	if !db.collections.Exists(collection) {
 		return errors.ErrCollectionNotFound
-	}
-
-	// Enforce JSON-only payloads at the engine level before any WAL or
-	// data file writes, so invalid inputs cannot corrupt durable state.
-	if err := validateJSONPayload(payload); err != nil {
-		return err
 	}
 
 	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
@@ -628,6 +626,16 @@ func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) err
 }
 
 func (db *LogicalDB) Delete(collection string, docID uint64) error {
+	// Normalize collection name
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	// Validate collection exists (uses collections.mu internally)
+	if !db.collections.Exists(collection) {
+		return errors.ErrCollectionNotFound
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -635,19 +643,14 @@ func (db *LogicalDB) Delete(collection string, docID uint64) error {
 		return ErrDBNotOpen
 	}
 
-	// Normalize collection name
-	if collection == "" {
-		collection = DefaultCollection
-	}
-
-	// Validate collection exists
-	if !db.collections.Exists(collection) {
-		return errors.ErrCollectionNotFound
-	}
-
 	version, exists := db.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
 	if !exists || version.DeletedTxID != nil {
 		return ErrDocNotFound
+	}
+
+	oldMemory := uint64(version.Length)
+	if oldMemory > 0 {
+		db.memory.Free(db.dbID, oldMemory)
 	}
 
 	txID := db.mvcc.NextTxID()
@@ -673,9 +676,6 @@ func (db *LogicalDB) Delete(collection string, docID uint64) error {
 	db.txnsCommitted++
 	db.index.Set(collection, deleteVersion)
 	db.collections.DecrementDocCount(collection)
-	if version.Length > 0 {
-		db.memory.Free(db.dbID, uint64(version.Length))
-	}
 
 	// Check if checkpoint should be created after commit
 	db.maybeCreateCheckpointAndTrim(txID)
@@ -795,6 +795,31 @@ func (db *LogicalDB) HealingService() *HealingService {
 	return db.healingService
 }
 
+// GetWALStats returns WAL/group-commit metrics when group commit is active.
+// Returns nil when group commit is not in use. Map keys: total_batches, total_records,
+// avg_batch_size, avg_batch_latency_ns, max_batch_size, max_batch_latency_ns, last_flush_time_unix_ns.
+func (db *LogicalDB) GetWALStats() map[string]interface{} {
+	db.mu.RLock()
+	wal := db.wal
+	db.mu.RUnlock()
+	if wal == nil {
+		return nil
+	}
+	st, ok := wal.GetGroupCommitStats()
+	if !ok {
+		return nil
+	}
+	return map[string]interface{}{
+		"total_batches":           st.TotalBatches,
+		"total_records":           st.TotalRecords,
+		"avg_batch_size":          st.AvgBatchSize,
+		"avg_batch_latency_ns":    st.AvgBatchLatency.Nanoseconds(),
+		"max_batch_size":          st.MaxBatchSize,
+		"max_batch_latency_ns":    st.MaxBatchLatency.Nanoseconds(),
+		"last_flush_time_unix_ns": st.LastFlushTime.UnixNano(),
+	}
+}
+
 func (db *LogicalDB) replayWAL() error {
 	walBasePath := filepath.Join(db.walDir, fmt.Sprintf("%s.wal", db.dbName))
 	if _, err := os.Stat(walBasePath); os.IsNotExist(err) {
@@ -805,30 +830,12 @@ func (db *LogicalDB) replayWAL() error {
 
 	maxTxID := uint64(0)
 	records := 0
+	lastCheckpointTxID := uint64(0)
 
-	// Buffer WAL records per transaction so that we can apply only
-	// those belonging to transactions that have a corresponding
-	// OpCommit marker.
 	txRecords := make(map[uint64][]*types.WALRecord)
 	committed := make(map[uint64]bool)
 
-	// First, find the last checkpoint by scanning the WAL
-	lastCheckpointTxID := uint64(0)
-	checkpointRecovery := wal.NewRecovery(walBasePath, db.logger)
-	checkpointRecovery.Replay(func(rec *types.WALRecord) error {
-		if rec != nil && rec.OpType == types.OpCheckpoint {
-			if rec.TxID > lastCheckpointTxID {
-				lastCheckpointTxID = rec.TxID
-			}
-		}
-		return nil
-	})
-
-	if lastCheckpointTxID > 0 {
-		db.logger.Info("Found checkpoint at tx_id=%d, recovery will start from there", lastCheckpointTxID)
-	}
-
-	// Now replay from checkpoint (or beginning), buffering committed transactions
+	// Single pass: find checkpoint and buffer records (avoids second full WAL read).
 	err := recovery.Replay(func(rec *types.WALRecord) error {
 		if rec == nil {
 			return nil
@@ -836,8 +843,10 @@ func (db *LogicalDB) replayWAL() error {
 
 		txID := rec.TxID
 
-		// Skip records before checkpoint (they're already applied at checkpoint time)
-		if lastCheckpointTxID > 0 && txID < lastCheckpointTxID {
+		if rec.OpType == types.OpCheckpoint {
+			if txID > lastCheckpointTxID {
+				lastCheckpointTxID = txID
+			}
 			return nil
 		}
 
@@ -846,14 +855,9 @@ func (db *LogicalDB) replayWAL() error {
 		}
 
 		switch rec.OpType {
-		case types.OpCheckpoint:
-			// Checkpoints are metadata, already processed in first pass
 		case types.OpCommit:
-			// Mark transaction as committed; its buffered records will
-			// be applied after replay completes.
 			committed[txID] = true
 		default:
-			// Buffer data-bearing records by transaction.
 			txRecords[txID] = append(txRecords[txID], rec)
 			records++
 		}
@@ -865,17 +869,23 @@ func (db *LogicalDB) replayWAL() error {
 		return fmt.Errorf("corrupt WAL: %w", err)
 	}
 
+	if lastCheckpointTxID > 0 {
+		db.logger.Info("Found checkpoint at tx_id=%d, recovery will start from there", lastCheckpointTxID)
+	}
+
 	// Update MVCC to use the next transaction ID after the highest one found
 	if maxTxID > 0 {
 		db.mvcc.SetCurrentTxID(maxTxID + 1)
 	}
 
-	// Apply only records from committed transactions, rebuilding the
-	// data file and index state from durable WAL.
+	// Apply only records from committed transactions.
+	// Use WriteNoSync during replay; one Sync at the end (much faster than N fsyncs).
 	for txID, recs := range txRecords {
 		if !committed[txID] {
-			// Skip uncommitted transactions: their effects should not
-			// be visible after recovery.
+			continue
+		}
+		// Skip transactions at or before checkpoint (state already applied at checkpoint time).
+		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
 			continue
 		}
 
@@ -906,8 +916,8 @@ func (db *LogicalDB) replayWAL() error {
 				continue
 
 			case types.OpCreate:
-				// Write payload to data file to get the actual offset
-				offset, err := db.dataFile.Write(rec.Payload)
+				// WriteNoSync during replay; one Sync at end of replay (avoids N fsyncs).
+				offset, err := db.dataFile.WriteNoSync(rec.Payload)
 				if err != nil {
 					db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
 					continue
@@ -929,7 +939,7 @@ func (db *LogicalDB) replayWAL() error {
 				existing, exists := db.index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
 				if !exists {
 					// If document doesn't exist, treat as create
-					offset, err := db.dataFile.Write(rec.Payload)
+					offset, err := db.dataFile.WriteNoSync(rec.Payload)
 					if err != nil {
 						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
 						continue
@@ -945,8 +955,8 @@ func (db *LogicalDB) replayWAL() error {
 					db.index.Set(collection, version)
 					db.collections.IncrementDocCount(collection)
 				} else {
-					// Write new payload to data file
-					offset, err := db.dataFile.Write(rec.Payload)
+					// Write new payload to data file (no sync during replay)
+					offset, err := db.dataFile.WriteNoSync(rec.Payload)
 					if err != nil {
 						db.logger.Warn("Failed to write payload to data file during replay for doc %d: %v", rec.DocID, err)
 						continue
@@ -985,6 +995,11 @@ func (db *LogicalDB) replayWAL() error {
 				db.collections.DecrementDocCount(collection)
 			}
 		}
+	}
+
+	// Single fsync after all replay writes (was N fsyncs during apply).
+	if err := db.dataFile.Sync(); err != nil {
+		db.logger.Warn("Data file sync after replay failed: %v", err)
 	}
 
 	db.logger.Info("Replayed %d WAL records (committed only)", records)

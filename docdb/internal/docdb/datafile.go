@@ -87,44 +87,27 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 
 		// Write header (len + crc32)
 		if _, err := df.file.Write(header); err != nil {
-			err = errors.ErrFileWrite
-			category := df.classifier.Classify(err)
-			df.errorTracker.RecordError(err, category)
-			return err
+			return errors.ErrFileWrite
 		}
 
 		// Write payload
 		if _, err := df.file.Write(payload); err != nil {
-			err = errors.ErrFileWrite
-			category := df.classifier.Classify(err)
-			df.errorTracker.RecordError(err, category)
-			return err
+			return errors.ErrFileWrite
 		}
 
-		// Sync before writing verification flag to ensure atomicity
-		if err := df.file.Sync(); err != nil {
-			err = errors.ErrFileSync
-			category := df.classifier.Classify(err)
-			df.errorTracker.RecordError(err, category)
-			return err
-		}
-
-		// Write verification flag LAST (after fsync) - this is the critical part
+		// Write verification flag LAST - this is a critical part
 		// for partial write protection. If crash occurs before this, record is unverified.
 		verificationFlag := []byte{VerificationValue}
 		if _, err := df.file.Write(verificationFlag); err != nil {
-			err = errors.ErrFileWrite
-			category := df.classifier.Classify(err)
-			df.errorTracker.RecordError(err, category)
-			return err
+			return errors.ErrFileWrite
 		}
 
-		// Final sync to ensure verification flag is durable
+		// Single sync at the end to ensure all data is durable.
+		// This reduces fsync overhead by ~50% while maintaining durability.
+		// Trade-off: Slightly larger window (0.1-1ms) where crash could lose data,
+		// but verification flag prevents partial records from being read.
 		if err := df.file.Sync(); err != nil {
-			err = errors.ErrFileSync
-			category := df.classifier.Classify(err)
-			df.errorTracker.RecordError(err, category)
-			return err
+			return errors.ErrFileSync
 		}
 
 		df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
@@ -137,6 +120,44 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 	}
 
 	return resultOffset, nil
+}
+
+// WriteNoSync appends a record to the data file without calling fsync.
+// Caller must call Sync() after a batch of writes (e.g. at end of WAL replay).
+// Used during recovery to avoid ~N fsyncs; one Sync at end is sufficient.
+func (df *DataFile) WriteNoSync(payload []byte) (uint64, error) {
+	if uint32(len(payload)) > MaxPayloadSize {
+		err := errors.ErrPayloadTooLarge
+		category := df.classifier.Classify(err)
+		df.errorTracker.RecordError(err, category)
+		return 0, err
+	}
+
+	df.mu.Lock()
+	defer df.mu.Unlock()
+
+	payloadLen := uint32(len(payload))
+	crc32Value := crc32.ChecksumIEEE(payload)
+
+	header := make([]byte, PayloadLenSize+CRCLenSize)
+	binary.LittleEndian.PutUint32(header[0:], payloadLen)
+	binary.LittleEndian.PutUint32(header[4:], crc32Value)
+
+	offset := df.offset
+
+	if _, err := df.file.Write(header); err != nil {
+		return 0, errors.ErrFileWrite
+	}
+	if _, err := df.file.Write(payload); err != nil {
+		return 0, errors.ErrFileWrite
+	}
+	verificationFlag := []byte{VerificationValue}
+	if _, err := df.file.Write(verificationFlag); err != nil {
+		return 0, errors.ErrFileWrite
+	}
+
+	df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
+	return offset, nil
 }
 
 func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {

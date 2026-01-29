@@ -4,6 +4,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/kartikbazzad/docdb/internal/config"
 	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/types"
@@ -24,6 +25,8 @@ type Writer struct {
 	size          uint64
 	maxSize       uint64
 	fsync         bool
+	fsyncConfig   *config.FsyncConfig // optional: when set, group commit may be used
+	groupCommit   *GroupCommit        // used when fsyncConfig.Mode is Group or Interval
 	logger        *logger.Logger
 	rotator       *Rotator
 	isClosed      bool
@@ -52,6 +55,30 @@ func NewWriter(path string, dbID uint64, maxSize uint64, fsync bool, log *logger
 	}
 }
 
+// NewWriterFromConfig creates a WAL writer using WAL config (including FsyncConfig).
+// When cfg.Fsync.Mode is FsyncGroup or FsyncInterval, group commit is used for batched fsync.
+func NewWriterFromConfig(path string, dbID uint64, maxSize uint64, walCfg *config.WALConfig, log *logger.Logger) *Writer {
+	useFsync := walCfg.FsyncOnCommit
+	if walCfg.Fsync.Mode == config.FsyncAlways {
+		useFsync = true
+	} else if walCfg.Fsync.Mode == config.FsyncNone {
+		useFsync = false
+	}
+	w := &Writer{
+		path:         path,
+		dbID:         dbID,
+		maxSize:      maxSize,
+		fsync:        useFsync,
+		fsyncConfig:  &walCfg.Fsync,
+		logger:       log,
+		rotator:      NewRotator(path, maxSize, useFsync, log),
+		retryCtrl:    errors.NewRetryController(),
+		classifier:   errors.NewClassifier(),
+		errorTracker: errors.NewErrorTracker(),
+	}
+	return w
+}
+
 // SetCheckpointManager sets the checkpoint manager for this writer.
 func (w *Writer) SetCheckpointManager(mgr *CheckpointManager) {
 	w.mu.Lock()
@@ -71,6 +98,11 @@ func (w *Writer) Open() error {
 	w.file = file
 	w.size = getWalSize(file)
 	w.isClosed = false
+
+	if w.fsyncConfig != nil && (w.fsyncConfig.Mode == config.FsyncGroup || w.fsyncConfig.Mode == config.FsyncInterval) {
+		w.groupCommit = NewGroupCommit(file, w.fsyncConfig, w.logger)
+		w.groupCommit.Start()
+	}
 
 	return nil
 }
@@ -102,23 +134,31 @@ func (w *Writer) Write(txID, dbID uint64, collection string, docID uint64, opTyp
 			return err
 		}
 
-		if _, err := w.file.Write(record); err != nil {
-			err = errors.ErrFileWrite
-			category := w.classifier.Classify(err)
-			w.errorTracker.RecordError(err, category)
-			return err
-		}
-
-		w.size += uint64(len(record))
-
-		if w.fsync {
-			if err := w.file.Sync(); err != nil {
-				err = errors.ErrFileSync
+		if w.groupCommit != nil {
+			if err := w.groupCommit.Write(record); err != nil {
+				err = errors.ErrFileWrite
 				category := w.classifier.Classify(err)
 				w.errorTracker.RecordError(err, category)
 				return err
 			}
+		} else {
+			if _, err := w.file.Write(record); err != nil {
+				err = errors.ErrFileWrite
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+			if w.fsync {
+				if err := w.file.Sync(); err != nil {
+					err = errors.ErrFileSync
+					category := w.classifier.Classify(err)
+					w.errorTracker.RecordError(err, category)
+					return err
+				}
+			}
 		}
+
+		w.size += uint64(len(record))
 
 		// Perform rotation if enabled and threshold reached.
 		if w.rotator != nil && w.rotator.ShouldRotate(w.size) {
@@ -167,23 +207,31 @@ func (w *Writer) WriteCommitMarker(txID uint64) error {
 
 		offset := w.size
 
-		if _, err := w.file.Write(record); err != nil {
-			err = errors.ErrFileWrite
-			category := w.classifier.Classify(err)
-			w.errorTracker.RecordError(err, category)
-			return err
-		}
-
-		w.size += uint64(len(record))
-
-		if w.fsync {
-			if err := w.file.Sync(); err != nil {
-				err = errors.ErrFileSync
+		if w.groupCommit != nil {
+			if err := w.groupCommit.Write(record); err != nil {
+				err = errors.ErrFileWrite
 				category := w.classifier.Classify(err)
 				w.errorTracker.RecordError(err, category)
 				return err
 			}
+		} else {
+			if _, err := w.file.Write(record); err != nil {
+				err = errors.ErrFileWrite
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+			if w.fsync {
+				if err := w.file.Sync(); err != nil {
+					err = errors.ErrFileSync
+					category := w.classifier.Classify(err)
+					w.errorTracker.RecordError(err, category)
+					return err
+				}
+			}
 		}
+
+		w.size += uint64(len(record))
 
 		w.logger.Debug("WAL commit marker written: tx_id=%d, offset=%d", txID, offset)
 
@@ -228,23 +276,31 @@ func (w *Writer) WriteCheckpoint(txID uint64) error {
 
 		offset := w.size
 
-		if _, err := w.file.Write(record); err != nil {
-			err = errors.ErrFileWrite
-			category := w.classifier.Classify(err)
-			w.errorTracker.RecordError(err, category)
-			return err
-		}
-
-		w.size += uint64(len(record))
-
-		if w.fsync {
-			if err := w.file.Sync(); err != nil {
-				err = errors.ErrFileSync
+		if w.groupCommit != nil {
+			if err := w.groupCommit.Write(record); err != nil {
+				err = errors.ErrFileWrite
 				category := w.classifier.Classify(err)
 				w.errorTracker.RecordError(err, category)
 				return err
 			}
+		} else {
+			if _, err := w.file.Write(record); err != nil {
+				err = errors.ErrFileWrite
+				category := w.classifier.Classify(err)
+				w.errorTracker.RecordError(err, category)
+				return err
+			}
+			if w.fsync {
+				if err := w.file.Sync(); err != nil {
+					err = errors.ErrFileSync
+					category := w.classifier.Classify(err)
+					w.errorTracker.RecordError(err, category)
+					return err
+				}
+			}
 		}
+
+		w.size += uint64(len(record))
 
 		w.logger.Info("WAL checkpoint written: tx_id=%d, offset=%d, size=%d", txID, offset, w.size)
 
@@ -263,7 +319,11 @@ func (w *Writer) rotateLocked() error {
 		return nil
 	}
 
-	// Close the current WAL file before rotating.
+	// Flush and stop group commit so all data is on disk before closing.
+	if w.groupCommit != nil {
+		w.groupCommit.Stop()
+		w.groupCommit = nil
+	}
 	if err := w.file.Sync(); err != nil {
 		return errors.ErrFileSync
 	}
@@ -281,6 +341,10 @@ func (w *Writer) rotateLocked() error {
 		}
 		w.file = file
 		w.size = getWalSize(file)
+		if w.fsyncConfig != nil && (w.fsyncConfig.Mode == config.FsyncGroup || w.fsyncConfig.Mode == config.FsyncInterval) {
+			w.groupCommit = NewGroupCommit(file, w.fsyncConfig, w.logger)
+			w.groupCommit.Start()
+		}
 		return err
 	}
 
@@ -294,6 +358,10 @@ func (w *Writer) rotateLocked() error {
 
 	w.file = file
 	w.size = getWalSize(file)
+	if w.fsyncConfig != nil && (w.fsyncConfig.Mode == config.FsyncGroup || w.fsyncConfig.Mode == config.FsyncInterval) {
+		w.groupCommit = NewGroupCommit(file, w.fsyncConfig, w.logger)
+		w.groupCommit.Start()
+	}
 
 	return nil
 }
@@ -305,7 +373,9 @@ func (w *Writer) Sync() error {
 	if w.file == nil {
 		return nil
 	}
-
+	if w.groupCommit != nil {
+		return w.groupCommit.Sync()
+	}
 	return w.file.Sync()
 }
 
@@ -317,6 +387,10 @@ func (w *Writer) Close() error {
 		return nil
 	}
 
+	if w.groupCommit != nil {
+		w.groupCommit.Stop()
+		w.groupCommit = nil
+	}
 	if err := w.file.Sync(); err != nil {
 		return err
 	}
@@ -334,4 +408,15 @@ func (w *Writer) Size() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.size
+}
+
+// GetGroupCommitStats returns group commit metrics when group commit is active.
+// The second return is false when group commit is not in use (e.g. FsyncAlways/FsyncNone).
+func (w *Writer) GetGroupCommitStats() (GroupCommitStats, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.groupCommit == nil {
+		return GroupCommitStats{}, false
+	}
+	return w.groupCommit.GetStats(), true
 }
