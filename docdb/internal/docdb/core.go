@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -36,47 +37,62 @@ import (
 	"github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
+	"github.com/kartikbazzad/docdb/internal/query"
 	"github.com/kartikbazzad/docdb/internal/types"
 	"github.com/kartikbazzad/docdb/internal/wal"
 )
 
-// LogicalDB represents a single logical database instance.
+// LogicalDB represents a single logical database instance (v0.4: partitioned).
 //
 // It manages the complete lifecycle of documents within this database,
 // including storage, indexing, transaction management, and recovery.
 //
+// v0.4 Architecture:
+//   - LogicalDB is a partitioned execution domain
+//   - Each partition owns data, WAL, and index
+//   - Workers are NOT bound to partitions; they pull tasks and lock partitions
+//   - Exactly one writer per partition at a time (enforced by partition.mu)
+//   - Unlimited readers (lock-free via immutable index snapshots)
+//
 // Thread Safety: All public methods are safe for concurrent use.
-// The mu (RWMutex) protects all internal state.
+// Partition-level locking ensures exactly one writer per partition.
 type LogicalDB struct {
-	mu             sync.RWMutex           // Protects all internal state
-	dbID           uint64                 // Unique database identifier
-	dbName         string                 // Human-readable database name
-	dataFile       *DataFile              // Append-only file for document payloads
-	wal            *wal.Writer            // Write-ahead log for durability
-	index          *Index                 // Sharded in-memory index
+	mu     sync.RWMutex // Protects LogicalDB-level state (partitions list, etc.)
+	dbID   uint64       // Unique database identifier
+	dbName string       // Human-readable database name
+
+	// v0.4: Partitioned execution
+	partitions []*Partition            // Partitions (nil if PartitionCount=1, using legacy mode)
+	dbConfig   *config.LogicalDBConfig // LogicalDB-specific config (partitioning, workers)
+	workerPool WorkerPool              // Worker pool for this LogicalDB
+
+	// Legacy mode (PartitionCount=1): single WAL, datafile, index
+	dataFile *DataFile   // Legacy: single datafile (used when partitions == nil)
+	wal      *wal.Writer // Legacy: single WAL (used when partitions == nil)
+	index    *Index      // Legacy: single index (used when partitions == nil)
+
 	mvcc           *MVCC                  // Multi-version concurrency control
 	txManager      *TransactionManager    // Transaction lifecycle management
 	memory         *memory.Caps           // Memory limit tracking
 	pool           *memory.BufferPool     // Efficient buffer allocation
-	cfg            *config.Config         // Database configuration
+	cfg            *config.Config         // Global database configuration
 	logger         *logger.Logger         // Structured logging
 	closed         bool                   // True if database is closed
 	dataDir        string                 // Directory for data files
 	walDir         string                 // Directory for WAL files
 	txnsCommitted  uint64                 // Count of committed transactions
 	lastCompaction time.Time              // Timestamp of last compaction
-	checkpointMgr  *wal.CheckpointManager // Checkpoint management for bounded recovery
+	checkpointMgr  *wal.CheckpointManager // Legacy checkpoint manager (for PartitionCount=1)
 	errorTracker   *errors.ErrorTracker   // Error tracking for observability
 	healingService *HealingService        // Automatic document healing service
-	walTrimmer     *wal.Trimmer           // WAL segment trimming
+	walTrimmer     *wal.Trimmer           // Legacy WAL trimmer (for PartitionCount=1)
 	collections    *CollectionRegistry    // Collection management
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
-	return &LogicalDB{
+	db := &LogicalDB{
 		dbID:         dbID,
 		dbName:       dbName,
-		index:        NewIndex(),
 		mvcc:         NewMVCC(),
 		txManager:    NewTransactionManager(NewMVCC()),
 		memory:       memCaps,
@@ -87,6 +103,32 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 		errorTracker: errors.NewErrorTracker(),
 		collections:  NewCollectionRegistry(log),
 	}
+
+	// Use default LogicalDB config (PartitionCount=1 for backward compatibility)
+	db.dbConfig = config.DefaultLogicalDBConfig()
+	db.dbConfig.PartitionCount = 1 // v0.3 compatibility: single partition
+
+	return db
+}
+
+// NewLogicalDBWithConfig creates a LogicalDB with explicit LogicalDBConfig (v0.4).
+func NewLogicalDBWithConfig(dbID uint64, dbName string, cfg *config.Config, dbCfg *config.LogicalDBConfig, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
+	db := &LogicalDB{
+		dbID:         dbID,
+		dbName:       dbName,
+		dbConfig:     dbCfg,
+		mvcc:         NewMVCC(),
+		txManager:    NewTransactionManager(NewMVCC()),
+		memory:       memCaps,
+		pool:         pool,
+		cfg:          cfg,
+		logger:       log,
+		closed:       false,
+		errorTracker: errors.NewErrorTracker(),
+		collections:  NewCollectionRegistry(log),
+	}
+
+	return db
 }
 
 // validateJSONPayload enforces the engine-level JSON-only invariant.
@@ -109,6 +151,280 @@ func validateJSONPayload(payload []byte) error {
 	return nil
 }
 
+// PartitionCount returns the number of partitions (0 or 1 = legacy mode).
+func (db *LogicalDB) PartitionCount() int {
+	if db.dbConfig == nil {
+		return 1
+	}
+	return db.dbConfig.PartitionCount
+}
+
+// SubmitTaskAndWait submits a task to the LogicalDB worker pool and blocks until the result is ready.
+// Used by the pool when PartitionCount > 1. Returns the result from the worker.
+func (db *LogicalDB) SubmitTaskAndWait(task *Task) *Result {
+	if db.workerPool == nil {
+		return &Result{Status: types.StatusError, Error: ErrDBNotOpen}
+	}
+	db.workerPool.Submit(task)
+	return <-task.ResultCh
+}
+
+// getPartition returns the partition for a given partition ID (v0.4).
+// Returns nil if partition ID is invalid or partitions not initialized.
+func (db *LogicalDB) getPartition(partitionID int) *Partition {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.partitions == nil || partitionID < 0 || partitionID >= len(db.partitions) {
+		return nil
+	}
+	return db.partitions[partitionID]
+}
+
+// executeOnPartition executes a task on a partition (caller must hold partition.mu).
+// This is called by worker pool after locking the partition.
+func (db *LogicalDB) executeOnPartition(partition *Partition, task *Task) *Result {
+	if db.closed {
+		return &Result{Status: types.StatusError, Error: ErrDBNotOpen}
+	}
+
+	collection := task.Collection
+	if collection == "" {
+		collection = DefaultCollection
+	}
+
+	if !db.collections.Exists(collection) {
+		return &Result{Status: types.StatusError, Error: errors.ErrCollectionNotFound}
+	}
+
+	switch task.Op {
+	case types.OpCreate:
+		return db.executeCreateOnPartition(partition, collection, task.DocID, task.Payload)
+	case types.OpRead:
+		return db.executeReadOnPartition(partition, collection, task.DocID)
+	case types.OpUpdate:
+		return db.executeUpdateOnPartition(partition, collection, task.DocID, task.Payload)
+	case types.OpDelete:
+		return db.executeDeleteOnPartition(partition, collection, task.DocID)
+	case types.OpPatch:
+		return db.executePatchOnPartition(partition, collection, task.DocID, task.PatchOps)
+	default:
+		return &Result{Status: types.StatusError, Error: errors.ErrUnknownOperation}
+	}
+}
+
+func (db *LogicalDB) executeCreateOnPartition(partition *Partition, collection string, docID uint64, payload []byte) *Result {
+	if err := validateJSONPayload(payload); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
+	if exists && version.DeletedTxID == nil {
+		return &Result{Status: types.StatusConflict, Error: ErrDocAlreadyExists}
+	}
+
+	memoryNeeded := uint64(len(payload))
+	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+		return &Result{Status: types.StatusMemoryLimit, Error: ErrMemoryLimit}
+	}
+
+	dataFile := partition.GetDataFile()
+	offset, err := dataFile.Write(payload)
+	if err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	txID := db.mvcc.NextTxID()
+	newVersion := db.mvcc.CreateVersion(docID, txID, offset, uint32(len(payload)))
+
+	wal := partition.GetWAL()
+	if err := wal.Write(txID, db.dbID, collection, docID, types.OpCreate, payload); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
+	}
+
+	db.txnsCommitted++
+	partition.index.Set(collection, newVersion)
+	db.collections.IncrementDocCount(collection)
+	return &Result{Status: types.StatusOK}
+}
+
+func (db *LogicalDB) executeReadOnPartition(partition *Partition, collection string, docID uint64) *Result {
+	snapshotTxID := db.mvcc.CurrentSnapshot()
+	version, exists := partition.index.Get(collection, docID, snapshotTxID)
+	if !exists || version.DeletedTxID != nil {
+		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
+	}
+
+	data, err := partition.GetDataFile().Read(version.Offset, version.Length)
+	if err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+	return &Result{Status: types.StatusOK, Data: data}
+}
+
+// executeReadOnPartitionLockFree performs a read without holding partition.mu (lock-free / snapshot read).
+// Caller must not hold partition write lock. Used by worker pool for OpRead tasks.
+func (db *LogicalDB) executeReadOnPartitionLockFree(partition *Partition, collection string, docID uint64) *Result {
+	if db.closed {
+		return &Result{Status: types.StatusError, Error: ErrDBNotOpen}
+	}
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	if !db.collections.Exists(collection) {
+		return &Result{Status: types.StatusError, Error: errors.ErrCollectionNotFound}
+	}
+	snapshotTxID := db.mvcc.CurrentSnapshot()
+	version, exists := partition.index.Get(collection, docID, snapshotTxID)
+	if !exists || version.DeletedTxID != nil {
+		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
+	}
+	data, err := partition.GetDataFile().Read(version.Offset, version.Length)
+	if err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+	return &Result{Status: types.StatusOK, Data: data}
+}
+
+func (db *LogicalDB) executeUpdateOnPartition(partition *Partition, collection string, docID uint64, payload []byte) *Result {
+	if err := validateJSONPayload(payload); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
+	if !exists || version.DeletedTxID != nil {
+		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
+	}
+
+	memoryNeeded := uint64(len(payload))
+	oldMemory := uint64(version.Length)
+	if !db.memory.TryAllocate(db.dbID, memoryNeeded) {
+		return &Result{Status: types.StatusMemoryLimit, Error: ErrMemoryLimit}
+	}
+
+	dataFile := partition.GetDataFile()
+	offset, err := dataFile.Write(payload)
+	if err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	txID := db.mvcc.NextTxID()
+	newVersion := db.mvcc.UpdateVersion(version, txID, offset, uint32(len(payload)))
+
+	wal := partition.GetWAL()
+	if err := wal.Write(txID, db.dbID, collection, docID, types.OpUpdate, payload); err != nil {
+		db.memory.Free(db.dbID, memoryNeeded)
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
+	}
+
+	db.txnsCommitted++
+	partition.index.Set(collection, newVersion)
+	if oldMemory > 0 {
+		db.memory.Free(db.dbID, oldMemory)
+	}
+	return &Result{Status: types.StatusOK}
+}
+
+func (db *LogicalDB) executeDeleteOnPartition(partition *Partition, collection string, docID uint64) *Result {
+	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
+	if !exists || version.DeletedTxID != nil {
+		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
+	}
+
+	oldMemory := uint64(version.Length)
+	if oldMemory > 0 {
+		db.memory.Free(db.dbID, oldMemory)
+	}
+
+	txID := db.mvcc.NextTxID()
+	deleteVersion := db.mvcc.DeleteVersion(docID, txID)
+
+	wal := partition.GetWAL()
+	if err := wal.Write(txID, db.dbID, collection, docID, types.OpDelete, nil); err != nil {
+		return &Result{Status: types.StatusError, Error: fmt.Errorf("WAL write: %w", err)}
+	}
+
+	db.txnsCommitted++
+	partition.index.Set(collection, deleteVersion)
+	db.collections.DecrementDocCount(collection)
+	return &Result{Status: types.StatusOK}
+}
+
+func (db *LogicalDB) executePatchOnPartition(partition *Partition, collection string, docID uint64, patchOps []types.PatchOperation) *Result {
+	if len(patchOps) == 0 {
+		return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+	}
+
+	version, exists := partition.index.Get(collection, docID, db.mvcc.CurrentSnapshot())
+	if !exists || version.DeletedTxID != nil {
+		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
+	}
+
+	data, err := partition.GetDataFile().Read(version.Offset, version.Length)
+	if err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	var doc interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return &Result{Status: types.StatusError, Error: errors.ErrInvalidJSON}
+	}
+	docMap, ok := doc.(map[string]interface{})
+	if !ok {
+		return &Result{Status: types.StatusError, Error: errors.ErrNotJSONObject}
+	}
+
+	for _, op := range patchOps {
+		path, err := ParsePath(op.Path)
+		if err != nil {
+			return &Result{Status: types.StatusError, Error: fmt.Errorf("invalid path %q: %w", op.Path, err)}
+		}
+		switch op.Op {
+		case "set":
+			if op.Value == nil {
+				return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+			}
+			if err := SetValue(docMap, path, op.Value); err != nil {
+				return &Result{Status: types.StatusError, Error: err}
+			}
+		case "delete":
+			if err := DeleteValue(docMap, path); err != nil {
+				return &Result{Status: types.StatusError, Error: err}
+			}
+		case "insert":
+			if op.Value == nil {
+				return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+			}
+			if len(path) == 0 {
+				return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+			}
+			indexStr := path[len(path)-1]
+			index, err := strconv.Atoi(indexStr)
+			if err != nil {
+				return &Result{Status: types.StatusError, Error: errors.ErrInvalidPatch}
+			}
+			if err := InsertValue(docMap, path[:len(path)-1], index, op.Value); err != nil {
+				return &Result{Status: types.StatusError, Error: err}
+			}
+		default:
+			return &Result{Status: types.StatusError, Error: fmt.Errorf("unknown patch op %q", op.Op)}
+		}
+	}
+
+	updatedPayload, err := json.Marshal(docMap)
+	if err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+	if err := validateJSONPayload(updatedPayload); err != nil {
+		return &Result{Status: types.StatusError, Error: err}
+	}
+
+	return db.executeUpdateOnPartition(partition, collection, docID, updatedPayload)
+}
+
 func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -124,6 +440,33 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 		return fmt.Errorf("failed to create WAL directory: %w", err)
 	}
 
+	partitionCount := db.dbConfig.PartitionCount
+	if partitionCount <= 0 {
+		partitionCount = 1
+	}
+
+	// v0.3 detection: if single WAL file exists (dbname.wal), use legacy mode even if config says > 1
+	legacyWAL := filepath.Join(walDir, fmt.Sprintf("%s.wal", db.dbName))
+	p0WAL := filepath.Join(walDir, "p0.wal")
+	if _, errLegacy := os.Stat(legacyWAL); errLegacy == nil {
+		if _, errP0 := os.Stat(p0WAL); os.IsNotExist(errP0) {
+			// v0.3 layout: single WAL file, no partitioned WALs → force PartitionCount=1
+			partitionCount = 1
+			db.dbConfig.PartitionCount = 1
+		}
+	}
+
+	// v0.4: Initialize partitions if PartitionCount > 1
+	if partitionCount > 1 {
+		return db.openPartitioned(dataDir, walDir, partitionCount)
+	}
+
+	// Legacy mode (PartitionCount=1): single WAL, datafile, index (v0.3 compatible)
+	return db.openLegacy(dataDir, walDir)
+}
+
+// openLegacy opens a LogicalDB in legacy mode (PartitionCount=1, v0.3 compatibility).
+func (db *LogicalDB) openLegacy(dataDir string, walDir string) error {
 	dbFile := filepath.Join(dataDir, fmt.Sprintf("%s.data", db.dbName))
 	db.dataFile = NewDataFile(dbFile, db.logger)
 	if err := db.dataFile.Open(); err != nil {
@@ -135,6 +478,9 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 	if err := db.wal.Open(); err != nil {
 		return fmt.Errorf("failed to open WAL: %w", err)
 	}
+
+	// Initialize index for legacy mode
+	db.index = NewIndex()
 
 	// Initialize checkpoint manager
 	db.checkpointMgr = wal.NewCheckpointManager(
@@ -163,11 +509,420 @@ func (db *LogicalDB) Open(dataDir string, walDir string) error {
 		db.healingService.Start()
 	}
 
-	// Add collection management methods
-	// Collections are initialized in NewLogicalDB and EnsureDefault() called above
-
-	db.logger.Info("Opened database: %s (id=%d)", db.dbName, db.dbID)
+	db.logger.Info("Opened database (legacy mode): %s (id=%d)", db.dbName, db.dbID)
 	return nil
+}
+
+// openPartitioned opens a LogicalDB in partitioned mode (v0.4, PartitionCount > 1).
+func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCount int) error {
+	// Ensure checkpoint directory exists
+	checkpointDir := filepath.Join(walDir, "checkpoints")
+	if err := os.MkdirAll(checkpointDir, 0755); err != nil {
+		return fmt.Errorf("failed to create checkpoint directory: %w", err)
+	}
+
+	// Create partitions
+	db.partitions = make([]*Partition, partitionCount)
+	for i := 0; i < partitionCount; i++ {
+		db.partitions[i] = NewPartition(i, db.dbConfig.QueueSize, db.memory, db.logger)
+
+		// Create partition WAL
+		walPath := filepath.Join(walDir, fmt.Sprintf("p%d.wal", i))
+		maxSize := db.dbConfig.MaxSegmentSize
+		if maxSize == 0 {
+			maxSize = int64(db.cfg.WAL.MaxFileSizeMB * 1024 * 1024)
+		}
+		partitionWAL := wal.NewPartitionWAL(i, walPath, uint64(maxSize), &db.cfg.WAL, db.logger)
+		partitionWAL.GetCheckpointManager().SetCheckpointPath(checkpointDir)
+		if err := partitionWAL.Open(); err != nil {
+			return fmt.Errorf("failed to open partition %d WAL: %w", i, err)
+		}
+		db.partitions[i].SetWAL(partitionWAL)
+
+		// Create partition datafile
+		partitionDataFile := NewDataFile(
+			filepath.Join(dataDir, fmt.Sprintf("%s_p%d.data", db.dbName, i)),
+			db.logger,
+		)
+		if err := partitionDataFile.Open(); err != nil {
+			return fmt.Errorf("failed to open partition %d datafile: %w", i, err)
+		}
+		db.partitions[i].SetDataFile(partitionDataFile)
+	}
+
+	// Create worker pool
+	db.workerPool = NewWorkerPool(db, db.dbConfig, db.logger)
+	db.workerPool.Start()
+
+	// Ensure default collection exists
+	db.collections.EnsureDefault()
+
+	// Parallel partition recovery: replay each partition's WAL (v0.4) and rebuild index.
+	var replayWg sync.WaitGroup
+	maxTxIDs := make([]uint64, partitionCount)
+	maxLSNs := make([]uint64, partitionCount)
+	replayErrs := make([]error, partitionCount)
+	for i := 0; i < partitionCount; i++ {
+		i := i
+		replayWg.Add(1)
+		go func() {
+			defer replayWg.Done()
+			walPath := filepath.Join(walDir, fmt.Sprintf("p%d.wal", i))
+			txID, lsn, err := db.replayPartitionWALForPartition(db.partitions[i], walPath)
+			maxTxIDs[i] = txID
+			maxLSNs[i] = lsn
+			replayErrs[i] = err
+		}()
+	}
+	replayWg.Wait()
+	for _, err := range replayErrs {
+		if err != nil {
+			return fmt.Errorf("partition recovery: %w", err)
+		}
+	}
+	// Set MVCC to max txID across all partitions + 1
+	globalMaxTxID := uint64(0)
+	for _, txID := range maxTxIDs {
+		if txID > globalMaxTxID {
+			globalMaxTxID = txID
+		}
+	}
+	if globalMaxTxID > 0 {
+		db.mvcc.SetCurrentTxID(globalMaxTxID + 1)
+	}
+	// Set each partition WAL's next LSN so new writes use maxLSN+1
+	for i := 0; i < partitionCount; i++ {
+		if db.partitions[i].GetWAL() != nil && maxLSNs[i] > 0 {
+			db.partitions[i].GetWAL().SetNextLSN(maxLSNs[i])
+		}
+	}
+
+	db.logger.Info("Opened database (partitioned mode): %s (id=%d, partitions=%d)", db.dbName, db.dbID, partitionCount)
+	return nil
+}
+
+// replayPartitionWALForPartition replays one partition's WAL (v0.4), applies committed
+// records to the partition's datafile and index, and syncs the datafile.
+// Returns the max txID, max LSN seen, and any error.
+func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPath string) (maxTxID, maxLSN uint64, err error) {
+	txRecords := make(map[uint64][]*types.WALRecord)
+	committed := make(map[uint64]bool)
+	lastCheckpointTxID := uint64(0)
+
+	err = wal.ReplayPartitionWAL(walPath, db.logger, func(rec *types.WALRecord) error {
+		if rec == nil {
+			return nil
+		}
+		if rec.LSN > maxLSN {
+			maxLSN = rec.LSN
+		}
+		txID := rec.TxID
+		if rec.OpType == types.OpCheckpoint {
+			if txID > lastCheckpointTxID {
+				lastCheckpointTxID = txID
+			}
+			return nil
+		}
+		if txID > maxTxID {
+			maxTxID = txID
+		}
+		switch rec.OpType {
+		case types.OpCommit:
+			committed[txID] = true
+		default:
+			txRecords[txID] = append(txRecords[txID], rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+
+	dataFile := partition.GetDataFile()
+	index := partition.GetIndex()
+
+	for txID, recs := range txRecords {
+		if !committed[txID] {
+			continue
+		}
+		if lastCheckpointTxID > 0 && txID <= lastCheckpointTxID {
+			continue
+		}
+		for _, rec := range recs {
+			collection := rec.Collection
+			if collection == "" {
+				collection = DefaultCollection
+			}
+			if !db.collections.Exists(collection) {
+				db.collections.mu.Lock()
+				db.collections.collections[collection] = &types.CollectionMetadata{
+					Name:      collection,
+					CreatedAt: time.Now(),
+					DocCount:  0,
+				}
+				db.collections.mu.Unlock()
+			}
+			switch rec.OpType {
+			case types.OpCreateCollection, types.OpDeleteCollection:
+				continue
+			case types.OpCreate:
+				offset, err := dataFile.WriteNoSync(rec.Payload)
+				if err != nil {
+					db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
+					continue
+				}
+				if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
+					db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
+					continue
+				}
+				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
+				index.Set(collection, version)
+				db.collections.IncrementDocCount(collection)
+			case types.OpUpdate, types.OpPatch:
+				existing, exists := index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
+				if !exists {
+					offset, err := dataFile.WriteNoSync(rec.Payload)
+					if err != nil {
+						db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
+						continue
+					}
+					if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
+						db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
+						continue
+					}
+					version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
+					index.Set(collection, version)
+					db.collections.IncrementDocCount(collection)
+				} else {
+					offset, err := dataFile.WriteNoSync(rec.Payload)
+					if err != nil {
+						db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
+						continue
+					}
+					oldMemory := uint64(existing.Length)
+					if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
+						db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
+						continue
+					}
+					if oldMemory > 0 {
+						db.memory.Free(db.dbID, oldMemory)
+					}
+					version := db.mvcc.UpdateVersion(existing, txID, offset, rec.PayloadLen)
+					index.Set(collection, version)
+				}
+			case types.OpDelete:
+				existing, exists := index.Get(collection, rec.DocID, db.mvcc.CurrentSnapshot())
+				if exists && existing.Length > 0 {
+					db.memory.Free(db.dbID, uint64(existing.Length))
+				}
+				version := db.mvcc.DeleteVersion(rec.DocID, txID)
+				index.Set(collection, version)
+				db.collections.DecrementDocCount(collection)
+			}
+		}
+	}
+
+	if err := dataFile.Sync(); err != nil {
+		db.logger.Warn("partition %d datafile sync after replay: %v", partition.ID(), err)
+	}
+	return maxTxID, maxLSN, nil
+}
+
+// scanPartitionRows scans one partition's index for a collection at the given snapshot
+// and returns rows (docID + payload). Lock-free read path.
+func (db *LogicalDB) scanPartitionRows(partition *Partition, collection string, snapshotTxID uint64) ([]query.Row, error) {
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	idx := partition.GetIndex()
+	dataFile := partition.GetDataFile()
+	var rows []query.Row
+	idx.ScanCollection(collection, snapshotTxID, func(docID uint64, version *types.DocumentVersion) bool {
+		data, err := dataFile.Read(version.Offset, version.Length)
+		if err != nil {
+			db.logger.Warn("query scan partition %d doc %d: read: %v", partition.ID(), docID, err)
+			return true
+		}
+		rows = append(rows, query.Row{DocID: docID, Payload: data})
+		return true
+	})
+	return rows, nil
+}
+
+// ExecuteQuery runs a server-side query: snapshot, partition fan-out (or legacy scan), merge, filter/order/limit.
+func (db *LogicalDB) ExecuteQuery(collection string, q query.Query) ([]query.Row, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.closed {
+		return nil, ErrDBNotOpen
+	}
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	if !db.collections.Exists(collection) {
+		return nil, errors.ErrCollectionNotFound
+	}
+
+	snap := db.mvcc.CurrentSnapshot()
+	var allRows []query.Row
+
+	if db.partitions != nil {
+		// Partitioned: fan-out to all partitions in parallel
+		var wg sync.WaitGroup
+		mu := sync.Mutex{}
+		for i := range db.partitions {
+			i := i
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				partRows, err := db.scanPartitionRows(db.partitions[i], collection, snap)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				allRows = append(allRows, partRows...)
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+	} else {
+		// Legacy: single index + datafile
+		db.index.ScanCollection(collection, snap, func(docID uint64, version *types.DocumentVersion) bool {
+			data, err := db.dataFile.Read(version.Offset, version.Length)
+			if err != nil {
+				db.logger.Warn("query scan doc %d: read: %v", docID, err)
+				return true
+			}
+			allRows = append(allRows, query.Row{DocID: docID, Payload: data})
+			return true
+		})
+	}
+
+	// Apply filter (simple JSON field predicate)
+	if q.Filter.Field != "" {
+		filtered := allRows[:0]
+		for _, r := range allRows {
+			if db.rowMatchesFilter(r, &q.Filter) {
+				filtered = append(filtered, r)
+			}
+		}
+		allRows = filtered
+	}
+
+	// Apply order (single field)
+	if q.OrderBy != nil && q.OrderBy.Field != "" {
+		db.sortRowsByField(allRows, q.OrderBy.Field, q.OrderBy.Asc)
+	}
+
+	// Apply limit
+	if q.Limit > 0 && len(allRows) > q.Limit {
+		allRows = allRows[:q.Limit]
+	}
+
+	return allRows, nil
+}
+
+// rowMatchesFilter returns true if the row's payload JSON matches the expression (eq, neq, etc.).
+func (db *LogicalDB) rowMatchesFilter(row query.Row, expr *query.Expression) bool {
+	var doc map[string]interface{}
+	if err := json.Unmarshal(row.Payload, &doc); err != nil {
+		return false
+	}
+	val, ok := doc[expr.Field]
+	if !ok {
+		return expr.Op == "neq"
+	}
+	cmp := compareValues(val, expr.Value)
+	switch expr.Op {
+	case "eq":
+		return cmp == 0
+	case "neq":
+		return cmp != 0
+	case "gt":
+		return cmp > 0
+	case "gte":
+		return cmp >= 0
+	case "lt":
+		return cmp < 0
+	case "lte":
+		return cmp <= 0
+	default:
+		return false
+	}
+}
+
+func compareValues(a, b interface{}) int {
+	// Simple comparison for numbers and strings
+	fa, oka := toFloat(a)
+	fb, okb := toFloat(b)
+	if oka && okb {
+		if fa < fb {
+			return -1
+		}
+		if fa > fb {
+			return 1
+		}
+		return 0
+	}
+	sa, oka := toString(a)
+	sb, okb := toString(b)
+	if oka && okb {
+		if sa < sb {
+			return -1
+		}
+		if sa > sb {
+			return 1
+		}
+		return 0
+	}
+	return 0
+}
+
+func toFloat(v interface{}) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	default:
+		return 0, false
+	}
+}
+
+func toString(v interface{}) (string, bool) {
+	s, ok := v.(string)
+	return s, ok
+}
+
+// sortRowsByField sorts rows in place by a JSON field (string or number).
+func (db *LogicalDB) sortRowsByField(rows []query.Row, field string, asc bool) {
+	// Extract sort key per row and sort
+	type kv struct {
+		key interface{}
+		row query.Row
+	}
+	var kvs []kv
+	for _, r := range rows {
+		var doc map[string]interface{}
+		if err := json.Unmarshal(r.Payload, &doc); err != nil {
+			kvs = append(kvs, kv{key: nil, row: r})
+			continue
+		}
+		kvs = append(kvs, kv{key: doc[field], row: r})
+	}
+	sort.Slice(kvs, func(i, j int) bool {
+		ci := compareValues(kvs[i].key, kvs[j].key)
+		if asc {
+			return ci < 0
+		}
+		return ci > 0
+	})
+	for i := range rows {
+		rows[i] = kvs[i].row
+	}
 }
 
 // Patch applies path-based updates to a document atomically.
@@ -426,18 +1181,40 @@ func (db *LogicalDB) Close() error {
 		return nil
 	}
 
+	// Stop worker pool (v0.4)
+	if db.workerPool != nil {
+		db.workerPool.Stop()
+		db.workerPool = nil
+	}
+
 	// Stop healing service
 	if db.healingService != nil {
 		db.healingService.Stop()
 		db.healingService = nil
 	}
 
+	// Close partitions (v0.4)
+	if db.partitions != nil {
+		for _, partition := range db.partitions {
+			if w := partition.GetWAL(); w != nil {
+				w.Close()
+			}
+			if df := partition.GetDataFile(); df != nil {
+				df.Close()
+			}
+		}
+		db.partitions = nil
+	}
+
+	// Close legacy WAL and datafile (PartitionCount=1)
 	if db.wal != nil {
 		db.wal.Close()
+		db.wal = nil
 	}
 
 	if db.dataFile != nil {
 		db.dataFile.Close()
+		db.dataFile = nil
 	}
 
 	db.closed = true

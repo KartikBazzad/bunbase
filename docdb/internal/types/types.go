@@ -61,6 +61,7 @@ type CatalogEntry struct {
 
 type WALRecord struct {
 	Length     uint64
+	LSN        uint64 // v0.4: partition-local LSN (0 for v0.1/v0.2)
 	TxID       uint64
 	DBID       uint64
 	Collection string // Collection name (empty for v0.1 records, defaults to "_default")

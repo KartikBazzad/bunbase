@@ -133,3 +133,46 @@ func (r *Recovery) truncateSegment(walPath string, reader *Reader) error {
 func (r *Recovery) isActiveWAL(walPath string) bool {
 	return walPath == r.basePath
 }
+
+// ReplayPartitionWAL replays a single partition's WAL (v0.4 format) from basePath.
+// It discovers all segments (basePath, basePath.1, ...) via Rotator and replays each
+// using DecodeRecordV4. Handler is invoked for each record in order.
+// Returns nil if no WAL exists or replay completes; returns error on decode/read failure.
+func ReplayPartitionWAL(walBasePath string, log *logger.Logger, handler RecoveryHandler) error {
+	rotator := NewRotator(walBasePath, 0, false, log)
+	walPaths, err := rotator.GetAllWALPaths()
+	if err != nil {
+		return fmt.Errorf("partition WAL list: %w", err)
+	}
+	if len(walPaths) == 0 {
+		return nil
+	}
+
+	for _, path := range walPaths {
+		reader := NewReader(path, log)
+		if err := reader.Open(); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("open %s: %w", path, err)
+		}
+		for {
+			record, err := reader.NextV4()
+			if err != nil {
+				reader.Close()
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			if record == nil {
+				break
+			}
+			if handler != nil {
+				if err := handler(record); err != nil {
+					reader.Close()
+					return err
+				}
+			}
+		}
+		reader.Close()
+	}
+	return nil
+}

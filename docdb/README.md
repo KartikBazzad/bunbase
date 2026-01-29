@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer:** This is a **toy / learning system**, not a production database. Correctness > features. Simplicity > generality.
 
-DocDB is a file-based, ACID document database written in Go. It supports multiple logical databases in one runtime, avoids SQLite's single-writer collapse, and enables concurrent writes through scheduler + MVCC-lite.
+DocDB is a file-based, ACID document database written in Go. It supports multiple logical databases in one runtime, avoids SQLite's single-writer collapse, and enables concurrent writes through **multiple LogicalDBs** rather than threads inside a single DB (single-writer-per-LogicalDB model).
 
 ## Features
 
@@ -196,14 +196,14 @@ func main() {
 
 ## Core Concepts
 
-| Concept         | Meaning                                   |
-| --------------- | ----------------------------------------- |
-| **DocDB Pool**  | One runtime managing many logical DBs     |
-| **Logical DB**  | Isolated document namespace (per project) |
-| **Document**    | Valid UTF-8 encoded JSON value            |
-| **Transaction** | Short-lived atomic write group            |
-| **WAL**         | Global append-only write-ahead log        |
-| **MVCC-lite**   | Versioned documents, snapshot reads       |
+| Concept         | Meaning                                                           |
+| --------------- | ----------------------------------------------------------------- |
+| **DocDB Pool**  | One runtime managing many logical DBs                             |
+| **Logical DB**  | Isolated document namespace (per project), single-writer executor |
+| **Document**    | Valid UTF-8 encoded JSON value                                    |
+| **Transaction** | Short-lived atomic write group                                    |
+| **WAL**         | Global append-only write-ahead log                                |
+| **MVCC-lite**   | Versioned documents, snapshot reads                               |
 
 ## Operations
 
@@ -234,13 +234,13 @@ go test -bench=. ./tests/benchmarks
 
 ## Performance Targets (Toy-Realistic)
 
-| Metric             | Target                    |
-| ------------------ | ------------------------- |
-| Concurrent writers | 10–100                    |
-| P95 latency        | < 100ms (disk permitting) |
-| P99 latency        | Bounded                   |
-| Throughput         | Disk-bound                |
-| Startup time       | < 500ms (small DBs)       |
+| Metric             | Target                          |
+| ------------------ | ------------------------------- |
+| Concurrent writers | 10–100 (across many LogicalDBs) |
+| P95 latency        | < 100ms (disk permitting)       |
+| P99 latency        | Bounded                         |
+| Throughput         | Disk-bound                      |
+| Startup time       | < 500ms (small DBs)             |
 
 ## Documentation
 

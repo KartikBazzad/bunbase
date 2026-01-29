@@ -10,6 +10,10 @@ const (
 	PayloadLenSize    = 4
 	CRCSize           = 4
 
+	// v0.4 format: LSN and PayloadCRC
+	LSNSize        = 8
+	PayloadCRCSize = 4
+
 	// v0.1 format (no collection field)
 	HeaderSizeV1     = RecordLenSize + TxIDSize + DBIDSize + OpTypeSize + DocIDSize + PayloadLenSize
 	RecordOverheadV1 = HeaderSizeV1 + CRCSize
@@ -18,6 +22,10 @@ const (
 	// Note: Collection name length is variable, so HeaderSizeV2 is minimum
 	HeaderSizeV2Min     = RecordLenSize + TxIDSize + DBIDSize + CollectionLenSize + OpTypeSize + DocIDSize + PayloadLenSize
 	RecordOverheadV2Min = HeaderSizeV2Min + CRCSize
+
+	// v0.4 format (partition WAL: LSN, PayloadCRC)
+	HeaderSizeV4Min     = RecordLenSize + LSNSize + TxIDSize + DBIDSize + CollectionLenSize + OpTypeSize + DocIDSize + PayloadLenSize + PayloadCRCSize
+	RecordOverheadV4Min = HeaderSizeV4Min + CRCSize
 
 	// For backward compatibility, use v0.1 constants as defaults
 	HeaderSize     = HeaderSizeV1

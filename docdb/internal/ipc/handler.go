@@ -145,6 +145,26 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 		response.Status = types.StatusOK
 		response.Data = serializeResponses(responses)
 
+	case CmdQuery:
+		if frame.DBID == 0 || len(frame.Ops) == 0 {
+			response.Status = types.StatusError
+			response.Data = []byte("invalid query: need DBID and at least one op with collection")
+			return response
+		}
+		collection := frame.Ops[0].Collection
+		if collection == "" {
+			collection = "_default"
+		}
+		queryPayload := frame.Ops[0].Payload
+		data, err := h.pool.ExecuteQuery(frame.DBID, collection, queryPayload)
+		if err != nil {
+			response.Status = types.StatusError
+			response.Data = []byte(err.Error())
+			return response
+		}
+		response.Status = types.StatusOK
+		response.Data = data
+
 	case CmdCreateCollection:
 		if frame.DBID == 0 || len(frame.Ops) == 0 || frame.Ops[0].Collection == "" {
 			response.Status = types.StatusError

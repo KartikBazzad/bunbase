@@ -17,7 +17,7 @@ This document describes DocDB's concurrency model, locking strategy, and concurr
 
 ## Overview
 
-DocDB uses a **multi-level locking strategy** to enable concurrent operations while maintaining data integrity:
+DocDB uses a **multi-level locking strategy** combined with a **single-writer-per-LogicalDB execution model** to enable concurrent operations while maintaining data integrity:
 
 1. **Database-Level Locking**: RWMutex on LogicalDB
 2. **Index-Level Locking**: Per-shard RWMutex (256 shards)
@@ -42,16 +42,17 @@ DocDB uses a **multi-level locking strategy** to enable concurrent operations wh
 
 **Lock Acquisition:**
 
-| Operation | Lock Type | Scope |
-|-----------|-----------|-------|
+| Operation | Lock Type | Scope     |
+| --------- | --------- | --------- |
 | Create    | Write     | Exclusive |
 | Update    | Write     | Exclusive |
 | Delete    | Write     | Exclusive |
 | Commit    | Write     | Exclusive |
-| Read      | Read      | Shared |
-| Stats     | Read      | Shared |
+| Read      | Read      | Shared    |
+| Stats     | Read      | Shared    |
 
 **Implementation:**
+
 ```go
 type LogicalDB struct {
     mu sync.RWMutex // Protects all internal state
@@ -74,6 +75,7 @@ func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
 ```
 
 **Behavior:**
+
 - **Writes**: Exclusive lock, blocks all other operations
 - **Reads**: Shared lock, allows concurrent reads
 - **Write-Write**: Serialized (one at a time)
@@ -87,11 +89,13 @@ func (db *LogicalDB) Read(docID uint64) ([]byte, error) {
 **Lock Type:** Per-shard `sync.RWMutex` (256 shards)
 
 **Sharding Strategy:**
+
 ```go
 shardID = docID % numShards  // Default: 256 shards
 ```
 
 **Implementation:**
+
 ```go
 type Index struct {
     shards [256]*shard
@@ -105,20 +109,22 @@ type shard struct {
 func (idx *Index) Get(docID uint64, snapshotTxID uint64) (*DocumentVersion, bool) {
     shardID := docID % 256
     shard := idx.shards[shardID]
-    
+
     shard.mu.RLock()        // Shared lock on shard
     defer shard.mu.RUnlock()
-    
+
     // ... lookup logic ...
 }
 ```
 
 **Benefits:**
+
 - **Reduced Contention**: Locks at shard level, not global
 - **Concurrent Reads**: Different shards don't block each other
 - **Scalability**: Can handle concurrent reads better
 
 **Example:**
+
 ```
 Document 1 (shard 1) ← Read lock on shard 1
 Document 2 (shard 2) ← Read lock on shard 2
@@ -133,6 +139,7 @@ Document 4 (shard 3) ← Read lock on shard 3 (concurrent with 1 and 2)
 **Lock Type:** `sync.RWMutex` on TransactionManager
 
 **Usage:**
+
 - **Begin**: Write lock (assigns transaction ID)
 - **Get**: Read lock (lookup transaction)
 - **Commit/Rollback**: Write lock (updates transaction state)
@@ -144,10 +151,12 @@ Document 4 (shard 3) ← Read lock on shard 3 (concurrent with 1 and 2)
 ### Shard Distribution
 
 **Default Configuration:**
+
 - 256 shards (fixed)
 - Hash-based distribution: `shardID = docID % 256`
 
 **Shard Locking:**
+
 ```
 ┌─────────────────────────────────────────┐
 │         Sharded Index (256 shards)     │
@@ -164,6 +173,7 @@ Document 4 (shard 3) ← Read lock on shard 3 (concurrent with 1 and 2)
 ### Concurrent Read Patterns
 
 **Pattern 1: Different Shards (No Contention)**
+
 ```
 Thread 1: Read docID = 1  (shard 1) → RLock shard 1
 Thread 2: Read docID = 2  (shard 2) → RLock shard 2
@@ -173,6 +183,7 @@ Result: All three reads proceed concurrently
 ```
 
 **Pattern 2: Same Shard (Contention)**
+
 ```
 Thread 1: Read docID = 1  (shard 1) → RLock shard 1
 Thread 2: Read docID = 257 (shard 1) → Waits for RLock shard 1
@@ -182,6 +193,7 @@ Result: Thread 2 and 3 wait, but can proceed concurrently after Thread 1
 ```
 
 **Pattern 3: Mixed Read-Write**
+
 ```
 Thread 1: Read docID = 1   (shard 1) → RLock shard 1
 Thread 2: Write docID = 1  (shard 1) → Waits for WLock shard 1
@@ -193,14 +205,17 @@ Result: Thread 3 proceeds, Thread 2 waits for Thread 1
 ### Write Serialization
 
 **Database-Level:**
+
 - All writes acquire exclusive database lock
 - Writes are serialized globally (one at a time per database)
 
 **Shard-Level:**
+
 - Within write, shard locks acquired per operation
 - Multiple shards can be updated in single write (batch)
 
 **Example:**
+
 ```
 Write 1: Update docID = 1 (shard 1), docID = 2 (shard 2)
   → Database lock (exclusive)
@@ -226,6 +241,7 @@ Write 2: Update docID = 3 (shard 3)
 **Scenario:** Multiple threads reading different documents.
 
 **Locking:**
+
 ```
 Thread 1: RLock database → RLock shard 1 → Read → Unlock
 Thread 2: RLock database → RLock shard 2 → Read → Unlock
@@ -239,6 +255,7 @@ Thread 3: RLock database → RLock shard 3 → Read → Unlock
 **Scenario:** Reader attempts to read while write is in progress.
 
 **Locking:**
+
 ```
 Writer:   Lock database (exclusive) → Write → Unlock
 Reader:   Waits for RLock database → RLock → Read → Unlock
@@ -251,6 +268,7 @@ Reader:   Waits for RLock database → RLock → Read → Unlock
 **Scenario:** Writer attempts to write while readers are active.
 
 **Locking:**
+
 ```
 Reader 1: RLock database → Read → Unlock
 Reader 2: RLock database → Read → Unlock
@@ -264,6 +282,7 @@ Writer:   Waits for Lock database → Lock → Write → Unlock
 **Scenario:** Multiple threads attempting to write simultaneously.
 
 **Locking:**
+
 ```
 Writer 1: Lock database → Write → Unlock
 Writer 2: Waits for Lock database → Lock → Write → Unlock
@@ -279,6 +298,7 @@ Writer 3: Waits for Lock database → Lock → Write → Unlock
 ### Request Scheduling
 
 **Architecture:**
+
 ```
 ┌─────────────────────────────────────────┐
 │           Scheduler                     │
@@ -299,6 +319,7 @@ Writer 3: Waits for Lock database → Lock → Write → Unlock
 ### Round-Robin Scheduling
 
 **Algorithm:**
+
 ```go
 func (s *Scheduler) worker() {
     for {
@@ -306,7 +327,7 @@ func (s *Scheduler) worker() {
         s.currentDB = (s.currentDB + 1) % len(s.dbIDs)
         dbID := s.dbIDs[s.currentDB]
         queue := s.queues[dbID]
-        
+
         // Process one request from queue
         req := <-queue
         s.pool.handleRequest(req)
@@ -315,6 +336,7 @@ func (s *Scheduler) worker() {
 ```
 
 **Fairness:**
+
 - Each database gets equal service time
 - No database can monopolize workers
 - Starvation prevention built-in
@@ -322,11 +344,13 @@ func (s *Scheduler) worker() {
 ### Worker Pool
 
 **Configuration:**
+
 - Default: 4 workers
 - Fixed size (not configurable in v0)
 - Each worker processes one request at a time
 
 **Concurrency:**
+
 - Up to 4 requests processed concurrently
 - Each request may target different database
 - Database-level locking serializes per-database operations
@@ -338,11 +362,13 @@ func (s *Scheduler) worker() {
 ### Memory Allocation Tracking
 
 **Per-Database Limits:**
+
 - Each database has configurable memory limit
 - Memory usage tracked per database
 - Allocation failures return `ErrMemoryLimit`
 
 **Thread Safety:**
+
 ```go
 type Caps struct {
     mu      sync.RWMutex
@@ -362,6 +388,7 @@ func (c *Caps) TryAllocate(dbID uint64, size uint64) bool {
 **Purpose:** Efficient buffer allocation and reuse.
 
 **Thread Safety:**
+
 - Buffer pool is thread-safe
 - Buffers can be allocated concurrently
 - Buffers returned to pool safely
@@ -373,16 +400,19 @@ func (c *Caps) TryAllocate(dbID uint64, size uint64) bool {
 ### Read Performance
 
 **Best Case:**
+
 - Different shards: Fully concurrent
 - No contention: O(1) lookup
 - Memory-only: Sub-millisecond latency
 
 **Worst Case:**
+
 - Same shard: Serialized reads
 - High contention: Queue behind writes
 - Disk I/O: Millisecond latency
 
 **Typical:**
+
 - 100+ concurrent readers (different shards)
 - 0.1-1ms latency per read
 - Limited by memory bandwidth
@@ -390,12 +420,14 @@ func (c *Caps) TryAllocate(dbID uint64, size uint64) bool {
 ### Write Performance
 
 **Characteristics:**
+
 - Serialized per database (one at a time)
 - WAL write overhead (disk I/O)
 - Index update overhead
 - 1-10ms latency per write
 
 **Bottlenecks:**
+
 - Disk I/O (WAL writes)
 - Fsync (if enabled)
 - Index updates
@@ -403,11 +435,13 @@ func (c *Caps) TryAllocate(dbID uint64, size uint64) bool {
 ### Concurrent Operations
 
 **Throughput:**
+
 - Reads: 1000+ ops/sec (concurrent)
 - Writes: 100-1000 ops/sec (serialized)
 - Mixed: Depends on read/write ratio
 
 **Scalability:**
+
 - Reads scale with number of shards (256)
 - Writes scale with number of databases
 - Limited by disk I/O and memory
@@ -461,12 +495,14 @@ func (c *Caps) TryAllocate(dbID uint64, size uint64) bool {
 ### 1. Distribute Document IDs
 
 **Good:**
+
 ```go
 // Document IDs distributed across shards
 docID = hash(userID) % maxDocID
 ```
 
 **Bad:**
+
 ```go
 // Sequential IDs → all in same shard
 docID = counter++
@@ -475,6 +511,7 @@ docID = counter++
 ### 2. Batch Operations
 
 **Good:**
+
 ```go
 // Single transaction with multiple operations
 tx := db.Begin()
@@ -485,6 +522,7 @@ db.Commit(tx)
 ```
 
 **Bad:**
+
 ```go
 // Multiple transactions (more locking overhead)
 for i := 0; i < 100; i++ {
@@ -495,11 +533,13 @@ for i := 0; i < 100; i++ {
 ### 3. Read-Heavy Workloads
 
 **Good:**
+
 - Use different document IDs (different shards)
 - Leverage concurrent reads
 - Minimize writes
 
 **Bad:**
+
 - All reads from same shard
 - Frequent writes blocking reads
 - Hot shards
@@ -507,11 +547,13 @@ for i := 0; i < 100; i++ {
 ### 4. Write-Heavy Workloads
 
 **Good:**
+
 - Use multiple databases (parallel writes)
 - Batch operations
 - Disable fsync if durability not critical
 
 **Bad:**
+
 - Single database (serialized writes)
 - Many small transactions
 - Fsync on every commit

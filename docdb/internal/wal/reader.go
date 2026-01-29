@@ -87,7 +87,7 @@ func (r *Reader) Next() (*types.WALRecord, error) {
 
 	recordLen := byteOrder.Uint64(lenBuf)
 
-	if recordLen < RecordLenSize || recordLen > MaxPayloadSize+RecordOverhead {
+	if recordLen < RecordLenSize || recordLen > MaxPayloadSize+RecordOverheadV4Min {
 		return nil, ErrCorruptRecord
 	}
 
@@ -109,6 +109,41 @@ func (r *Reader) Next() (*types.WALRecord, error) {
 	}
 
 	return record, nil
+}
+
+// NextV4 reads the next WAL record and decodes it as v0.4 format (LSN, PayloadCRC).
+// Use for partition WAL replay. Returns (nil, nil) on EOF.
+func (r *Reader) NextV4() (*types.WALRecord, error) {
+	if r.file == nil {
+		return nil, ErrFileRead
+	}
+
+	lenBuf := make([]byte, RecordLenSize)
+	_, err := io.ReadFull(r.file, lenBuf)
+	if err != nil {
+		if err == io.EOF {
+			return nil, nil
+		}
+		return nil, ErrCorruptRecord
+	}
+
+	recordLen := byteOrder.Uint64(lenBuf)
+	if recordLen < RecordOverheadV4Min || recordLen > MaxPayloadSize+RecordOverheadV4Min {
+		return nil, ErrCorruptRecord
+	}
+
+	remaining := recordLen - RecordLenSize
+	buf := make([]byte, remaining)
+	_, err = io.ReadFull(r.file, buf)
+	if err != nil {
+		return nil, ErrCorruptRecord
+	}
+
+	fullRecord := make([]byte, recordLen)
+	copy(fullRecord[:RecordLenSize], lenBuf)
+	copy(fullRecord[RecordLenSize:], buf)
+
+	return DecodeRecordV4(fullRecord)
 }
 
 func (r *Reader) Close() error {

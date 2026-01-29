@@ -40,6 +40,7 @@ const (
 	CmdHealAll          = 10
 	CmdHealStats        = 11
 	CmdMetrics          = 12
+	CmdQuery            = 13 // v0.4: server-side query (fan-out + merge)
 )
 
 type RequestFrame struct {

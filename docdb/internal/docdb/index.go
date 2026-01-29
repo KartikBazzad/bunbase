@@ -145,6 +145,23 @@ func (s *IndexShard) Snapshot() map[uint64]*types.DocumentVersion {
 	return snapshot
 }
 
+// ScanVisible calls fn for each document version visible in the given snapshot.
+// Returns false if fn returned false (caller should stop). Used for query/collection scan.
+func (s *IndexShard) ScanVisible(snapshotTxID uint64, fn func(docID uint64, version *types.DocumentVersion) bool) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for docID, version := range s.data {
+		if !s.isVisible(version, snapshotTxID) {
+			continue
+		}
+		if !fn(docID, version) {
+			return false
+		}
+	}
+	return true
+}
+
 // CollectionIndex manages the index for a single collection.
 type CollectionIndex struct {
 	mu     sync.RWMutex
@@ -206,6 +223,20 @@ func (ci *CollectionIndex) ForEach(fn func(docID uint64, version *types.Document
 			fn(docID, version)
 		}
 	}
+}
+
+// ScanVisible calls fn for each document in this collection visible at snapshotTxID.
+// Returns false if fn returned false (caller should stop).
+func (ci *CollectionIndex) ScanVisible(snapshotTxID uint64, fn func(docID uint64, version *types.DocumentVersion) bool) bool {
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
+
+	for _, shard := range ci.shards {
+		if !shard.ScanVisible(snapshotTxID, fn) {
+			return false
+		}
+	}
+	return true
 }
 
 func (ci *CollectionIndex) LiveCount() int {
@@ -309,6 +340,16 @@ func (idx *Index) ForEach(collection string, fn func(docID uint64, version *type
 		return
 	}
 	ci.ForEach(fn)
+}
+
+// ScanCollection calls fn for each document in the collection visible at snapshotTxID.
+// Used by query engine for partition scan. Returns false if fn returned false.
+func (idx *Index) ScanCollection(collection string, snapshotTxID uint64, fn func(docID uint64, version *types.DocumentVersion) bool) bool {
+	ci := idx.getCollectionIndex(collection)
+	if ci == nil {
+		return true
+	}
+	return ci.ScanVisible(snapshotTxID, fn)
 }
 
 func (idx *Index) ForEachCollection(fn func(collection string, ci *CollectionIndex)) {

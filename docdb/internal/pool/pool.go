@@ -16,6 +16,7 @@
 package pool
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/kartikbazzad/docdb/internal/catalog"
@@ -24,6 +25,7 @@ import (
 	docdberrors "github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/memory"
+	"github.com/kartikbazzad/docdb/internal/query"
 	"github.com/kartikbazzad/docdb/internal/types"
 )
 
@@ -121,7 +123,18 @@ func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	bufferPool := memory.NewBufferPool(cfg.Memory.BufferSizes)
 	catalog := catalog.NewCatalog(cfg.DataDir+"/.catalog", log)
 	sched := NewScheduler(cfg.Sched.QueueDepth, log)
-	sched.SetWorkerConfig(cfg.Sched.WorkerCount, cfg.Sched.MaxWorkers)
+	// Enforce single-writer-by-default: only allow multiple workers when explicitly enabled.
+	workerCount := cfg.Sched.WorkerCount
+	maxWorkers := cfg.Sched.MaxWorkers
+	if !cfg.Sched.UnsafeMultiWriter {
+		if workerCount == 0 || workerCount > 1 {
+			workerCount = 1
+		}
+		if maxWorkers == 0 || maxWorkers > 1 {
+			maxWorkers = 1
+		}
+	}
+	sched.SetWorkerConfig(workerCount, maxWorkers)
 	sched.SetAntsOptions(cfg.Sched.WorkerExpiry, cfg.Sched.PreAlloc)
 
 	return &Pool{
@@ -299,6 +312,35 @@ func (p *Pool) handleRequest(req *Request) {
 		return
 	}
 
+	// v0.4: If LogicalDB is partitioned, submit task to worker pool and wait for result
+	if db.PartitionCount() > 1 {
+		partitionID := docdb.RouteToPartition(req.DocID, db.PartitionCount())
+		var task *docdb.Task
+		switch req.OpType {
+		case types.OpCreate:
+			task = docdb.NewTaskWithPayload(partitionID, types.OpCreate, req.Collection, req.DocID, req.Payload)
+		case types.OpRead:
+			task = docdb.NewTask(partitionID, types.OpRead, req.Collection, req.DocID)
+		case types.OpUpdate:
+			task = docdb.NewTaskWithPayload(partitionID, types.OpUpdate, req.Collection, req.DocID, req.Payload)
+		case types.OpDelete:
+			task = docdb.NewTask(partitionID, types.OpDelete, req.Collection, req.DocID)
+		case types.OpPatch:
+			task = docdb.NewTaskWithPatch(partitionID, req.Collection, req.DocID, req.PatchOps)
+		default:
+			req.Response <- Response{Status: types.StatusError, Error: docdberrors.ErrUnknownOperation}
+			return
+		}
+		result := db.SubmitTaskAndWait(task)
+		req.Response <- Response{
+			Status: result.Status,
+			Data:   result.Data,
+			Error:  result.Error,
+		}
+		return
+	}
+
+	// Legacy path (PartitionCount <= 1): direct db operations
 	var data []byte
 	var err error
 
@@ -485,4 +527,68 @@ func (p *Pool) HealStats(dbID uint64) (docdb.HealingStats, error) {
 
 	stats := db.HealingService().GetStats()
 	return stats, nil
+}
+
+// querySpec is the JSON wire format for CmdQuery payload.
+type querySpec struct {
+	Filter *struct {
+		Field, Op string
+		Value     interface{}
+	} `json:"filter"`
+	Limit   int `json:"limit"`
+	OrderBy *struct {
+		Field string
+		Asc   bool
+	} `json:"orderBy"`
+}
+
+// ExecuteQuery runs a server-side query on the database and returns rows as JSON.
+// queryPayload is JSON: {"filter":{"field":"x","op":"eq","value":1},"limit":10,"orderBy":{"field":"id","asc":true}}
+func (p *Pool) ExecuteQuery(dbID uint64, collection string, queryPayload []byte) ([]byte, error) {
+	if p.stopped {
+		return nil, ErrPoolStopped
+	}
+
+	db, err := p.OpenDB(dbID)
+	if err != nil {
+		return nil, err
+	}
+
+	q := query.Query{}
+	if len(queryPayload) > 0 {
+		var spec querySpec
+		if err := json.Unmarshal(queryPayload, &spec); err != nil {
+			return nil, err
+		}
+		if spec.Filter != nil {
+			q.Filter = query.Expression{
+				Field: spec.Filter.Field,
+				Op:    spec.Filter.Op,
+				Value: spec.Filter.Value,
+			}
+		}
+		q.Limit = spec.Limit
+		if spec.OrderBy != nil {
+			q.OrderBy = &query.OrderSpec{
+				Field: spec.OrderBy.Field,
+				Asc:   spec.OrderBy.Asc,
+			}
+		}
+	}
+
+	rows, err := db.ExecuteQuery(collection, q)
+	if err != nil {
+		return nil, err
+	}
+
+	// Serialize rows as JSON array of { "docID": N, "payload": <raw JSON bytes as string or base64?> }
+	// Use array of objects with docID and payload (payload as JSON-encoded string for simplicity)
+	out := make([]map[string]interface{}, len(rows))
+	for i, r := range rows {
+		out[i] = map[string]interface{}{
+			"docID":   r.DocID,
+			"payload": json.RawMessage(r.Payload),
+		}
+	}
+	return json.Marshal(out)
 }

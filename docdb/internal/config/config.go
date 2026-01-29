@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"runtime"
+	"time"
+)
 
 type Config struct {
 	DataDir string
@@ -51,12 +54,13 @@ type CheckpointConfig struct {
 }
 
 type SchedulerConfig struct {
-	QueueDepth    int
-	RoundRobinDBs bool
-	WorkerCount   int         // Number of scheduler workers (0 = auto-scale)
-	MaxWorkers    int         // Maximum workers for auto-tuning (default: 256)
-	WorkerExpiry  time.Duration // Goroutine expiry for ants pool (default: 1s)
-	PreAlloc      bool        // Pre-allocate goroutine queue (default: false)
+	QueueDepth        int           // Per-DB queue depth (backpressure)
+	RoundRobinDBs     bool          // Whether to use round-robin across DBs (may be ignored in executor mode)
+	WorkerCount       int           // Number of scheduler workers (0 = auto-scale; v0.4: recommended = 1)
+	MaxWorkers        int           // Maximum workers for auto-tuning (default: 256)
+	WorkerExpiry      time.Duration // Goroutine expiry for ants pool (default: 1s)
+	PreAlloc          bool          // Pre-allocate goroutine queue (default: false)
+	UnsafeMultiWriter bool          // Allow more than one scheduler worker (can increase contention)
 }
 
 type DBConfig struct {
@@ -64,6 +68,15 @@ type DBConfig struct {
 	CompactionTombstoneRatio  float64
 	MaxOpenDBs                int
 	IdleTimeout               time.Duration
+}
+
+// LogicalDBConfig configures partitioning and execution for a LogicalDB (v0.4).
+type LogicalDBConfig struct {
+	PartitionCount      int           // Number of partitions (default: 16)
+	WorkerCount         int           // Number of workers per LogicalDB (default: NumCPU)
+	QueueSize           int           // Task queue size per partition (default: 1024)
+	GroupCommitInterval time.Duration // WAL group commit interval per partition (default: 1-5ms)
+	MaxSegmentSize      int64         // Max WAL segment size per partition (default: from WALConfig)
 }
 
 type IPCConfig struct {
@@ -106,12 +119,13 @@ func DefaultConfig() *Config {
 			},
 		},
 		Sched: SchedulerConfig{
-			QueueDepth:    100,
-			RoundRobinDBs: true,
-			WorkerCount:   0,           // 0 = dynamic auto-scaling
-			MaxWorkers:    256,         // Cap auto-tuning
-			WorkerExpiry:  time.Second, // Idle goroutine expiry for ants
-			PreAlloc:      false,       // Pre-allocate ring buffer
+			QueueDepth:        100,
+			RoundRobinDBs:     true,
+			WorkerCount:       1,           // v0.4: single worker by default (single-writer per DB)
+			MaxWorkers:        1,           // cap at 1 unless UnsafeMultiWriter is set
+			WorkerExpiry:      time.Second, // Idle goroutine expiry for ants
+			PreAlloc:          false,       // Pre-allocate ring buffer
+			UnsafeMultiWriter: false,
 		},
 		DB: DBConfig{
 			CompactionSizeThresholdMB: 100,
@@ -130,5 +144,16 @@ func DefaultConfig() *Config {
 			OnReadCorruption: true,
 			MaxBatchSize:     100,
 		},
+	}
+}
+
+// DefaultLogicalDBConfig returns default configuration for a LogicalDB (v0.4).
+func DefaultLogicalDBConfig() *LogicalDBConfig {
+	return &LogicalDBConfig{
+		PartitionCount:      16,
+		WorkerCount:         runtime.NumCPU(),
+		QueueSize:           1024,
+		GroupCommitInterval: 1 * time.Millisecond,
+		MaxSegmentSize:      64 * 1024 * 1024, // 64MB default
 	}
 }

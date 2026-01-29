@@ -93,7 +93,8 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 		result.Duration = result.EndTime.Sub(result.StartTime)
 		return result
 	}
-	result.OutputPath = filepath.Join(jsonDir, mr.config.GetOutputPath(config))
+	outputFilename := mr.config.GetOutputPath(config)
+	result.OutputPath = filepath.Join(jsonDir, outputFilename)
 
 	// Build command - use relative path from project root
 	cmd := exec.Command(
@@ -104,7 +105,8 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 		"-duration", mr.config.Duration.String(),
 		"-socket", mr.config.SocketPath,
 		"-wal-dir", mr.config.WALDir,
-		"-output", result.OutputPath,
+		"-output-dir", mr.config.OutputDir,
+		"-output", outputFilename,
 		"-doc-size", fmt.Sprintf("%d", mr.config.DocumentSize),
 		"-doc-count", fmt.Sprintf("%d", mr.config.DocumentCount),
 		"-read-percent", fmt.Sprintf("%d", mr.config.ReadPercent),
