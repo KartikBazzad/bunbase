@@ -14,6 +14,7 @@ const (
 	OpPatch
 	OpCreateCollection
 	OpDeleteCollection
+	OpAbort // Multi-partition 2PC: abort decision (must be last to preserve existing WAL byte values)
 )
 
 type Status byte

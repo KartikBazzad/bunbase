@@ -85,6 +85,19 @@ type LogicalDB struct {
 	healingService *HealingService      // Automatic document healing service
 	collections    *CollectionRegistry  // Collection management
 	querySemaphore chan struct{}        // Phase D.8: Semaphore for concurrent query limiting
+	coordinator    *CoordinatorLog      // Multi-partition 2PC: decision log (commit/abort)
+}
+
+// preparedPartitionState holds state for one prepared partition during 2PC Phase 1.
+type preparedPartitionState struct {
+	partition *Partition
+	recs      []*types.WALRecord
+	meta      []struct {
+		offset      uint64
+		length      uint32
+		existingVer *types.DocumentVersion
+	}
+	allocSoFar uint64
 }
 
 func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memory.Caps, pool *memory.BufferPool, log *logger.Logger) *LogicalDB {
@@ -94,11 +107,12 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 	}
 	querySemaphore := make(chan struct{}, maxConcurrentQueries)
 
+	mvcc := NewMVCC()
 	db := &LogicalDB{
 		dbID:           dbID,
 		dbName:         dbName,
-		mvcc:           NewMVCC(),
-		txManager:      NewTransactionManager(NewMVCC()),
+		mvcc:           mvcc,
+		txManager:      NewTransactionManager(mvcc),
 		memory:         memCaps,
 		pool:           pool,
 		cfg:            cfg,
@@ -124,12 +138,13 @@ func NewLogicalDBWithConfig(dbID uint64, dbName string, cfg *config.Config, dbCf
 	}
 	querySemaphore := make(chan struct{}, maxConcurrentQueries)
 
+	mvcc := NewMVCC()
 	db := &LogicalDB{
 		dbID:           dbID,
 		dbName:         dbName,
 		dbConfig:       dbCfg,
-		mvcc:           NewMVCC(),
-		txManager:      NewTransactionManager(NewMVCC()),
+		mvcc:           mvcc,
+		txManager:      NewTransactionManager(mvcc),
 		memory:         memCaps,
 		pool:           pool,
 		cfg:            cfg,
@@ -560,6 +575,17 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 	// Ensure default collection exists
 	db.collections.EnsureDefault()
 
+	// Coordinator log for multi-partition 2PC: replay first so we can resolve in-doubt transactions.
+	coordinatorPath := filepath.Join(partitionWalDir, "coordinator.log")
+	db.coordinator = NewCoordinatorLog(coordinatorPath, db.logger)
+	if err := db.coordinator.Open(); err != nil {
+		return fmt.Errorf("failed to open coordinator log: %w", err)
+	}
+	coordinatorDecision, err := db.coordinator.Replay()
+	if err != nil {
+		return fmt.Errorf("failed to replay coordinator log: %w", err)
+	}
+
 	// Parallel partition recovery: replay each partition's WAL (v0.4) and rebuild index.
 	var replayWg sync.WaitGroup
 	maxTxIDs := make([]uint64, partitionCount)
@@ -571,7 +597,7 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		go func() {
 			defer replayWg.Done()
 			walPath := filepath.Join(partitionWalDir, fmt.Sprintf("p%d.wal", i))
-			txID, lsn, err := db.replayPartitionWALForPartition(db.partitions[i], walPath)
+			txID, lsn, err := db.replayPartitionWALForPartition(db.partitions[i], walPath, coordinatorDecision)
 			maxTxIDs[i] = txID
 			maxLSNs[i] = lsn
 			replayErrs[i] = err
@@ -611,9 +637,10 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 }
 
 // replayPartitionWALForPartition replays one partition's WAL (v0.4), applies committed
-// records to the partition's datafile and index, and syncs the datafile.
+// and in-doubt (resolved via coordinator) records to the partition's datafile and index, and syncs the datafile.
+// coordinatorDecision is txID -> true if commit, false if abort; used to resolve in-doubt transactions.
 // Returns the max txID, max LSN seen, and any error.
-func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPath string) (maxTxID, maxLSN uint64, err error) {
+func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPath string, coordinatorDecision map[uint64]bool) (maxTxID, maxLSN uint64, err error) {
 	replayStart := time.Now()
 	defer func() {
 		replayDuration := time.Since(replayStart)
@@ -621,6 +648,7 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 	}()
 	txRecords := make(map[uint64][]*types.WALRecord)
 	committed := make(map[uint64]bool)
+	aborted := make(map[uint64]bool)
 
 	err = wal.ReplayPartitionWAL(walPath, db.logger, func(rec *types.WALRecord) error {
 		if rec == nil {
@@ -640,6 +668,8 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 		switch rec.OpType {
 		case types.OpCommit:
 			committed[txID] = true
+		case types.OpAbort:
+			aborted[txID] = true
 		default:
 			txRecords[txID] = append(txRecords[txID], rec)
 		}
@@ -652,13 +682,21 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 	dataFile := partition.GetDataFile()
 	index := partition.GetIndex()
 
-	// Apply transactions in txID order so Create before Delete is preserved.
+	// Apply transactions in txID order: committed + in-doubt resolved as commit by coordinator.
+	// In-doubt = has records but neither OpCommit nor OpAbort; treat as abort unless coordinator says commit.
 	txIDs := make([]uint64, 0, len(txRecords))
 	for txID := range txRecords {
-		if !committed[txID] {
+		if committed[txID] {
+			txIDs = append(txIDs, txID)
 			continue
 		}
-		txIDs = append(txIDs, txID)
+		if aborted[txID] {
+			continue
+		}
+		// In-doubt: apply only if coordinator decision is commit
+		if coordinatorDecision != nil && coordinatorDecision[txID] {
+			txIDs = append(txIDs, txID)
+		}
 	}
 	sort.Slice(txIDs, func(i, j int) bool { return txIDs[i] < txIDs[j] })
 	for _, txID := range txIDs {
@@ -1218,6 +1256,12 @@ func (db *LogicalDB) Close() error {
 		db.healingService = nil
 	}
 
+	// Close coordinator log (multi-partition 2PC)
+	if db.coordinator != nil {
+		_ = db.coordinator.Close()
+		db.coordinator = nil
+	}
+
 	// Close partitions (v0.4)
 	if db.partitions != nil {
 		for _, partition := range db.partitions {
@@ -1346,16 +1390,445 @@ func (db *LogicalDB) Begin() *Tx {
 	return db.txManager.Begin()
 }
 
+// AddOpToTx adds an operation to a transaction. Use with Begin/Commit for multi-doc transactions.
+// collection defaults to DefaultCollection if empty. opType is types.OpCreate, OpUpdate, OpDelete, OpPatch, etc.
+func (db *LogicalDB) AddOpToTx(tx *Tx, collection string, opType types.OperationType, docID uint64, payload []byte) error {
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	return db.txManager.AddOp(tx, db.dbID, collection, opType, docID, payload)
+}
+
+// commitSinglePartitionTx commits a transaction that touches only one partition (no coordinator).
+// Caller must ensure all recs target the given partition. Uses tx.ID for all WAL records.
+func (db *LogicalDB) commitSinglePartitionTx(partition *Partition, tx *Tx, recs []*types.WALRecord) error {
+	partition.mu.Lock()
+	defer partition.mu.Unlock()
+	if err := db.checkWALSizeLimit(); err != nil {
+		return err
+	}
+	dataFile := partition.GetDataFile()
+	wal := partition.GetWAL()
+	if wal == nil {
+		return fmt.Errorf("partition WAL not available")
+	}
+	// Track (offset, length) for Create/Update/Patch for index phase; oldMemory for Update/Delete
+	type recordMeta struct {
+		offset         uint64
+		length         uint32
+		existingVer    *types.DocumentVersion
+		oldMemoryFreed bool
+	}
+	meta := make([]recordMeta, len(recs))
+	var allocSoFar uint64
+	defer func() {
+		if allocSoFar > 0 {
+			db.memory.Free(db.dbID, allocSoFar)
+		}
+	}()
+
+	for i, rec := range recs {
+		collection := rec.Collection
+		if collection == "" {
+			collection = DefaultCollection
+		}
+		switch rec.OpType {
+		case types.OpCreateCollection:
+			if err := db.collections.CreateCollection(rec.Collection); err != nil {
+				return err
+			}
+			if err := wal.Write(tx.ID, db.dbID, rec.Collection, 0, types.OpCreateCollection, nil); err != nil {
+				return fmt.Errorf("WAL write: %w", err)
+			}
+		case types.OpDeleteCollection:
+			if err := db.collections.DeleteCollection(rec.Collection); err != nil {
+				return err
+			}
+			if err := wal.Write(tx.ID, db.dbID, rec.Collection, 0, types.OpDeleteCollection, nil); err != nil {
+				return fmt.Errorf("WAL write: %w", err)
+			}
+		case types.OpCreate:
+			if err := validateJSONPayload(rec.Payload); err != nil {
+				return err
+			}
+			if err := db.collections.EnsureCollection(collection); err != nil {
+				return err
+			}
+			ver, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+			if exists && ver.DeletedTxID == nil {
+				return ErrDocAlreadyExists
+			}
+			mem := uint64(len(rec.Payload))
+			if !db.memory.TryAllocate(db.dbID, mem) {
+				return ErrMemoryLimit
+			}
+			allocSoFar += mem
+			offset, err := dataFile.Write(rec.Payload)
+			if err != nil {
+				return err
+			}
+			meta[i] = recordMeta{offset: offset, length: uint32(len(rec.Payload))}
+			if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, types.OpCreate, rec.Payload); err != nil {
+				return fmt.Errorf("WAL write: %w", err)
+			}
+		case types.OpUpdate, types.OpPatch:
+			if err := validateJSONPayload(rec.Payload); err != nil {
+				return err
+			}
+			if err := db.collections.EnsureCollection(collection); err != nil {
+				return err
+			}
+			existing, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+			if !exists || existing.DeletedTxID != nil {
+				return ErrDocNotFound
+			}
+			mem := uint64(len(rec.Payload))
+			if !db.memory.TryAllocate(db.dbID, mem) {
+				return ErrMemoryLimit
+			}
+			allocSoFar += mem
+			offset, err := dataFile.Write(rec.Payload)
+			if err != nil {
+				return err
+			}
+			meta[i] = recordMeta{offset: offset, length: uint32(len(rec.Payload)), existingVer: existing}
+			if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, rec.OpType, rec.Payload); err != nil {
+				return fmt.Errorf("WAL write: %w", err)
+			}
+		case types.OpDelete:
+			existing, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+			if !exists || existing.DeletedTxID != nil {
+				return ErrDocNotFound
+			}
+			if existing.Length > 0 {
+				db.memory.Free(db.dbID, uint64(existing.Length))
+			}
+			meta[i] = recordMeta{existingVer: existing, oldMemoryFreed: true}
+			if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, types.OpDelete, nil); err != nil {
+				return fmt.Errorf("WAL write: %w", err)
+			}
+		default:
+			return fmt.Errorf("unsupported op type in tx: %v", rec.OpType)
+		}
+	}
+
+	if err := wal.Write(tx.ID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
+		return fmt.Errorf("WAL commit marker: %w", err)
+	}
+
+	// Apply index updates (visibility only after OpCommit)
+	for i, rec := range recs {
+		collection := rec.Collection
+		if collection == "" {
+			collection = DefaultCollection
+		}
+		m := meta[i]
+		switch rec.OpType {
+		case types.OpCreateCollection, types.OpDeleteCollection:
+			// already applied
+		case types.OpCreate:
+			version := db.mvcc.CreateVersion(rec.DocID, tx.ID, m.offset, m.length)
+			partition.index.Set(collection, version)
+			db.collections.IncrementDocCount(collection)
+			allocSoFar -= uint64(m.length)
+		case types.OpUpdate, types.OpPatch:
+			version := db.mvcc.UpdateVersion(m.existingVer, tx.ID, m.offset, m.length)
+			partition.index.Set(collection, version)
+			if m.existingVer.Length > 0 {
+				db.memory.Free(db.dbID, uint64(m.existingVer.Length))
+			}
+			allocSoFar -= uint64(m.length)
+		case types.OpDelete:
+			version := db.mvcc.DeleteVersion(rec.DocID, tx.ID)
+			partition.index.Set(collection, version)
+			db.collections.DecrementDocCount(collection)
+		}
+	}
+	allocSoFar = 0
+	db.txnsCommitted++
+	_, _ = db.txManager.Commit(tx)
+	return nil
+}
+
+// commitMultiPartitionTx runs 2PC: Phase 1 prepare (WAL ops only), Phase 2 coordinator decision + OpCommit + index.
+func (db *LogicalDB) commitMultiPartitionTx(tx *Tx, partitionOrder []int, opsByPartition map[int][]*types.WALRecord) error {
+	// Phase 1: Prepare each partition (data file + memory + WAL ops only; no OpCommit, no index)
+	var prepared []preparedPartitionState
+	var allocTotal uint64
+	defer func() {
+		if allocTotal > 0 {
+			db.memory.Free(db.dbID, allocTotal)
+		}
+	}()
+
+	for _, pid := range partitionOrder {
+		partition := db.getPartition(pid)
+		if partition == nil {
+			db.abortPreparedTxFromPrepared(tx.ID, prepared)
+			return ErrInvalidPartition
+		}
+		recs := opsByPartition[pid]
+		partition.mu.Lock()
+		if err := db.checkWALSizeLimit(); err != nil {
+			partition.mu.Unlock()
+			db.abortPreparedTxFromPrepared(tx.ID, prepared)
+			return err
+		}
+		wal := partition.GetWAL()
+		if wal == nil {
+			partition.mu.Unlock()
+			db.abortPreparedTxFromPrepared(tx.ID, prepared)
+			return fmt.Errorf("partition %d WAL not available", pid)
+		}
+		dataFile := partition.GetDataFile()
+		pp := preparedPartitionState{partition: partition, recs: recs, meta: make([]struct {
+			offset      uint64
+			length      uint32
+			existingVer *types.DocumentVersion
+		}, len(recs))}
+		var partAlloc uint64
+		for i, rec := range recs {
+			collection := rec.Collection
+			if collection == "" {
+				collection = DefaultCollection
+			}
+			switch rec.OpType {
+			case types.OpCreateCollection:
+				// Phase 1: WAL only; no collection mutation (visibility only after OpCommit).
+				if err := wal.Write(tx.ID, db.dbID, rec.Collection, 0, types.OpCreateCollection, nil); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+			case types.OpDeleteCollection:
+				// Phase 1: WAL only; no collection mutation.
+				if err := wal.Write(tx.ID, db.dbID, rec.Collection, 0, types.OpDeleteCollection, nil); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+			case types.OpCreate:
+				if err := validateJSONPayload(rec.Payload); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+				// Phase 1: no EnsureCollection (visibility only after OpCommit).
+				ver, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+				if exists && ver.DeletedTxID == nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return ErrDocAlreadyExists
+				}
+				mem := uint64(len(rec.Payload))
+				if !db.memory.TryAllocate(db.dbID, mem) {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return ErrMemoryLimit
+				}
+				partAlloc += mem
+				allocTotal += mem
+				offset, err := dataFile.Write(rec.Payload)
+				if err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+				pp.meta[i].offset, pp.meta[i].length = offset, uint32(len(rec.Payload))
+				if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, types.OpCreate, rec.Payload); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+			case types.OpUpdate, types.OpPatch:
+				if err := validateJSONPayload(rec.Payload); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+				existing, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+				if !exists || existing.DeletedTxID != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return ErrDocNotFound
+				}
+				mem := uint64(len(rec.Payload))
+				if !db.memory.TryAllocate(db.dbID, mem) {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return ErrMemoryLimit
+				}
+				partAlloc += mem
+				allocTotal += mem
+				offset, err := dataFile.Write(rec.Payload)
+				if err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+				pp.meta[i].offset, pp.meta[i].length = offset, uint32(len(rec.Payload))
+				pp.meta[i].existingVer = existing
+				if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, rec.OpType, rec.Payload); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+			case types.OpDelete:
+				existing, exists := partition.index.Get(collection, rec.DocID, tx.SnapshotTxID)
+				if !exists || existing.DeletedTxID != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return ErrDocNotFound
+				}
+				if existing.Length > 0 {
+					db.memory.Free(db.dbID, uint64(existing.Length))
+				}
+				pp.meta[i].existingVer = existing
+				if err := wal.Write(tx.ID, db.dbID, collection, rec.DocID, types.OpDelete, nil); err != nil {
+					partition.mu.Unlock()
+					db.abortPreparedTxFromPrepared(tx.ID, prepared)
+					return err
+				}
+			default:
+				partition.mu.Unlock()
+				db.abortPreparedTxFromPrepared(tx.ID, prepared)
+				return fmt.Errorf("unsupported op type in tx: %v", rec.OpType)
+			}
+		}
+		pp.allocSoFar = partAlloc
+		partition.mu.Unlock()
+		prepared = append(prepared, pp)
+	}
+
+	// Phase 2: Coordinator decision (commit) then OpCommit + index per partition
+	if db.coordinator == nil {
+		db.abortPreparedTxFromPrepared(tx.ID, prepared)
+		return fmt.Errorf("coordinator log not available")
+	}
+	if err := db.coordinator.AppendDecision(tx.ID, true); err != nil {
+		db.abortPreparedTxFromPrepared(tx.ID, prepared)
+		return fmt.Errorf("coordinator append: %w", err)
+	}
+	allocTotal = 0
+
+	for _, pp := range prepared {
+		pp.partition.mu.Lock()
+		wal := pp.partition.GetWAL()
+		if err := wal.Write(tx.ID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
+			pp.partition.mu.Unlock()
+			return fmt.Errorf("WAL commit: %w", err)
+		}
+		for i, rec := range pp.recs {
+			collection := rec.Collection
+			if collection == "" {
+				collection = DefaultCollection
+			}
+			m := pp.meta[i]
+			switch rec.OpType {
+			case types.OpCreateCollection:
+				_ = db.collections.EnsureCollection(rec.Collection)
+			case types.OpDeleteCollection:
+				_ = db.collections.DeleteCollection(rec.Collection)
+			case types.OpCreate:
+				version := db.mvcc.CreateVersion(rec.DocID, tx.ID, m.offset, m.length)
+				pp.partition.index.Set(collection, version)
+				db.collections.IncrementDocCount(collection)
+			case types.OpUpdate, types.OpPatch:
+				version := db.mvcc.UpdateVersion(m.existingVer, tx.ID, m.offset, m.length)
+				pp.partition.index.Set(collection, version)
+				if m.existingVer != nil && m.existingVer.Length > 0 {
+					db.memory.Free(db.dbID, uint64(m.existingVer.Length))
+				}
+			case types.OpDelete:
+				version := db.mvcc.DeleteVersion(rec.DocID, tx.ID)
+				pp.partition.index.Set(collection, version)
+				db.collections.DecrementDocCount(collection)
+			}
+		}
+		pp.partition.mu.Unlock()
+	}
+	db.txnsCommitted++
+	_, _ = db.txManager.Commit(tx)
+	return nil
+}
+
+// abortPreparedTx writes coordinator abort and OpAbort to every prepared partition (invariant: any WAL write => decision).
+func (db *LogicalDB) abortPreparedTx(txID uint64, partitions []*Partition, allocSoFarPerPartition []uint64) {
+	if len(partitions) == 0 {
+		return
+	}
+	if db.coordinator != nil {
+		_ = db.coordinator.AppendDecision(txID, false)
+	}
+	for _, p := range partitions {
+		p.mu.Lock()
+		if w := p.GetWAL(); w != nil {
+			_ = w.Write(txID, db.dbID, "", 0, types.OpAbort, nil)
+		}
+		p.mu.Unlock()
+	}
+	for _, alloc := range allocSoFarPerPartition {
+		if alloc > 0 {
+			db.memory.Free(db.dbID, alloc)
+		}
+	}
+}
+
+// abortPreparedTxFromPrepared extracts partitions and allocs from the prepared slice and calls abortPreparedTx.
+func (db *LogicalDB) abortPreparedTxFromPrepared(txID uint64, prepared []preparedPartitionState) {
+	var parts []*Partition
+	var allocs []uint64
+	for _, pp := range prepared {
+		parts = append(parts, pp.partition)
+		allocs = append(allocs, pp.allocSoFar)
+	}
+	db.abortPreparedTx(txID, parts, allocs)
+}
+
 func (db *LogicalDB) Commit(tx *Tx) error {
 	db.mu.RLock()
 	closed := db.closed
+	partCount := len(db.partitions)
 	db.mu.RUnlock()
 	if closed {
 		return ErrDBNotOpen
 	}
-	// Multi-doc transactions are not supported in partitioned mode.
-	// Use single-doc Create/Read/Update/Delete/Patch or pool requests instead.
-	return fmt.Errorf("multi-doc transactions not supported in partitioned mode")
+	if tx.state != TxOpen {
+		if tx.state == TxCommitted {
+			return ErrTxAlreadyCommitted
+		}
+		return ErrTxAlreadyRolledBack
+	}
+	if len(tx.Operations) == 0 {
+		_, _ = db.txManager.Commit(tx)
+		return nil
+	}
+	// Group operations by partition (deterministic order)
+	partitionIDsSet := make(map[int]struct{})
+	var partitionOrder []int
+	opsByPartition := make(map[int][]*types.WALRecord)
+	for _, rec := range tx.Operations {
+		pid := RouteToPartition(rec.DocID, partCount)
+		if _, ok := partitionIDsSet[pid]; !ok {
+			partitionIDsSet[pid] = struct{}{}
+			partitionOrder = append(partitionOrder, pid)
+		}
+		opsByPartition[pid] = append(opsByPartition[pid], rec)
+	}
+	sort.Ints(partitionOrder)
+
+	// Single-partition fast path: no coordinator
+	if len(partitionOrder) == 1 {
+		pid := partitionOrder[0]
+		partition := db.getPartition(pid)
+		if partition == nil {
+			return ErrInvalidPartition
+		}
+		return db.commitSinglePartitionTx(partition, tx, opsByPartition[pid])
+	}
+
+	// Multi-partition 2PC
+	return db.commitMultiPartitionTx(tx, partitionOrder, opsByPartition)
 }
 
 func (db *LogicalDB) Rollback(tx *Tx) error {

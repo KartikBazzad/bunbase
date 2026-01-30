@@ -2,18 +2,19 @@
 
 This document describes DocDB's transaction model, ACID properties, and transaction lifecycle.
 
-**Note:** In the current partitioned implementation (v0.4), **multi-doc transactions** (`Begin()`, `Commit()`, `Rollback()`) are **temporarily unsupported**. `Commit(tx)` returns an error: "multi-doc transactions not supported in partitioned mode". Use single-document operations (Create, Read, Update, Delete, Patch) or pool requests instead. Partition-aware multi-doc transactions may be re-added in a future release.
+**Note:** In the partitioned implementation (v0.4+), **multi-doc transactions** (`Begin()`, `Commit()`, `Rollback()`) are **supported**. Single-partition transactions use a fast path (no coordinator). Multi-partition transactions use an **in-process coordinator** with a persistent decision log and **two-phase commit (2PC)** so that commits are atomic across partitions. See [Future Multi-Partition Transactions](future_multi_partition_transactions.md) for the coordinator-based design and recovery.
 
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [ACID Properties](#acid-properties)
 3. [Transaction Lifecycle](#transaction-lifecycle)
-4. [MVCC-Lite Model](#mvcc-lite-model)
-5. [Visibility Rules](#visibility-rules)
-6. [Concurrency Behavior](#concurrency-behavior)
-7. [Error Handling](#error-handling)
-8. [Limitations](#limitations)
+4. [Multi-Partition Recovery](#multi-partition-recovery)
+5. [MVCC-Lite Model](#mvcc-lite-model)
+6. [Visibility Rules](#visibility-rules)
+7. [Concurrency Behavior](#concurrency-behavior)
+8. [Error Handling](#error-handling)
+9. [Limitations](#limitations)
 
 ---
 
@@ -136,19 +137,28 @@ db.Read(2) // Returns error (not found in snapshot 99)
 - Optional fsync on commit (configurable)
 - WAL replay on recovery
 - Commit ordering invariant enforced
+- **Multi-partition:** Coordinator log is fsync'd **before** writing `OpCommit` or `OpAbort` to partition WALs, so recovery can resolve in-doubt transactions from the coordinator
 
-**Commit Ordering:**
+**Commit Ordering (single-partition):**
 
 ```
 1. Write WAL record (with optional fsync)
 2. Update index (make transaction visible)
 ```
 
+**Commit Ordering (multi-partition 2PC):**
+
+```
+1. Phase 1: Write op records to each partition WAL (no commit/abort yet)
+2. Phase 2: Append decision to coordinator log and fsync
+3. For each partition: write OpCommit to partition WAL, then update index
+```
+
 This ensures:
 
-- If crash occurs before index update: WAL persists, data recovered on restart
+- If crash occurs before index update: WAL (and coordinator log for multi-partition) persists, data recovered on restart
 - If crash occurs after index update: WAL already persisted, consistent state
-- Transaction only visible after WAL is durable
+- Transaction only visible after WAL (and coordinator decision for multi-partition) is durable
 
 ---
 
@@ -238,58 +248,16 @@ db.CreateInTx(tx, 2, []byte("doc2"))
 
 ### 3. Commit Transaction
 
-**Purpose:** Persist all operations atomically.
+**Purpose:** Persist all operations atomically. In partitioned mode, behavior depends on how many partitions the transaction touches.
 
-**Steps:**
+**Single-partition (fast path):** When all operations in the transaction target the same partition, `Commit(tx)` writes WAL records and a commit marker to that partition's WAL, applies index updates, and returns. No coordinator log is written.
 
-1. Validate transaction state (must be Open)
-2. Write all WAL records to WAL file
-3. Fsync WAL (if enabled)
-4. Update index (make transactions visible)
-5. Mark transaction as committed
-6. Release transaction locks
+**Multi-partition (2PC):** When operations span more than one partition, `Commit(tx)` uses two-phase commit:
 
-**Code:**
+1. **Phase 1 – Prepare:** For each involved partition (in deterministic order by partition ID), acquire the partition lock, validate and perform data-file writes and memory allocation, and write **op records only** to that partition's WAL (no commit marker, no index updates). If any partition fails, the transaction aborts: if any partition WAL was written, the coordinator logs an abort decision and each prepared partition gets an `OpAbort` record; then memory is freed and an error is returned.
+2. **Phase 2 – Commit:** If Phase 1 succeeded, the coordinator appends a **commit** decision to its persistent log and fsyncs. Then, for each partition in the same order: write `OpCommit` to that partition's WAL, apply index updates (make the transaction visible), and release the lock. The transaction is then marked committed and `nil` is returned.
 
-```go
-func (db *LogicalDB) Commit(tx *Tx) error {
-    db.mu.Lock()
-    defer db.mu.Unlock()
-
-    records, err := db.txManager.Commit(tx)
-    if err != nil {
-        return err
-    }
-
-    // Write all WAL records
-    for _, record := range records {
-        if err := db.wal.Write(record.TxID, record.DBID, record.DocID, record.OpType, record.Payload); err != nil {
-            return fmt.Errorf("failed to write WAL: %w", err)
-        }
-    }
-
-    // Update index (make visible)
-    txID := db.mvcc.NextTxID()
-    for _, record := range records {
-        switch record.OpType {
-        case types.OpCreate:
-            version := db.mvcc.CreateVersion(record.DocID, txID, 0, record.PayloadLen)
-            db.index.Set(version)
-        case types.OpUpdate:
-            existing, exists := db.index.Get(record.DocID, db.mvcc.CurrentSnapshot())
-            if exists {
-                version := db.mvcc.UpdateVersion(existing, txID, 0, record.PayloadLen)
-                db.index.Set(version)
-            }
-        case types.OpDelete:
-            version := db.mvcc.DeleteVersion(record.DocID, txID)
-            db.index.Set(version)
-        }
-    }
-
-    return nil
-}
-```
+**Invariant:** Any transaction that writes at least one WAL record to any partition must eventually produce exactly one coordinator decision (commit or abort). Fast abort without coordinator is allowed only when no partition WAL was touched (e.g. validation failed before any WAL write).
 
 **Example:**
 
@@ -299,7 +267,7 @@ db.CreateInTx(tx, 1, []byte("doc1"))
 db.CreateInTx(tx, 2, []byte("doc2"))
 
 if err := db.Commit(tx); err != nil {
-    // All operations rolled back
+    // All operations rolled back (single- or multi-partition)
     return err
 }
 // Both documents now visible
@@ -344,6 +312,19 @@ if err := db.Rollback(tx); err != nil {
 }
 // No documents created, database unchanged
 ```
+
+---
+
+## Multi-Partition Recovery
+
+When the database opens (partitioned mode), recovery order is deterministic:
+
+1. **Replay coordinator log** → build `txID → decision` (commit | abort). The coordinator log lives at `walDir/dbName/coordinator.log` and is the source of truth for multi-partition transactions.
+2. **Replay all partition WALs** → per partition, build transaction records and mark which txIDs are committed (saw `OpCommit`) or aborted (saw `OpAbort`). Transactions that have records but neither commit nor abort on that partition are **in-doubt**.
+3. **Resolve in-doubt txIDs** using the coordinator decision: for each in-doubt txID, if the coordinator says commit, apply that transaction's records (same as normal apply); if the coordinator says abort or the txID is missing from the coordinator (e.g. crash before decision), treat as abort and do not apply.
+4. **Apply** all committed and resolved-commit transactions; discard aborted and resolved-abort. Then proceed with normal open (worker pool, healing, etc.).
+
+**WAL record types:** In addition to data operations and `OpCommit`, partition WALs can contain `OpAbort` for a txID. On replay, `OpAbort` marks the transaction as aborted on that partition so it is not considered in-doubt. Old WALs without `OpAbort` remain valid: in-doubt transactions are resolved solely from the coordinator log (missing decision ⇒ abort).
 
 ---
 
@@ -628,15 +609,25 @@ if err := db.Commit(tx); err != nil {
    - Writes in transaction not visible until commit
    - Must commit before reading own writes
 
-4. **No Cross-Database Transactions:**
-   - Transactions scoped to single database
-   - No two-phase commit
-   - No distributed transactions
+4. **Single-Node Only:**
+   - DocDB **does** provide two-phase commit (2PC) for multi-partition transactions, but the coordinator runs **in-process** in the same binary as the database. There is no separate coordinator process, no RPC, and no cross-machine coordination.
+   - "Single-node" means: one process, one `LogicalDB`; all partitions and the coordinator live in that process. Commits are atomic across partitions within that process only. There are no distributed commits (multi-process or multi-node).
 
 5. **No Nested Transactions:**
    - Cannot begin transaction within transaction
    - No savepoints
    - No partial rollback
+
+### By-design limitations (multi-partition)
+
+These are intentional scope limits of the current multi-partition design; overcoming them would require new protocols or topology:
+
+| Limitation                               | What it means                                                                                                                                                                                                             | How it could be overcome                                                                                                                                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Serializable isolation**               | No global ordering across partitions; concurrent multi-partition transactions can interleave in ways that snapshot isolation allows but serializable would forbid (e.g. write skew).                                      | Introduce a global commit order (e.g. single coordinator that assigns commit timestamps, or SSI-style conflict detection across partitions).                                                                                            |
+| **Read-your-writes across partitions**   | A transaction sees a snapshot taken at begin; its own writes are not visible to its reads until commit, and there is no guarantee that a read in partition A sees a write committed in partition B in the same "session." | Session guarantees (e.g. sticky snapshot or "causal" reads) or explicit read-after-write barriers and version propagation.                                                                                                              |
+| **Distributed commits**                  | All partitions and the coordinator run in one process; no multi-node or multi-process 2PC.                                                                                                                                | Distributed coordinator (separate process or RPC), participant protocol (prepare/commit/abort) over the network, and failure handling for node/network partitions.                                                                      |
+| **Deadlock-free cross-partition writes** | Cross-partition writes can deadlock if different transactions lock partitions in different orders. The current design avoids this by **always** locking partitions in a deterministic order (e.g. by partition ID).       | The plan already enforces lock order by partition ID, so correct use is deadlock-free. To relax this (e.g. allow app-defined order), you would need deadlock detection (timeouts, wait-for graph) or a single global lock (bottleneck). |
 
 ### Future Enhancements (v0.1+)
 
@@ -722,3 +713,11 @@ db.Commit(tx)
 - [Concurrency Model](concurrency_model.md) - Concurrency patterns
 - [Usage Guide](usage.md) - How to use transactions
 - [Failure Modes](failure_modes.md) - Error handling
+
+## Related documents
+
+Supporting specs and design notes for the DocDB v0.4 transaction model:
+
+- [Transaction Correctness](transaction_correctness.md) — Invariants and correctness arguments (no dirty reads, durability, deterministic recovery).
+- [Compaction Semantics](compaction_semantics.md) — How partition compaction fits into the transaction model (snapshot, atomicity, recovery).
+- [Future Multi-Partition Transactions](future_multi_partition_transactions.md) — Implemented coordinator-based 2PC, single-partition fast path, and recovery; optional best-effort (saga-like) path documented.

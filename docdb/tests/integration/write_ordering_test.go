@@ -256,46 +256,53 @@ func TestWriteOrdering_MultipleTransactions(t *testing.T) {
 	db, dataDir, walDir, cleanup := setupSingleDB(t, "writeorder-multi")
 	defer cleanup()
 
-	// Close DB so we can manually construct WAL with mixed transactions
+	// Close DB so we can manually construct WAL with mixed transactions.
+	// v0.4: partition WAL lives under walDir/dbName/p0.wal; use v0.4 format (EncodeRecordV4).
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	walPath := filepath.Join(walDir, "writeorder-multi.wal")
-	log := logger.Default()
-	writer := wal.NewWriter(walPath, 1, 0, true, log)
-	if err := writer.Open(); err != nil {
-		t.Fatalf("Failed to open WAL writer: %v", err)
+	partitionWalDir := filepath.Join(walDir, "writeorder-multi")
+	if err := os.MkdirAll(partitionWalDir, 0755); err != nil {
+		t.Fatalf("Failed to create partition WAL dir: %v", err)
 	}
-	defer writer.Close()
+	walPath := filepath.Join(partitionWalDir, "p0.wal")
+	f, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create partition WAL file: %v", err)
+	}
+	defer f.Close()
 
-	// Transaction 1: committed (has commit marker)
+	writeV4 := func(lsn, txID, dbID uint64, collection string, docID uint64, opType types.OperationType, payload []byte) {
+		rec, err := wal.EncodeRecordV4(lsn, txID, dbID, collection, docID, opType, payload)
+		if err != nil {
+			t.Fatalf("EncodeRecordV4: %v", err)
+		}
+		if _, err := f.Write(rec); err != nil {
+			t.Fatalf("Write WAL record: %v", err)
+		}
+	}
+
 	doc1 := uint64(1)
 	payload1 := []byte(`{"data":"committed1"}`)
-	if err := writer.Write(1, 1, "_default", doc1, types.OpCreate, payload1); err != nil {
-		t.Fatalf("Failed to write tx1 WAL record: %v", err)
-	}
-	if err := writer.WriteCommitMarker(1); err != nil {
-		t.Fatalf("Failed to write tx1 commit marker: %v", err)
-	}
-
-	// Transaction 2: uncommitted (no commit marker)
 	doc2 := uint64(2)
 	payload2 := []byte(`{"data":"uncommitted2"}`)
-	if err := writer.Write(2, 1, "_default", doc2, types.OpCreate, payload2); err != nil {
-		t.Fatalf("Failed to write tx2 WAL record: %v", err)
-	}
-	// No commit marker for tx2
-
-	// Transaction 3: committed (has commit marker)
 	doc3 := uint64(3)
 	payload3 := []byte(`{"data":"committed3"}`)
-	if err := writer.Write(3, 1, "_default", doc3, types.OpCreate, payload3); err != nil {
-		t.Fatalf("Failed to write tx3 WAL record: %v", err)
+
+	// Transaction 1: committed (has commit marker)
+	writeV4(1, 1, 1, "_default", doc1, types.OpCreate, payload1)
+	writeV4(2, 1, 1, "", 0, types.OpCommit, nil)
+	// Transaction 2: uncommitted (no commit marker)
+	writeV4(3, 2, 1, "_default", doc2, types.OpCreate, payload2)
+	// Transaction 3: committed (has commit marker)
+	writeV4(4, 3, 1, "_default", doc3, types.OpCreate, payload3)
+	writeV4(5, 3, 1, "", 0, types.OpCommit, nil)
+
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync WAL: %v", err)
 	}
-	if err := writer.WriteCommitMarker(3); err != nil {
-		t.Fatalf("Failed to write tx3 commit marker: %v", err)
-	}
+	f.Close()
 
 	// Reopen DB to trigger recovery
 	db2 := reopenDB(t, "writeorder-multi", dataDir, walDir)
