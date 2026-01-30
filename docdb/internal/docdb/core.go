@@ -587,6 +587,11 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		return fmt.Errorf("failed to replay coordinator log: %w", err)
 	}
 
+	// Set replay budget before WAL replay
+	replayBudgetMB := db.cfg.Memory.ReplayBudgetMB
+	perDBLimitMB := db.cfg.Memory.PerDBLimitMB
+	db.memory.SetReplayBudget(db.dbID, replayBudgetMB, perDBLimitMB)
+
 	// Replay WAL while active segment is not open for writing (ensures multi-segment recovery sees all data).
 	var replayWg sync.WaitGroup
 	maxTxIDs := make([]uint64, partitionCount)
@@ -610,6 +615,9 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 			return fmt.Errorf("partition recovery: %w", err)
 		}
 	}
+
+	// Merge replay usage into normal usage after replay completes
+	db.memory.MergeReplayUsage(db.dbID)
 	// Set MVCC to max txID across all partitions + 1
 	globalMaxTxID := uint64(0)
 	for _, txID := range maxTxIDs {
@@ -708,6 +716,46 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 		}
 	}
 	sort.Slice(txIDs, func(i, j int) bool { return txIDs[i] < txIDs[j] })
+
+	// Phase 1: Count total memory needed for all committed transactions
+	replayBudget := db.memory.GetReplayBudget(db.dbID)
+	totalReplayMemory := uint64(0)
+	for _, txID := range txIDs {
+		recs := txRecords[txID]
+		for _, rec := range recs {
+			collection := rec.Collection
+			if collection == "" {
+				collection = DefaultCollection
+			}
+			switch rec.OpType {
+			case types.OpCreateCollection, types.OpDeleteCollection:
+				continue
+			case types.OpCreate:
+				totalReplayMemory += uint64(len(rec.Payload))
+			case types.OpUpdate, types.OpPatch:
+				// For updates, new size replaces old, so we only count the new payload
+				totalReplayMemory += uint64(len(rec.Payload))
+			case types.OpDelete:
+				// Deletes free memory, so no allocation needed
+				continue
+			}
+		}
+	}
+
+	// Check against replay budget (if budget is 0, fall back to per-DB limit check)
+	if replayBudget > 0 {
+		if totalReplayMemory > replayBudget {
+			return 0, 0, fmt.Errorf("replay memory limit exceeded: need %d bytes, budget %d bytes", totalReplayMemory, replayBudget)
+		}
+	} else {
+		// No replay budget set, check against per-DB limit
+		perDBLimit := db.memory.DBLimit(db.dbID)
+		if totalReplayMemory > perDBLimit {
+			return 0, 0, fmt.Errorf("replay memory limit exceeded: need %d bytes, per-DB limit %d bytes", totalReplayMemory, perDBLimit)
+		}
+	}
+
+	// Phase 2: Allocate and restore all documents (we know memory fits)
 	for _, txID := range txIDs {
 		recs := txRecords[txID]
 		for _, rec := range recs {
@@ -731,12 +779,10 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 			case types.OpCreate:
 				offset, err := dataFile.WriteNoSync(rec.Payload)
 				if err != nil {
-					db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
-					continue
+					return 0, 0, fmt.Errorf("replay partition %d doc %d: write: %w", partition.ID(), rec.DocID, err)
 				}
-				if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
-					db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
-					continue
+				if !db.memory.TryAllocateReplay(db.dbID, uint64(len(rec.Payload))) {
+					return 0, 0, fmt.Errorf("replay partition %d doc %d: memory allocation failed (unexpected)", partition.ID(), rec.DocID)
 				}
 				version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
 				index.Set(collection, version)
@@ -746,12 +792,10 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 				if !exists {
 					offset, err := dataFile.WriteNoSync(rec.Payload)
 					if err != nil {
-						db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
-						continue
+						return 0, 0, fmt.Errorf("replay partition %d doc %d: write: %w", partition.ID(), rec.DocID, err)
 					}
-					if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
-						db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
-						continue
+					if !db.memory.TryAllocateReplay(db.dbID, uint64(len(rec.Payload))) {
+						return 0, 0, fmt.Errorf("replay partition %d doc %d: memory allocation failed (unexpected)", partition.ID(), rec.DocID)
 					}
 					version := db.mvcc.CreateVersion(rec.DocID, txID, offset, rec.PayloadLen)
 					index.Set(collection, version)
@@ -759,13 +803,11 @@ func (db *LogicalDB) replayPartitionWALForPartition(partition *Partition, walPat
 				} else {
 					offset, err := dataFile.WriteNoSync(rec.Payload)
 					if err != nil {
-						db.logger.Warn("replay partition %d doc %d: write: %v", partition.ID(), rec.DocID, err)
-						continue
+						return 0, 0, fmt.Errorf("replay partition %d doc %d: write: %w", partition.ID(), rec.DocID, err)
 					}
 					oldMemory := uint64(existing.Length)
-					if !db.memory.TryAllocate(db.dbID, uint64(len(rec.Payload))) {
-						db.logger.Warn("replay partition %d doc %d: memory limit", partition.ID(), rec.DocID)
-						continue
+					if !db.memory.TryAllocateReplay(db.dbID, uint64(len(rec.Payload))) {
+						return 0, 0, fmt.Errorf("replay partition %d doc %d: memory allocation failed (unexpected)", partition.ID(), rec.DocID)
 					}
 					if oldMemory > 0 {
 						db.memory.Free(db.dbID, oldMemory)

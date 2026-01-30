@@ -20,6 +20,7 @@ type Config struct {
 type MemoryConfig struct {
 	GlobalCapacityMB uint64
 	PerDBLimitMB     uint64
+	ReplayBudgetMB   uint64 // Memory budget for WAL replay (0 = use PerDBLimitMB)
 	BufferSizes      []uint64
 }
 

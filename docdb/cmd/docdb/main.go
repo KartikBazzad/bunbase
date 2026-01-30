@@ -18,12 +18,34 @@ func main() {
 	dataDir := flag.String("data-dir", "./data", "Directory for database files")
 	socketPath := flag.String("socket", "/tmp/docdb.sock", "Unix socket path")
 	debugMode := flag.Bool("debug", false, "Enable debug mode (request flow logging with requestID)")
+	unsafeMultiWriter := flag.Bool("unsafe-multi-writer", false, "Allow multiple scheduler workers (higher throughput; use with -sched-workers)")
+	schedWorkers := flag.Int("sched-workers", 0, "Number of scheduler workers (0 = use default; requires -unsafe-multi-writer to be > 1)")
+	schedMaxWorkers := flag.Int("sched-max-workers", 0, "Max scheduler workers for cap (0 = use default)")
+	replayBudgetMB := flag.Uint64("replay-budget-mb", 0, "Memory budget for WAL replay in MB (0 = use per-DB limit)")
 	flag.Parse()
 
 	cfg := config.DefaultConfig()
 	cfg.DataDir = *dataDir
 	cfg.IPC.SocketPath = *socketPath
 	cfg.IPC.DebugMode = *debugMode
+	if *replayBudgetMB > 0 {
+		cfg.Memory.ReplayBudgetMB = *replayBudgetMB
+	}
+
+	if *unsafeMultiWriter {
+		cfg.Sched.UnsafeMultiWriter = true
+		if *schedWorkers > 0 {
+			cfg.Sched.WorkerCount = *schedWorkers
+		}
+		if *schedMaxWorkers > 0 {
+			cfg.Sched.MaxWorkers = *schedMaxWorkers
+		}
+		// If UnsafeMultiWriter but no explicit workers, use a sensible multi-worker default
+		if cfg.Sched.WorkerCount <= 1 && cfg.Sched.MaxWorkers <= 1 {
+			cfg.Sched.WorkerCount = 4
+			cfg.Sched.MaxWorkers = 16
+		}
+	}
 
 	if cfgPath != nil && *cfgPath != "" {
 		fmt.Printf("Config file not yet implemented, using defaults\n")

@@ -208,6 +208,7 @@ cat ./matrix_results/analysis.md
 3. **Consistent Environment**: Use the same hardware and DocDB configuration for all tests
 4. **Restart Between Major Changes**: Restart DocDB server between major configuration changes
 5. **Check Logs**: Monitor DocDB server logs for errors or warnings
+6. **Higher Throughput**: By default DocDB uses one scheduler worker (throughput ~500–600 ops/sec). To increase throughput, start DocDB with multiple scheduler workers: `./docdb -unsafe-multi-writer` (defaults to 4 workers, max 16), or `./docdb -unsafe-multi-writer -sched-workers 8 -sched-max-workers 32`. Re-run the matrix and compare analysis.
 
 ## Troubleshooting
 
@@ -219,6 +220,7 @@ cat ./matrix_results/analysis.md
 
 ### Low Throughput
 
+- **Scheduler workers**: Default is one scheduler worker (global bottleneck). Start DocDB with `-unsafe-multi-writer` (or `-unsafe-multi-writer -sched-workers 8 -sched-max-workers 32`), then re-run the matrix.
 - Check disk I/O performance
 - Verify DocDB server has sufficient resources
 - Check for errors in DocDB server logs

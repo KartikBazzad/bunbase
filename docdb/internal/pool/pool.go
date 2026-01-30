@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	"github.com/kartikbazzad/docdb/internal/catalog"
 	"github.com/kartikbazzad/docdb/internal/config"
@@ -87,10 +88,12 @@ type Response struct {
 //   - Memory management (global + per-DB limits)
 //   - Statistics aggregation
 //
-// Thread Safety: Pool operations are thread-safe.
+// Thread Safety: Pool operations are thread-safe. dbsMu guards p.dbs so
+// OpenDB and other access are safe for concurrent scheduler workers.
 // Individual databases have their own locking.
 type Pool struct {
-	dbs          map[uint64]*docdb.LogicalDB // Open databases by ID
+	dbsMu        sync.RWMutex                 // Guards dbs for concurrent OpenDB and iteration
+	dbs          map[uint64]*docdb.LogicalDB  // Open databases by ID
 	catalog      *catalog.Catalog            // Database metadata catalog
 	sched        *Scheduler                  // Request scheduler
 	memory       *memory.Caps                // Memory limit tracker
@@ -175,9 +178,7 @@ func (p *Pool) Stop() {
 		// Fallback to immediate shutdown if graceful shutdown not initialized
 		p.stopped = true
 		p.sched.Stop()
-		for _, db := range p.dbs {
-			db.Close()
-		}
+		p.closeAllDBs()
 		p.catalog.Close()
 		p.logger.Info("Pool stopped")
 	}
@@ -233,10 +234,12 @@ func (p *Pool) DeleteDB(dbID uint64) error {
 		return err
 	}
 
+	p.dbsMu.Lock()
 	if db, exists := p.dbs[dbID]; exists {
 		db.Close()
 		delete(p.dbs, dbID)
 	}
+	p.dbsMu.Unlock()
 
 	p.memory.UnregisterDB(dbID)
 
@@ -258,6 +261,15 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 		return nil, docdberrors.ErrDBNotActive
 	}
 
+	p.dbsMu.RLock()
+	if db, exists := p.dbs[dbID]; exists {
+		p.dbsMu.RUnlock()
+		return db, nil
+	}
+	p.dbsMu.RUnlock()
+
+	p.dbsMu.Lock()
+	defer p.dbsMu.Unlock()
 	if db, exists := p.dbs[dbID]; exists {
 		return db, nil
 	}
@@ -278,13 +290,27 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 }
 
 func (p *Pool) CloseDB(dbID uint64) error {
+	p.dbsMu.Lock()
 	if db, exists := p.dbs[dbID]; exists {
 		db.Close()
 		delete(p.dbs, dbID)
 		p.logger.Info("Closed database: id=%d", dbID)
 	}
+	p.dbsMu.Unlock()
 
 	return nil
+}
+
+// closeAllDBs closes all open databases. Caller must not hold dbsMu.
+// Used by Stop() and GracefulShutdown.
+func (p *Pool) closeAllDBs() {
+	p.dbsMu.Lock()
+	for _, db := range p.dbs {
+		if db != nil {
+			db.Close()
+		}
+	}
+	p.dbsMu.Unlock()
 }
 
 func (p *Pool) Execute(req *Request) {
@@ -388,6 +414,7 @@ func (p *Pool) ListDBs() []*types.DBInfo {
 	entries := p.catalog.List()
 	infos := make([]*types.DBInfo, 0, len(entries))
 
+	p.dbsMu.RLock()
 	for _, entry := range entries {
 		info := &types.DBInfo{
 			Name:      entry.DBName,
@@ -406,6 +433,7 @@ func (p *Pool) ListDBs() []*types.DBInfo {
 
 		infos = append(infos, info)
 	}
+	p.dbsMu.RUnlock()
 
 	return infos
 }
@@ -425,12 +453,14 @@ func (p *Pool) GetSchedulerStats() map[string]interface{} {
 	}
 
 	// Aggregate WAL/group-commit stats per DB (when group commit is active)
+	p.dbsMu.RLock()
 	walStats := make(map[uint64]map[string]interface{})
 	for dbID, db := range p.dbs {
 		if st := db.GetWALStats(); st != nil {
 			walStats[dbID] = st
 		}
 	}
+	p.dbsMu.RUnlock()
 	if len(walStats) > 0 {
 		out["wal_group_commit"] = walStats
 	}
@@ -439,8 +469,11 @@ func (p *Pool) GetSchedulerStats() map[string]interface{} {
 }
 
 func (p *Pool) Stats() *types.Stats {
+	p.dbsMu.RLock()
+	openCount := len(p.dbs)
+	p.dbsMu.RUnlock()
 	return &types.Stats{
-		TotalDBs:       len(p.dbs),
+		TotalDBs:       openCount,
 		ActiveDBs:      len(p.catalog.List()),
 		TotalTxns:      0,
 		WALSize:        0,

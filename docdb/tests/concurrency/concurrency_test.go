@@ -11,9 +11,16 @@ import (
 	"github.com/kartikbazzad/docdb/internal/docdb"
 	"github.com/kartikbazzad/docdb/internal/logger"
 	"github.com/kartikbazzad/docdb/internal/pool"
+	"github.com/kartikbazzad/docdb/internal/types"
 )
 
 func setupTestPool(t *testing.T) (*pool.Pool, string, func()) {
+	return setupTestPoolWithSched(t, 0, 0) // default: single worker
+}
+
+// setupTestPoolWithSched starts a pool with optional scheduler worker count.
+// If workerCount and maxWorkers are > 0, UnsafeMultiWriter is set true and those values are used.
+func setupTestPoolWithSched(t *testing.T, workerCount, maxWorkers int) (*pool.Pool, string, func()) {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "docdb-concur-test-*")
@@ -24,6 +31,11 @@ func setupTestPool(t *testing.T) (*pool.Pool, string, func()) {
 	cfg := config.DefaultConfig()
 	cfg.DataDir = tmpDir
 	cfg.WAL.Dir = filepath.Join(tmpDir, "wal")
+	if workerCount > 0 && maxWorkers > 0 {
+		cfg.Sched.UnsafeMultiWriter = true
+		cfg.Sched.WorkerCount = workerCount
+		cfg.Sched.MaxWorkers = maxWorkers
+	}
 
 	log := logger.Default()
 
@@ -265,5 +277,117 @@ func TestStarvationPrevention(t *testing.T) {
 
 	if db2.IndexSize() == 0 {
 		t.Fatal("Slow-writer DB has no documents - possible starvation")
+	}
+}
+
+// TestConcurrentOpenDBAndExecute runs the pool with 2+ scheduler workers and
+// stresses concurrent OpenDB (no double-open) and concurrent Execute (handleRequest).
+func TestConcurrentOpenDBAndExecute(t *testing.T) {
+	p, _, cleanup := setupTestPoolWithSched(t, 2, 2)
+	defer cleanup()
+
+	dbID1, err := p.CreateDB("concdb1")
+	if err != nil {
+		t.Fatalf("CreateDB 1: %v", err)
+	}
+	dbID2, err := p.CreateDB("concdb2")
+	if err != nil {
+		t.Fatalf("CreateDB 2: %v", err)
+	}
+
+	const coll = "_default"
+	const numOpeners = 5
+	const openRounds = 10
+	const numSenders = 4
+	const docsPerSender = 25
+
+	var wg sync.WaitGroup
+
+	// Concurrent OpenDB: multiple goroutines open same DBs repeatedly (no double-open, no race).
+	for i := 0; i < numOpeners; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := 0; r < openRounds; r++ {
+				db1, err := p.OpenDB(dbID1)
+				if err != nil {
+					t.Errorf("OpenDB db1: %v", err)
+					return
+				}
+				if db1 == nil {
+					t.Error("OpenDB db1 returned nil")
+					return
+				}
+				db2, err := p.OpenDB(dbID2)
+				if err != nil {
+					t.Errorf("OpenDB db2: %v", err)
+					return
+				}
+				if db2 == nil {
+					t.Error("OpenDB db2 returned nil")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Concurrent Execute: send Create requests via pool (scheduler workers call handleRequest -> OpenDB).
+	for i := 0; i < numSenders; i++ {
+		wg.Add(1)
+		workerID := i
+		go func() {
+			defer wg.Done()
+			for j := 0; j < docsPerSender; j++ {
+				docID := uint64(workerID*docsPerSender + j + 1)
+				payload := []byte(fmt.Sprintf(`{"w":%d,"d":%d}`, workerID, docID))
+				respCh := make(chan pool.Response, 1)
+				req := &pool.Request{
+					DBID:       dbID1,
+					Collection: coll,
+					DocID:      docID,
+					OpType:     types.OpCreate,
+					Payload:    payload,
+					Response:   respCh,
+				}
+				p.Execute(req)
+				resp := <-respCh
+				if resp.Error != nil && resp.Status != types.StatusOK {
+					t.Logf("Execute Create db1 doc %d: %v", docID, resp.Error)
+				}
+			}
+			for j := 0; j < docsPerSender; j++ {
+				docID := uint64(workerID*docsPerSender + j + 1)
+				payload := []byte(fmt.Sprintf(`{"w":%d,"d":%d}`, workerID, docID))
+				respCh := make(chan pool.Response, 1)
+				req := &pool.Request{
+					DBID:       dbID2,
+					Collection: coll,
+					DocID:      docID,
+					OpType:     types.OpCreate,
+					Payload:    payload,
+					Response:   respCh,
+				}
+				p.Execute(req)
+				_ = <-respCh
+			}
+		}()
+	}
+	wg.Wait()
+
+	db1, err := p.OpenDB(dbID1)
+	if err != nil {
+		t.Fatalf("OpenDB db1 after: %v", err)
+	}
+	db2, err := p.OpenDB(dbID2)
+	if err != nil {
+		t.Fatalf("OpenDB db2 after: %v", err)
+	}
+	expected := numSenders * docsPerSender
+	if db1.IndexSize() != expected {
+		t.Errorf("db1: expected %d docs, got %d", expected, db1.IndexSize())
+	}
+	if db2.IndexSize() != expected {
+		t.Errorf("db2: expected %d docs, got %d", expected, db2.IndexSize())
 	}
 }

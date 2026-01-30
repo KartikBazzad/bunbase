@@ -114,12 +114,7 @@ func (gs *GracefulShutdown) syncAndCloseAll(ctx context.Context) error {
 
 	done := make(chan struct{})
 	go func() {
-		for _, db := range gs.pool.dbs {
-			// Sync WAL and data files
-			if db != nil {
-				db.Close()
-			}
-		}
+		gs.pool.closeAllDBs()
 		gs.pool.catalog.Close()
 		close(done)
 	}()

@@ -348,10 +348,16 @@ func (s *Scheduler) worker() {
 					return
 				}
 				s.mu.Unlock()
+				// Yield to avoid tight spinning when no databases exist
+				time.Sleep(10 * time.Millisecond)
+			} else {
+				// No work available, yield to avoid busy-waiting
+				time.Sleep(1 * time.Millisecond)
 			}
 			continue
 		}
 
+		// Block on channel read (no default case) to avoid busy-waiting
 		select {
 		case req, ok := <-queue:
 			if !ok {
@@ -366,8 +372,6 @@ func (s *Scheduler) worker() {
 			if s.pool != nil {
 				s.pool.handleRequest(req)
 			}
-		default:
-			continue
 		}
 	}
 }

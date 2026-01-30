@@ -13,9 +13,10 @@
     "SocketPath": "/tmp/docdb.sock",
     "DBName": "loadtest",
     "WALDir": "./docdb/data/wal",
-    "OutputPath": "./matrix_results/1db_20conn_2w.json",
+    "OutputPath": "matrix_results/json/1db_20conn_2w.json",
+    "OutputDir": "./matrix_results",
     "CSVOutput": true,
-    "Seed": 1769669590337863000,
+    "Seed": 1769763605816250000,
     "Databases": [
       {
         "Name": "db1",
@@ -30,60 +31,60 @@
     "PerDatabaseCRUD": false,
     "ConnectionsPerDB": 20
   },
-  "DurationSeconds": 120.000170291,
-  "TotalOperations": 1162813,
+  "DurationSeconds": 120.00094525,
+  "TotalOperations": 66414,
   "Databases": {
     "db1": {
       "Name": "db1",
       "Latency": {
         "create": {
-          "P50": 0.104791,
-          "P95": 1.27775,
-          "P99": 2.028189,
-          "P999": 2.641,
-          "Mean": 0.24679,
-          "Min": 0.029875,
-          "Max": 41.851416,
-          "Count": 348825
+          "P50": 0.144,
+          "P95": 15.974046,
+          "P99": 23.90142,
+          "P999": 33.746582,
+          "Mean": 4.711787,
+          "Min": 0.028333,
+          "Max": 428.560541,
+          "Count": 19910
         },
         "delete": {
-          "P50": 0.074125,
-          "P95": 1.144706,
-          "P99": 1.346379,
-          "P999": 1.720726,
-          "Mean": 0.1631,
-          "Min": 0.013166,
-          "Max": 24.955959,
-          "Count": 116148
+          "P50": 0.056375,
+          "P95": 8.049302,
+          "P99": 15.021038,
+          "P999": 20.82535,
+          "Mean": 1.060863,
+          "Min": 0.015792,
+          "Max": 35.861708,
+          "Count": 6668
         },
         "read": {
-          "P50": 0.074167,
-          "P95": 1.15075,
-          "P99": 1.346868,
-          "P999": 1.729988,
-          "Mean": 0.16433,
-          "Min": 0.0125,
-          "Max": 23.533541,
-          "Count": 465416
+          "P50": 0.0585,
+          "P95": 8.053683,
+          "P99": 15.082898,
+          "P999": 20.996245,
+          "Mean": 1.071332,
+          "Min": 0.016125,
+          "Max": 423.966375,
+          "Count": 26493
         },
         "update": {
-          "P50": 0.105,
-          "P95": 1.278449,
-          "P99": 2.028524,
-          "P999": 2.64378,
-          "Mean": 0.247627,
-          "Min": 0.032959,
-          "Max": 61.631875,
-          "Count": 232425
+          "P50": 7.65675,
+          "P95": 21.407216,
+          "P99": 27.238503,
+          "P999": 39.499963,
+          "Mean": 8.292162,
+          "Min": 0.033125,
+          "Max": 424.596458,
+          "Count": 13343
         }
       },
       "WALGrowth": {
-        "InitialSizeBytes": 233497786,
-        "FinalSizeBytes": 233497786,
-        "MaxSizeBytes": 233497786,
-        "GrowthRateBytesPerSec": 0,
+        "InitialSizeBytes": 20960480,
+        "FinalSizeBytes": 38819784,
+        "MaxSizeBytes": 38819784,
+        "GrowthRateBytesPerSec": 148826.18309786543,
         "SampleCount": 122,
-        "DurationSeconds": 120.00030975
+        "DurationSeconds": 120.001088708
       },
       "Healing": {
         "TotalHealings": 0,
@@ -111,59 +112,59 @@
         }
       },
       "OperationCounts": {
-        "create": 348825,
-        "delete": 116148,
-        "read": 465416,
-        "update": 232425
+        "create": 19910,
+        "delete": 6668,
+        "read": 26493,
+        "update": 13343
       },
-      "TotalOperations": 1162814
+      "TotalOperations": 66414
     }
   },
   "Global": {
-    "TotalOperations": 1162814,
+    "TotalOperations": 66414,
     "Latency": {
       "create": {
-        "P50": 0.104791,
-        "P95": 1.27775,
-        "P99": 2.028189,
-        "P999": 2.641,
-        "Mean": 0.24679,
-        "Min": 0.029875,
-        "Max": 41.851416,
-        "Count": 348825
+        "P50": 0.144,
+        "P95": 15.974046,
+        "P99": 23.90142,
+        "P999": 33.746582,
+        "Mean": 4.711787,
+        "Min": 0.028333,
+        "Max": 428.560541,
+        "Count": 19910
       },
       "delete": {
-        "P50": 0.074125,
-        "P95": 1.144706,
-        "P99": 1.346379,
-        "P999": 1.720726,
-        "Mean": 0.1631,
-        "Min": 0.013166,
-        "Max": 24.955959,
-        "Count": 116148
+        "P50": 0.056375,
+        "P95": 8.049302,
+        "P99": 15.021038,
+        "P999": 20.82535,
+        "Mean": 1.060863,
+        "Min": 0.015792,
+        "Max": 35.861708,
+        "Count": 6668
       },
       "read": {
-        "P50": 0.074167,
-        "P95": 1.15075,
-        "P99": 1.346868,
-        "P999": 1.729988,
-        "Mean": 0.16433000000000003,
-        "Min": 0.0125,
-        "Max": 23.533541,
-        "Count": 465416
+        "P50": 0.0585,
+        "P95": 8.053683,
+        "P99": 15.082897999999998,
+        "P999": 20.996245,
+        "Mean": 1.071332,
+        "Min": 0.016125,
+        "Max": 423.966375,
+        "Count": 26493
       },
       "update": {
-        "P50": 0.105,
-        "P95": 1.278449,
-        "P99": 2.028524,
-        "P999": 2.64378,
-        "Mean": 0.247627,
-        "Min": 0.032959,
-        "Max": 61.631875,
-        "Count": 232425
+        "P50": 7.65675,
+        "P95": 21.407216,
+        "P99": 27.238503,
+        "P999": 39.499962999999994,
+        "Mean": 8.292162,
+        "Min": 0.033125,
+        "Max": 424.596458,
+        "Count": 13343
       }
     },
-    "TotalWALGrowth": 0,
+    "TotalWALGrowth": 17859304,
     "TotalHealing": {
       "TotalHealings": 0,
       "TotalDocumentsHealed": 0,

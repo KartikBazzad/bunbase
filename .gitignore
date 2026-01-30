@@ -36,3 +36,6 @@ services/server/.logs
 
 # Function storage
 services/server/functions
+
+
+.go-build-cache

@@ -418,6 +418,44 @@ cfg.Sched.QueueDepth = 1000 // Accept bursts of 1000 requests
 cfg.Sched.RoundRobinDBs = false // Deterministic ordering (testing only)
 ```
 
+### WorkerCount and MaxWorkers (scheduler workers)
+
+**Description:** Number of scheduler workers that process requests from per-DB queues. By default the pool uses **one** scheduler worker, so only one request is in flight globally. This is the main throughput bottleneck: more connections or more databases cannot increase throughput because the single worker serializes everything.
+
+**Default:** `WorkerCount: 1`, `MaxWorkers: 1` (when `UnsafeMultiWriter` is false)
+
+**To increase throughput:** Set `UnsafeMultiWriter: true` and set `WorkerCount` and `MaxWorkers` greater than 1 (e.g. `WorkerCount: 4`, `MaxWorkers: 16`). Multiple scheduler workers allow multiple requests to be in flight; each request is still executed by one LogicalDB with partition-level locking, so correctness is preserved. Re-run the matrix/load tests with multiple workers to validate throughput and latency.
+
+**Trade-offs:**
+
+- **Single worker (default):** Simple, predictable; throughput capped (~500–600 ops/sec in typical matrix runs).
+- **Multiple workers:** Higher throughput and better utilization when using many DBs or connections; ensure Pool is built with concurrent OpenDB support (dbsMu guards the open-databases map).
+
+**Example (programmatic):**
+
+```go
+cfg.Sched.UnsafeMultiWriter = true
+cfg.Sched.WorkerCount = 4
+cfg.Sched.MaxWorkers = 16
+```
+
+**Example (CLI):** When running the DocDB server binary:
+
+```bash
+./docdb -unsafe-multi-writer
+# Uses 4 workers, max 16 (default when -unsafe-multi-writer is set)
+
+./docdb -unsafe-multi-writer -sched-workers 8 -sched-max-workers 32 -data-dir ./data -socket /tmp/docdb.sock
+```
+
+### UnsafeMultiWriter
+
+**Description:** When false (default), WorkerCount and MaxWorkers are clamped to 1 so only one scheduler worker runs. When true, the configured WorkerCount and MaxWorkers are used, allowing multiple concurrent requests in flight and higher throughput.
+
+**Default:** `false`
+
+**Recommended:** Set to `true` when you need higher throughput (e.g. matrix/load tests with many DBs or connections). The name "Unsafe" refers to enabling more concurrency; each database still uses partition-level locking. Document your matrix results after enabling.
+
 ---
 
 ## Database Configuration
@@ -725,11 +763,14 @@ cfg.Healing.MaxBatchSize = 200 // Heal up to 200 documents per batch
 ./docdb --help
 ```
 
-| Flag              | Description                     | Default         |
-| ----------------- | ------------------------------- | --------------- |
-| `--data-dir`      | Directory for data files        | ./data          |
-| `--socket`        | Unix socket path                | /tmp/docdb.sock |
-| `--memory-global` | Global memory limit in MB       | 1024            |
+| Flag                    | Description                                      | Default         |
+| ----------------------- | ------------------------------------------------ | --------------- |
+| `--data-dir`            | Directory for data files                         | ./data          |
+| `--socket`              | Unix socket path                                 | /tmp/docdb.sock |
+| `--unsafe-multi-writer` | Enable multiple scheduler workers (higher throughput) | false        |
+| `--sched-workers`       | Number of scheduler workers (use with -unsafe-multi-writer) | 0 (then 4 if multi-writer) |
+| `--sched-max-workers`   | Max scheduler workers cap                        | 0 (then 16 if multi-writer) |
+| `--memory-global`       | Global memory limit in MB                        | 1024            |
 | `--memory-per-db` | Per-database memory limit in MB | 256             |
 | `--wal-dir`       | Directory for WAL files         | ./data/wal      |
 | `--wal-fsync`     | Enable fsync on WAL writes      | true            |
