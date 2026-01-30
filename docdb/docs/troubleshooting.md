@@ -644,6 +644,32 @@ go test -bench=. -memprofile=mem.prof ./tests/benchmarks
 go tool pprof mem.prof
 ```
 
+### Profiling the server
+
+To profile the **running** DocDB server (CPU, mutex, heap), start it with the pprof HTTP server enabled:
+
+```bash
+./docdb -data-dir ./data -socket /tmp/docdb.sock -debug-addr localhost:6060
+```
+
+Then use `go tool pprof` against the server:
+
+```bash
+# CPU profile (30-second sample)
+go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+
+# Heap snapshot
+go tool pprof http://localhost:6060/debug/pprof/heap
+
+# Mutex contention
+go tool pprof http://localhost:6060/debug/pprof/mutex
+
+# Goroutine block profile (requires GODEBUG=mutexprofile=1 or blockprofile=1 if needed)
+go tool pprof http://localhost:6060/debug/pprof/block
+```
+
+Leave `-debug-addr` empty (default) to disable pprof. Bind to localhost only; do not expose the pprof port to the network.
+
 ---
 
 ## Logging

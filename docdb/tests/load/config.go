@@ -37,6 +37,9 @@ type LoadTestConfig struct {
 
 	// Random seed for reproducibility
 	Seed int64
+
+	// BatchSize: number of ops per IPC request (1 = one round-trip per op; >1 reduces round-trips).
+	BatchSize int
 }
 
 // DefaultConfig returns a default load test configuration.
@@ -59,6 +62,7 @@ func DefaultConfig() *LoadTestConfig {
 		OutputDir:       "docdb/tests/load/results",
 		CSVOutput:       false,
 		Seed:            time.Now().UnixNano(),
+		BatchSize:       1, // 1 = current behavior; >1 uses ExecuteBatch for fewer round-trips
 	}
 }
 
@@ -112,6 +116,9 @@ func (c *LoadTestConfig) Validate() error {
 	}
 	if c.OutputDir == "" {
 		return &ConfigError{Field: "OutputDir", Message: "cannot be empty"}
+	}
+	if c.BatchSize < 1 {
+		return &ConfigError{Field: "BatchSize", Message: "must be >= 1"}
 	}
 	return nil
 }

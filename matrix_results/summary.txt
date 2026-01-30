@@ -1,18 +1,15 @@
 Test Matrix Summary
 ==================
 
-Total Tests: 9
-Successful: 9
+Total Tests: 6
+Successful: 6
 Failed: 0
 
 Test Results:
 -------------
-✓ 1db_1conn_1w (duration: 2m0.14851675s)
-✓ 1db_20conn_1w (duration: 2m0.299475666s)
-✓ 1db_50conn_1w (duration: 2m0.798057291s)
-✓ 10db_1conn_1w (duration: 2m2.855277792s)
-✓ 10db_20conn_1w (duration: 2m5.919994125s)
-✓ 10db_50conn_1w (duration: 2m6.447404375s)
-✓ 20db_1conn_1w (duration: 2m6.5614275s)
-✓ 20db_20conn_1w (duration: 2m6.816902375s)
-✓ 20db_50conn_1w (duration: 2m4.062214791s)
+✓ 20db_1conn_1w (duration: 1m3.340284625s)
+✓ 20db_1conn_2w (duration: 1m3.376722375s)
+✓ 20db_20conn_1w (duration: 1m3.478986333s)
+✓ 20db_20conn_2w (duration: 1m5.525447625s)
+✓ 20db_50conn_1w (duration: 1m5.270301792s)
+✓ 20db_50conn_2w (duration: 1m5.311204667s)

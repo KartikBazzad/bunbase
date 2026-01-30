@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -169,38 +170,47 @@ func (h *Handler) Handle(frame *RequestFrame) *ResponseFrame {
 
 		startTime := time.Now()
 		responses := make([][]byte, len(frame.Ops))
-		for i, op := range frame.Ops {
+		statuses := make([]types.Status, len(frame.Ops))
+		var wg sync.WaitGroup
+		for i := range frame.Ops {
+			op := &frame.Ops[i]
 			if op.OpType == types.OpCreate || op.OpType == types.OpUpdate {
 				if err := validateJSONPayload(op.Payload); err != nil {
 					responses[i] = []byte(err.Error())
-					if response.Status == types.StatusOK {
-						response.Status = types.StatusError
-					}
+					statuses[i] = types.StatusError
+					response.Status = types.StatusError
 					continue
 				}
 			}
 
-			req := &pool.Request{
-				DBID:       frame.DBID,
-				Collection: op.Collection,
-				DocID:      op.DocID,
-				OpType:     op.OpType,
-				Payload:    op.Payload,
-				PatchOps:   op.PatchOps,
-				Response:   make(chan pool.Response, 1),
-			}
+			wg.Add(1)
+			go func(idx int, o *Operation) {
+				defer wg.Done()
+				req := &pool.Request{
+					DBID:       frame.DBID,
+					Collection: o.Collection,
+					DocID:      o.DocID,
+					OpType:     o.OpType,
+					Payload:    o.Payload,
+					PatchOps:   o.PatchOps,
+					Response:   make(chan pool.Response, 1),
+				}
+				h.pool.Execute(req)
+				resp := <-req.Response
+				statuses[idx] = resp.Status
+				if resp.Error != nil {
+					responses[idx] = []byte(resp.Error.Error())
+				} else if resp.Data != nil {
+					responses[idx] = resp.Data
+				}
+			}(i, op)
+		}
+		wg.Wait()
 
-			h.pool.Execute(req)
-			resp := <-req.Response
-
-			if resp.Error != nil {
-				responses[i] = []byte(resp.Error.Error())
-			} else if resp.Data != nil {
-				responses[i] = resp.Data
-			}
-
-			if resp.Status != types.StatusOK && response.Status == types.StatusOK {
-				response.Status = resp.Status
+		for _, s := range statuses {
+			if s != types.StatusOK {
+				response.Status = s
+				break
 			}
 		}
 

@@ -560,6 +560,9 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		partitionWAL.SetFsyncCallback(func(duration time.Duration) {
 			metrics.RecordPartitionWALFsync(db.dbName, partitionIDStr, duration)
 		})
+		partitionWAL.SetRotationCallback(func(duration time.Duration) {
+			metrics.RecordPartitionWALRotation(db.dbName, partitionIDStr, duration)
+		})
 		db.partitions[i].SetWAL(partitionWAL)
 
 		// Create partition datafile (needed for recovery to apply records)
@@ -570,6 +573,9 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		if err := partitionDataFile.Open(); err != nil {
 			return fmt.Errorf("failed to open partition %d datafile: %w", i, err)
 		}
+		partitionDataFile.SetSyncCallback(func(d time.Duration) {
+			metrics.RecordPartitionDatafileSync(db.dbName, partitionIDStr, d)
+		})
 		db.partitions[i].SetDataFile(partitionDataFile)
 	}
 
@@ -1559,6 +1565,10 @@ func (db *LogicalDB) AddOpToTx(tx *Tx, collection string, opType types.Operation
 
 // commitSinglePartitionTx commits a transaction that touches only one partition (no coordinator).
 // Caller must ensure all recs target the given partition. Uses tx.ID for all WAL records.
+//
+// IMPORTANT:
+// WAL must be durable before datafile sync.
+// Datafile may lag WAL but must never lead it.
 func (db *LogicalDB) commitSinglePartitionTx(partition *Partition, tx *Tx, recs []*types.WALRecord) error {
 	partition.mu.Lock()
 	defer partition.mu.Unlock()
@@ -1621,7 +1631,7 @@ func (db *LogicalDB) commitSinglePartitionTx(partition *Partition, tx *Tx, recs 
 				return ErrMemoryLimit
 			}
 			allocSoFar += mem
-			offset, err := dataFile.Write(rec.Payload)
+			offset, err := dataFile.WriteNoSync(rec.Payload)
 			if err != nil {
 				return err
 			}
@@ -1645,7 +1655,7 @@ func (db *LogicalDB) commitSinglePartitionTx(partition *Partition, tx *Tx, recs 
 				return ErrMemoryLimit
 			}
 			allocSoFar += mem
-			offset, err := dataFile.Write(rec.Payload)
+			offset, err := dataFile.WriteNoSync(rec.Payload)
 			if err != nil {
 				return err
 			}
@@ -1672,6 +1682,13 @@ func (db *LogicalDB) commitSinglePartitionTx(partition *Partition, tx *Tx, recs 
 
 	if err := wal.Write(tx.ID, db.dbID, "", 0, types.OpCommit, nil); err != nil {
 		return fmt.Errorf("WAL commit marker: %w", err)
+	}
+	// WAL must be durable before datafile sync (invariant documented above).
+	if err := wal.Sync(); err != nil {
+		return fmt.Errorf("WAL sync: %w", err)
+	}
+	if err := dataFile.Sync(); err != nil {
+		return fmt.Errorf("datafile sync: %w", err)
 	}
 
 	// Apply index updates (visibility only after OpCommit)
@@ -1963,8 +1980,14 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 		return nil
 	}
 	// SSI-lite: serialize commit, check conflicts, then append to history on success
+	t0 := time.Now()
 	db.commitMu.Lock()
-	defer db.commitMu.Unlock()
+	metrics.RecordCommitMuWait(db.dbName, time.Since(t0))
+	holdStart := time.Now()
+	defer func() {
+		metrics.RecordCommitMuHold(db.dbName, time.Since(holdStart))
+		db.commitMu.Unlock()
+	}()
 	writeSet := computeWriteSet(tx.Operations)
 	if db.commitHistory != nil {
 		recs := db.commitHistory.CommitsAfter(tx.SnapshotTxID)
@@ -2053,15 +2076,37 @@ func (db *LogicalDB) HealingService() *HealingService {
 }
 
 // GetWALStats returns WAL/group-commit metrics when group commit is active.
-// In partitioned mode, returns nil (per-partition stats not aggregated here).
-// Map keys when non-nil: total_batches, total_records, avg_batch_size, avg_batch_latency_ns,
-// max_batch_size, max_batch_latency_ns, last_flush_time_unix_ns.
+// In partitioned mode, returns per-partition stats keyed by "p0", "p1", ... each with
+// total_batches, total_records, avg_batch_size, avg_batch_latency_ns, max_batch_size, max_batch_latency_ns.
 func (db *LogicalDB) GetWALStats() map[string]interface{} {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.partitions == nil || len(db.partitions) == 0 {
 		return nil
 	}
-	// Partition WALs do not expose GetGroupCommitStats; return nil for partitioned mode.
-	return nil
+	out := make(map[string]interface{})
+	for i, p := range db.partitions {
+		pw := p.GetWAL()
+		if pw == nil {
+			continue
+		}
+		stats, ok := pw.GetGroupCommitStats()
+		if !ok {
+			continue
+		}
+		key := fmt.Sprintf("p%d", i)
+		out[key] = map[string]interface{}{
+			"total_batches":       stats.TotalBatches,
+			"total_records":       stats.TotalRecords,
+			"avg_batch_size":      stats.AvgBatchSize,
+			"avg_batch_latency_ns": stats.AvgBatchLatency.Nanoseconds(),
+			"max_batch_size":      stats.MaxBatchSize,
+			"max_batch_latency_ns": stats.MaxBatchLatency.Nanoseconds(),
+			"last_flush_time_unix_ns": stats.LastFlushTime.UnixNano(),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

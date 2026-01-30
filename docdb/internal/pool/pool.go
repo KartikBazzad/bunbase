@@ -126,7 +126,7 @@ func NewPool(cfg *config.Config, log *logger.Logger) *Pool {
 	memCaps := memory.NewCaps(cfg.Memory.GlobalCapacityMB, cfg.Memory.PerDBLimitMB)
 	bufferPool := memory.NewBufferPool(cfg.Memory.BufferSizes)
 	catalog := catalog.NewCatalog(cfg.DataDir+"/.catalog", log)
-	sched := NewScheduler(cfg.Sched.QueueDepth, log)
+	sched := NewScheduler(cfg.Sched.QueueDepth, cfg.Sched.MaxTotalQueued, log)
 	// Enforce single-writer-by-default: only allow multiple workers when explicitly enabled.
 	workerCount := cfg.Sched.WorkerCount
 	maxWorkers := cfg.Sched.MaxWorkers
@@ -276,7 +276,11 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 
 	// Use LogicalDBConfig so WAL rotation respects cfg.WAL.MaxFileSizeMB
 	dbCfg := config.DefaultLogicalDBConfig()
-	dbCfg.PartitionCount = 1
+	partCount := p.cfg.DB.DefaultPartitionCount
+	if partCount < 1 {
+		partCount = 1
+	}
+	dbCfg.PartitionCount = partCount
 	dbCfg.MaxSegmentSize = int64(p.cfg.WAL.MaxFileSizeMB) * 1024 * 1024
 	db := docdb.NewLogicalDBWithConfig(dbID, entry.DBName, p.cfg, dbCfg, p.memory, p.pool, p.logger)
 	if err := db.Open(p.cfg.DataDir, p.cfg.WAL.Dir); err != nil {
@@ -319,6 +323,12 @@ func (p *Pool) Execute(req *Request) {
 			Status: types.StatusError,
 			Error:  ErrPoolStopped,
 		}
+		return
+	}
+
+	// Fast path: when exactly one scheduler worker, run inline to avoid queue latency.
+	if p.sched.GetCurrentWorkerCount() == 1 {
+		p.handleRequest(req)
 		return
 	}
 
@@ -447,6 +457,7 @@ func (p *Pool) GetSchedulerStats() map[string]interface{} {
 		"queue_depths":    queueStats,
 		"avg_queue_depth": avgDepth,
 		"worker_count":    p.sched.GetCurrentWorkerCount(),
+		"pick_stats":      p.sched.GetPickStats(),
 	}
 	if antsStats := p.sched.GetAntsStats(); antsStats != nil {
 		out["ants_pool"] = antsStats

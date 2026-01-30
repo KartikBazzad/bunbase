@@ -64,6 +64,10 @@ func (mr *MatrixRunner) Run() error {
 	totalTests := len(mr.testConfigs)
 	log.Printf("Starting test matrix: %d configurations", totalTests)
 
+	matrixDBPath := ""
+	if db != nil && runID != 0 {
+		matrixDBPath = dbPath
+	}
 	for i, testConfig := range mr.testConfigs {
 		log.Printf("[%d/%d] Running test: %s", i+1, totalTests, testConfig.Name)
 
@@ -77,18 +81,8 @@ func (mr *MatrixRunner) Run() error {
 				mr.config.DocumentSize, mr.config.DocumentCount)
 		}
 
-		result := mr.runTestConfiguration(testConfig)
+		result := mr.runTestConfiguration(testConfig, matrixDBPath, runID)
 		mr.results = append(mr.results, result)
-
-		// On success, read JSON and insert into SQLite for analyzer
-		if result.Success && db != nil && runID != 0 {
-			resultData, parseErr := parseResultFile(result.OutputPath)
-			if parseErr != nil {
-				log.Printf("Warning: Failed to parse result file %s for SQLite: %v", result.OutputPath, parseErr)
-			} else if err := InsertResult(db, runID, resultData); err != nil {
-				log.Printf("Warning: Failed to insert result into SQLite: %v", err)
-			}
-		}
 
 		if result.Success {
 			log.Printf("[%d/%d] ✓ Completed: %s (duration: %v)", i+1, totalTests, testConfig.Name, result.Duration)
@@ -127,7 +121,8 @@ func (mr *MatrixRunner) Run() error {
 }
 
 // runTestConfiguration runs a single test configuration.
-func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResult {
+// When matrixDBPath != "" and matrixRunID != 0, the subprocess inserts into the matrix DB only (no JSON/CSV).
+func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration, matrixDBPath string, matrixRunID int64) TestResult {
 	result := TestResult{
 		Config:    config,
 		StartTime: time.Now(),
@@ -136,7 +131,7 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 	// Generate database names
 	dbNames := generateDatabaseNames(config.Databases)
 
-	// Derive JSON output path under <base>/json/
+	// Output: when using matrix DB, pass config name only (subprocess inserts, no file). Otherwise JSON filename.
 	jsonDir := filepath.Join(mr.config.OutputDir, "json")
 	if err := os.MkdirAll(jsonDir, 0755); err != nil {
 		result.Error = fmt.Errorf("failed to create json directory: %w", err)
@@ -145,8 +140,15 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 		result.Duration = result.EndTime.Sub(result.StartTime)
 		return result
 	}
-	outputFilename := mr.config.GetOutputPath(config)
-	result.OutputPath = filepath.Join(jsonDir, outputFilename)
+	useMatrixOnly := matrixDBPath != "" && matrixRunID != 0
+	var outputArg string
+	if useMatrixOnly {
+		outputArg = config.Name
+		result.OutputPath = ""
+	} else {
+		outputArg = mr.config.GetOutputPath(config)
+		result.OutputPath = filepath.Join(jsonDir, outputArg)
+	}
 
 	// Build command - use relative path from project root
 	cmd := exec.Command(
@@ -158,7 +160,7 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 		"-socket", mr.config.SocketPath,
 		"-wal-dir", mr.config.WALDir,
 		"-output-dir", mr.config.OutputDir,
-		"-output", outputFilename,
+		"-output", outputArg,
 		"-doc-size", fmt.Sprintf("%d", mr.config.DocumentSize),
 		"-doc-count", fmt.Sprintf("%d", mr.config.DocumentCount),
 		"-read-percent", fmt.Sprintf("%d", mr.config.ReadPercent),
@@ -166,8 +168,10 @@ func (mr *MatrixRunner) runTestConfiguration(config TestConfiguration) TestResul
 		"-update-percent", fmt.Sprintf("%d", mr.config.UpdatePercent),
 		"-delete-percent", fmt.Sprintf("%d", mr.config.DeletePercent),
 	)
-
-	if mr.config.CSVOutput {
+	if useMatrixOnly {
+		cmd.Args = append(cmd.Args, "-matrix-db", matrixDBPath, "-matrix-run-id", fmt.Sprintf("%d", matrixRunID))
+	}
+	if mr.config.CSVOutput && !useMatrixOnly {
 		cmd.Args = append(cmd.Args, "-csv")
 	}
 

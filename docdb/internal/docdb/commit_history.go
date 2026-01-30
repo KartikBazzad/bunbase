@@ -7,6 +7,11 @@ import (
 
 const defaultCommitHistoryMaxSize = 100_000
 
+// maxConflictWindow limits how far back we check for conflicts (SSI-lite).
+// Only the last N commits are checked for read-write conflicts.
+// This bounds the critical section time under commitMu.
+const maxConflictWindow = 1000
+
 // docKey returns a stable key for (collection, docID) for read/write set storage.
 func docKey(collection string, docID uint64) string {
 	if collection == "" {
@@ -17,17 +22,17 @@ func docKey(collection string, docID uint64) string {
 
 // commitRecord holds read and write sets for a committed transaction (for SSI conflict detection).
 type commitRecord struct {
-	txID    uint64
-	readSet map[string]struct{}
+	txID     uint64
+	readSet  map[string]struct{}
 	writeSet map[string]struct{}
 }
 
 // CommitHistory stores recent commit records for SSI-lite conflict detection.
 // Bounded size; oldest records are dropped when over capacity.
 type CommitHistory struct {
-	mu       sync.Mutex
-	records  []commitRecord
-	maxSize  int
+	mu      sync.Mutex
+	records []commitRecord
+	maxSize int
 }
 
 // NewCommitHistory creates a commit history with the given max size (number of commit records).
@@ -44,13 +49,21 @@ func NewCommitHistory(maxSize int) *CommitHistory {
 
 // CommitsAfter returns copies of commit records for transactions that committed after snapshotTxID
 // (i.e. txID > snapshotTxID). Caller must not modify the returned maps.
+// Only checks the last maxConflictWindow commits to bound critical section time.
 func (h *CommitHistory) CommitsAfter(snapshotTxID uint64) []commitRecord {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Start from max(0, len-maxConflictWindow) to cap the scan window
+	startIdx := 0
+	if len(h.records) > maxConflictWindow {
+		startIdx = len(h.records) - maxConflictWindow
+	}
+
 	var out []commitRecord
-	for _, rec := range h.records {
-		if rec.txID > snapshotTxID {
-			out = append(out, rec)
+	for i := startIdx; i < len(h.records); i++ {
+		if h.records[i].txID > snapshotTxID {
+			out = append(out, h.records[i])
 		}
 	}
 	return out

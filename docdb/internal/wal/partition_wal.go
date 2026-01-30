@@ -42,6 +42,7 @@ type PartitionWAL struct {
 	classifier    *errors.Classifier
 	errorTracker  *errors.ErrorTracker
 	onFsync       func(duration time.Duration) // Callback for fsync metrics
+	onRotation    func(duration time.Duration) // Callback for rotation duration (bottleneck profiling)
 }
 
 // NewPartitionWAL creates a new partition WAL.
@@ -190,6 +191,7 @@ func (pw *PartitionWAL) rotate() error {
 		return nil
 	}
 
+	rotationStart := time.Now()
 	basePath := pw.path // active WAL path (e.g. p0.wal); after rename this path will hold new file
 
 	// Flush group commit and sync current file before rename so recovery can read full segment.
@@ -231,7 +233,17 @@ func (pw *PartitionWAL) rotate() error {
 		pw.groupCommit.Start()
 	}
 
+	if pw.onRotation != nil {
+		pw.onRotation(time.Since(rotationStart))
+	}
 	return nil
+}
+
+// SetRotationCallback sets a callback invoked after each WAL rotation with the rotation duration.
+func (pw *PartitionWAL) SetRotationCallback(callback func(duration time.Duration)) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	pw.onRotation = callback
 }
 
 // Sync flushes buffered WAL records and syncs the file to disk.
@@ -291,6 +303,17 @@ func (pw *PartitionWAL) CurrentLSN() uint64 {
 // GetCheckpointManager returns the checkpoint manager for this partition.
 func (pw *PartitionWAL) GetCheckpointManager() *PartitionCheckpointManager {
 	return pw.checkpointMgr
+}
+
+// GetGroupCommitStats returns group commit stats for this partition when group commit is active.
+func (pw *PartitionWAL) GetGroupCommitStats() (GroupCommitStats, bool) {
+	pw.mu.Lock()
+	gc := pw.groupCommit
+	pw.mu.Unlock()
+	if gc == nil {
+		return GroupCommitStats{}, false
+	}
+	return gc.GetStats(), true
 }
 
 // SetFsyncCallback sets the callback function to be called after each fsync with the duration.

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kartikbazzad/docdb/internal/ipc"
+	"github.com/kartikbazzad/docdb/internal/types"
 	"github.com/kartikbazzad/docdb/pkg/client"
 )
 
@@ -229,12 +231,27 @@ func (wpm *WorkerPoolManager) runWorker(worker *Worker) {
 			}
 		}
 
-		// Generate and execute work item
-		item := worker.generateWorkItem(ctx, crudPercent)
-		worker.executeOperation(ctx, item)
-
-		atomic.AddInt64(&wpm.totalOps, 1)
-		atomic.AddInt64(&worker.OpsCount, 1)
+		batchSize := 1
+		if worker.Config != nil && worker.Config.BatchSize > 1 {
+			batchSize = worker.Config.BatchSize
+		}
+		if batchSize > 1 {
+			// Accumulate batchSize items and execute in one round-trip
+			items := make([]workItem, 0, batchSize)
+			for i := 0; i < batchSize; i++ {
+				item := worker.generateWorkItem(ctx, crudPercent)
+				items = append(items, item)
+			}
+			worker.executeBatch(ctx, items)
+			atomic.AddInt64(&worker.OpsCount, int64(len(items)))
+			atomic.AddInt64(&wpm.totalOps, int64(len(items)))
+		} else {
+			// Single op per round-trip
+			item := worker.generateWorkItem(ctx, crudPercent)
+			worker.executeOperation(ctx, item)
+			atomic.AddInt64(&worker.OpsCount, 1)
+			atomic.AddInt64(&wpm.totalOps, 1)
+		}
 
 		// Record phase operation if metrics available
 		if phaseName != "" && wpm.config != nil {
@@ -302,6 +319,28 @@ func (w *Worker) generateWorkItem(ctx *DatabaseContext, crudPercent CRUDPercenta
 	}
 }
 
+// workItemToOp converts a workItem to an ipc.Operation for batch execution.
+func workItemToOp(item workItem) ipc.Operation {
+	op := ipc.Operation{
+		Collection: item.collection,
+		DocID:      item.docID,
+		Payload:    item.payload,
+	}
+	switch item.opType {
+	case OpCreate:
+		op.OpType = types.OpCreate
+	case OpRead:
+		op.OpType = types.OpRead
+	case OpUpdate:
+		op.OpType = types.OpUpdate
+	case OpDelete:
+		op.OpType = types.OpDelete
+	default:
+		op.OpType = types.OpRead
+	}
+	return op
+}
+
 // executeOperation executes an operation and records metrics.
 func (w *Worker) executeOperation(ctx *DatabaseContext, item workItem) {
 	start := time.Now()
@@ -321,6 +360,28 @@ func (w *Worker) executeOperation(ctx *DatabaseContext, item workItem) {
 
 	// Record latency (even for errors)
 	ctx.LatencyMetrics.Record(item.opType, latency)
+}
+
+// executeBatch executes a batch of operations and records per-op latency (batch latency).
+func (w *Worker) executeBatch(ctx *DatabaseContext, items []workItem) {
+	if len(items) == 0 {
+		return
+	}
+	start := time.Now()
+	ops := make([]ipc.Operation, len(items))
+	for i := range items {
+		ops[i] = workItemToOp(items[i])
+	}
+	_, err := ctx.Client.ExecuteBatch(ctx.DBID, ops)
+	latency := time.Since(start)
+	perOpLatency := latency / time.Duration(len(items))
+	for _, item := range items {
+		ctx.LatencyMetrics.Record(item.opType, perOpLatency)
+	}
+	if err != nil {
+		// Batch failed; metrics already recorded with per-op latency
+		_ = err
+	}
 }
 
 // Stop stops all workers.

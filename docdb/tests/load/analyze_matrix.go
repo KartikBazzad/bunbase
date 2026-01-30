@@ -153,6 +153,61 @@ func parseResultFile(path string) (*TestResultData, error) {
 	}, nil
 }
 
+// BuildTestResultDataFromMultiDB builds TestResultData from in-memory MultiDBTestResults.
+// Used when inserting into the matrix SQLite DB without writing a JSON file.
+// resultFile is stored in the DB (use "" when no file was written).
+func BuildTestResultDataFromMultiDB(results *MultiDBTestResults, configName string, databases, connectionsPerDB, workersPerDB int, resultFile string) *TestResultData {
+	duration := results.DurationSeconds
+	if duration == 0 {
+		duration = 300
+	}
+	throughput := float64(results.TotalOperations) / duration
+	p95Latency := 0.0
+	p99Latency := 0.0
+	if results.Global != nil && results.Global.Latency != nil {
+		count := 0
+		if l, ok := results.Global.Latency[OpCreate]; ok {
+			p95Latency += l.P95
+			p99Latency += l.P99
+			count++
+		}
+		if l, ok := results.Global.Latency[OpRead]; ok {
+			p95Latency += l.P95
+			p99Latency += l.P99
+			count++
+		}
+		if l, ok := results.Global.Latency[OpUpdate]; ok {
+			p95Latency += l.P95
+			p99Latency += l.P99
+			count++
+		}
+		if l, ok := results.Global.Latency[OpDelete]; ok {
+			p95Latency += l.P95
+			p99Latency += l.P99
+			count++
+		}
+		if count > 0 {
+			p95Latency /= float64(count)
+			p99Latency /= float64(count)
+		}
+	}
+	return &TestResultData{
+		Config: TestConfiguration{
+			Name:             configName,
+			Databases:        databases,
+			ConnectionsPerDB: connectionsPerDB,
+			WorkersPerDB:     workersPerDB,
+		},
+		ResultFile: resultFile,
+		Throughput: throughput,
+		P95Latency: p95Latency,
+		P99Latency: p99Latency,
+		TotalOps:   results.TotalOperations,
+		Duration:   duration,
+		Success:    true,
+	}
+}
+
 // extractConfigFromFilename extracts test configuration from filename.
 func extractConfigFromFilename(filename string) TestConfiguration {
 	// Filename format: "1db_1conn_1w.json"

@@ -23,6 +23,7 @@ package pool
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartikbazzad/docdb/internal/logger"
@@ -56,23 +57,38 @@ type Scheduler struct {
 	workerExpiry      time.Duration            // Idle goroutine expiry for ants
 	preAlloc          bool                     // Pre-allocate ants worker queue
 	antsPool          *ants.Pool               // Ants goroutine pool (nil until Start)
+
+	pickTotalNs uint64 // Total time spent in PickNextQueue (nanoseconds)
+	pickCount   uint64 // Number of PickNextQueue calls
+
+	// depths: approximate per-DB queue depth for lock-free PickNextQueue scan.
+	// Updated on Enqueue (+1) and when worker pops (-1). Protected by dbMu when creating.
+	depths map[uint64]*atomic.Int32
+
+	// maxTotalQueued: global cap on total requests queued across all DBs (0 = disabled).
+	// totalQueued: current total; incremented on successful enqueue, decremented when worker pops.
+	maxTotalQueued int
+	totalQueued    atomic.Int32
 }
 
 // NewScheduler creates a new scheduler.
 //
 // Parameters:
 //   - queueDepth: Maximum number of pending requests per database
+//   - maxTotalQueued: Global cap on total queued requests across all DBs (0 = disabled)
 //   - logger: Logger instance
 //
 // Returns:
 //   - Initialized scheduler ready for Start()
 //
 // Note: Scheduler is not started until Start() is called.
-func NewScheduler(queueDepth int, logger interface{}) *Scheduler {
+func NewScheduler(queueDepth, maxTotalQueued int, logger interface{}) *Scheduler {
 	return &Scheduler{
 		queues:            make(map[uint64]chan *Request),
 		queueDepth:        queueDepth,
+		maxTotalQueued:    maxTotalQueued,
 		dbIDs:             make([]uint64, 0),
+		depths:            make(map[uint64]*atomic.Int32),
 		logger:            logger,
 		stopped:           false,
 		workerCount:       0,
@@ -156,19 +172,29 @@ func (s *Scheduler) calculateWorkerCount() {
 		return
 	}
 
-	// Auto-scale: max(NumCPU*2, db_count*2)
+	// Auto-scale: more workers when many DBs to drain queues faster and avoid collapse
 	s.dbMu.RLock()
 	dbCount := len(s.dbIDs)
 	s.dbMu.RUnlock()
 
 	numCPU := runtime.NumCPU()
 	minWorkers := numCPU * 2
-	dbBasedWorkers := dbCount * 2
+	multiplier := 2
+	if dbCount > 10 {
+		multiplier = 4 // 20 DBs -> 80 workers to reduce queue buildup
+	}
+	dbBasedWorkers := dbCount * multiplier
 
 	// Use the larger of the two
 	s.workerCount = minWorkers
 	if dbBasedWorkers > minWorkers {
 		s.workerCount = dbBasedWorkers
+	}
+
+	// When multi-writer is on (maxWorkers > 1), use a higher minimum so many DBs get enough drain capacity
+	// (dbCount is 0 at Start(), so dbBasedWorkers doesn't help until DBs register)
+	if s.maxWorkers > 1 && s.workerCount < 32 {
+		s.workerCount = 32
 	}
 
 	// Cap at max workers
@@ -234,6 +260,21 @@ func (s *Scheduler) GetAvgQueueDepth() float64 {
 	return float64(total) / float64(len(s.queues))
 }
 
+// GetPickStats returns time spent selecting queues (for bottleneck profiling).
+func (s *Scheduler) GetPickStats() map[string]interface{} {
+	totalNs := atomic.LoadUint64(&s.pickTotalNs)
+	count := atomic.LoadUint64(&s.pickCount)
+	avgNs := uint64(0)
+	if count > 0 {
+		avgNs = totalNs / count
+	}
+	return map[string]interface{}{
+		"pick_total_ns": totalNs,
+		"pick_count":    count,
+		"pick_avg_ns":   avgNs,
+	}
+}
+
 // GetCurrentWorkerCount returns the current number of scheduler workers.
 func (s *Scheduler) GetCurrentWorkerCount() int {
 	s.mu.Lock()
@@ -259,18 +300,27 @@ func (s *Scheduler) GetAntsStats() map[string]interface{} {
 }
 
 // PickNextQueue returns the database ID and queue with the largest pending depth,
-// or (0, nil) when no queues have work. Under skewed workloads this gives
-// the hottest DB more service and keeps tail latency bounded.
+// or (0, nil) when no queues have work. Uses per-DB atomic depth counters so the
+// hot-path scan does not hold dbMu, reducing contention under many DBs.
 func (s *Scheduler) PickNextQueue() (dbID uint64, queue chan *Request) {
 	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-	if len(s.queues) == 0 {
+	n := len(s.dbIDs)
+	if n == 0 {
+		s.dbMu.RUnlock()
 		return 0, nil
 	}
+	dbIDsCopy := make([]uint64, n)
+	copy(dbIDsCopy, s.dbIDs)
+	s.dbMu.RUnlock()
+
 	var best uint64
-	maxDepth := -1
-	for id, ch := range s.queues {
-		d := len(ch)
+	maxDepth := int32(-1)
+	for _, id := range dbIDsCopy {
+		depth := s.depths[id]
+		if depth == nil {
+			continue
+		}
+		d := depth.Load()
 		if d > maxDepth {
 			maxDepth = d
 			best = id
@@ -279,7 +329,21 @@ func (s *Scheduler) PickNextQueue() (dbID uint64, queue chan *Request) {
 	if maxDepth <= 0 {
 		return 0, nil
 	}
-	return best, s.queues[best]
+
+	s.dbMu.RLock()
+	queue = s.queues[best]
+	s.dbMu.RUnlock()
+	return best, queue
+}
+
+// decrementDepth decrements the approximate depth for dbID (call after popping from queue).
+func (s *Scheduler) decrementDepth(dbID uint64) {
+	s.dbMu.RLock()
+	d := s.depths[dbID]
+	s.dbMu.RUnlock()
+	if d != nil {
+		d.Add(-1)
+	}
 }
 
 func (s *Scheduler) Enqueue(req *Request) error {
@@ -309,15 +373,34 @@ func (s *Scheduler) Enqueue(req *Request) error {
 			s.mu.Unlock()
 			s.queues[req.DBID] = make(chan *Request, s.queueDepth)
 			s.dbIDs = append(s.dbIDs, req.DBID)
+			s.depths[req.DBID] = &atomic.Int32{}
 		}
 		queue = s.queues[req.DBID]
 		s.dbMu.Unlock()
 	}
 
+	// Global backpressure: reserve a slot so total queued does not exceed maxTotalQueued.
+	if s.maxTotalQueued > 0 {
+		newVal := s.totalQueued.Add(1)
+		if newVal > int32(s.maxTotalQueued) {
+			s.totalQueued.Add(-1)
+			return ErrQueueFull
+		}
+	}
+
 	select {
 	case queue <- req:
+		s.dbMu.RLock()
+		d := s.depths[req.DBID]
+		s.dbMu.RUnlock()
+		if d != nil {
+			d.Add(1)
+		}
 		return nil
 	default:
+		if s.maxTotalQueued > 0 {
+			s.totalQueued.Add(-1)
+		}
 		return ErrQueueFull
 	}
 }
@@ -335,7 +418,10 @@ func (s *Scheduler) worker() {
 		}
 
 		// Prefer the queue with the most pending work (fairness under skewed workloads)
-		_, queue := s.PickNextQueue()
+		pickStart := time.Now()
+		dbID, queue := s.PickNextQueue()
+		atomic.AddUint64(&s.pickTotalNs, uint64(time.Since(pickStart).Nanoseconds()))
+		atomic.AddUint64(&s.pickCount, 1)
 		if queue == nil {
 			s.dbMu.RLock()
 			empty := len(s.dbIDs) == 0
@@ -358,20 +444,22 @@ func (s *Scheduler) worker() {
 		}
 
 		// Block on channel read (no default case) to avoid busy-waiting
-		select {
-		case req, ok := <-queue:
-			if !ok {
-				s.mu.Lock()
-				if s.stopped {
-					s.mu.Unlock()
-					return
-				}
+		req, ok := <-queue
+		if !ok {
+			s.mu.Lock()
+			if s.stopped {
 				s.mu.Unlock()
-				continue
+				return
 			}
-			if s.pool != nil {
-				s.pool.handleRequest(req)
-			}
+			s.mu.Unlock()
+			continue
+		}
+		if s.maxTotalQueued > 0 {
+			s.totalQueued.Add(-1)
+		}
+		s.decrementDepth(dbID)
+		if s.pool != nil {
+			s.pool.handleRequest(req)
 		}
 	}
 }

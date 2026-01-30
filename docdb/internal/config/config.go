@@ -57,6 +57,7 @@ type CheckpointConfig struct {
 
 type SchedulerConfig struct {
 	QueueDepth        int           // Per-DB queue depth (backpressure)
+	MaxTotalQueued    int           // Global cap on total queued requests across all DBs (0 = disabled); use 400–600 for many DBs to avoid collapse
 	RoundRobinDBs     bool          // Whether to use round-robin across DBs (may be ignored in executor mode)
 	WorkerCount       int           // Number of scheduler workers (0 = auto-scale; v0.4: recommended = 1)
 	MaxWorkers        int           // Maximum workers for auto-tuning (default: 256)
@@ -70,6 +71,11 @@ type DBConfig struct {
 	CompactionTombstoneRatio  float64
 	MaxOpenDBs                int
 	IdleTimeout               time.Duration
+	// DefaultPartitionCount: partitions per LogicalDB when opening a DB (default: 1).
+	// Higher values improve write parallelism (more WAL/datafile writers) but increase
+	// WAL files, memory, and recovery work. Two-phase replay (replay budget) keeps
+	// higher partition counts safe.
+	DefaultPartitionCount int
 }
 
 // LogicalDBConfig configures partitioning and execution for a LogicalDB (v0.4).
@@ -87,6 +93,7 @@ type IPCConfig struct {
 	TCPPort        int
 	MaxConnections int  // Max concurrent connections (0 = unlimited, used with ants)
 	DebugMode      bool // Phase E.9: Enable request flow logging
+	DebugAddr      string // pprof HTTP server address (e.g. localhost:6060); empty = disabled
 }
 
 type HealingConfig struct {
@@ -133,6 +140,7 @@ func DefaultConfig() *Config {
 		},
 		Sched: SchedulerConfig{
 			QueueDepth:        100,
+			MaxTotalQueued:    0,           // 0 = no global cap; set 400–600 for 20+ DBs to avoid queue explosion
 			RoundRobinDBs:     true,
 			WorkerCount:       1,           // v0.4: single worker by default (single-writer per DB)
 			MaxWorkers:        1,           // cap at 1 unless UnsafeMultiWriter is set
@@ -145,6 +153,7 @@ func DefaultConfig() *Config {
 			CompactionTombstoneRatio:  0.3,
 			MaxOpenDBs:                100,
 			IdleTimeout:               5 * time.Minute,
+			DefaultPartitionCount:     1, // Backward compatible; use 2–4 for higher throughput
 		},
 		IPC: IPCConfig{
 			SocketPath: "/tmp/docdb.sock",

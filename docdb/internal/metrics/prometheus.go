@@ -40,6 +40,46 @@ func RecordPartitionWALFsync(db, partition string, duration time.Duration) {
 	}
 }
 
+// RecordPartitionDatafileSync records datafile fsync latency (called from docdb).
+func RecordPartitionDatafileSync(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionDatafileSync(db, partition, duration)
+	}
+}
+
+// RecordPartitionWALRotation records WAL rotation duration (called from docdb).
+func RecordPartitionWALRotation(db, partition string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordPartitionWALRotation(db, partition, duration)
+	}
+}
+
+// RecordCommitMuWait records time spent waiting to acquire commitMu (called from docdb).
+func RecordCommitMuWait(db string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordCommitMuWait(db, duration)
+	}
+}
+
+// RecordCommitMuHold records time commitMu was held (called from docdb).
+func RecordCommitMuHold(db string, duration time.Duration) {
+	globalExporterMu.RLock()
+	pe := globalExporter
+	globalExporterMu.RUnlock()
+	if pe != nil {
+		pe.RecordCommitMuHold(db, duration)
+	}
+}
+
 // RecordPartitionReplay records replay duration (called from docdb).
 func RecordPartitionReplay(db, partition string, duration time.Duration) {
 	globalExporterMu.RLock()
@@ -103,9 +143,13 @@ type PrometheusExporter struct {
 	documentsHealedTotal   uint64
 
 	// Partition metrics (Phase C.5)
-	partitionLockWaitDurations  map[string]map[string][]float64 // db -> partition -> durations
-	partitionWALFsyncDurations  map[string]map[string][]float64 // db -> partition -> durations
-	partitionReplayDurations    map[string]map[string][]float64 // db -> partition -> durations
+	partitionLockWaitDurations    map[string]map[string][]float64 // db -> partition -> durations
+	partitionWALFsyncDurations    map[string]map[string][]float64 // db -> partition -> durations
+	partitionDatafileSyncDurations map[string]map[string][]float64 // db -> partition -> durations
+	partitionWALRotationDurations  map[string]map[string][]float64 // db -> partition -> durations
+	partitionReplayDurations       map[string]map[string][]float64 // db -> partition -> durations
+	commitMuWaitDurations          map[string][]float64            // db -> wait durations (bottleneck profiling)
+	commitMuHoldDurations          map[string][]float64             // db -> hold durations
 	partitionIndexScanDurations map[string]map[string][]float64 // db -> partition -> durations
 	partitionQueueDepth         map[string]map[string]int       // db -> partition -> depth
 
@@ -122,10 +166,14 @@ func NewPrometheusExporter() *PrometheusExporter {
 		operationsTotal:             make(map[string]map[string]uint64),
 		operationDurations:          make(map[string][]float64),
 		errorsTotal:                 make(map[errors.ErrorCategory]uint64),
-		partitionLockWaitDurations:  make(map[string]map[string][]float64),
-		partitionWALFsyncDurations:  make(map[string]map[string][]float64),
-		partitionReplayDurations:    make(map[string]map[string][]float64),
-		partitionIndexScanDurations: make(map[string]map[string][]float64),
+		partitionLockWaitDurations:    make(map[string]map[string][]float64),
+		partitionWALFsyncDurations:    make(map[string]map[string][]float64),
+		partitionDatafileSyncDurations: make(map[string]map[string][]float64),
+		partitionWALRotationDurations:  make(map[string]map[string][]float64),
+		partitionReplayDurations:       make(map[string]map[string][]float64),
+		commitMuWaitDurations:          make(map[string][]float64),
+		commitMuHoldDurations:          make(map[string][]float64),
+		partitionIndexScanDurations:    make(map[string]map[string][]float64),
 		partitionQueueDepth:         make(map[string]map[string]int),
 		queryPartitionsScanned:      make(map[string]uint64),
 		queryRowsScanned:            make(map[string]uint64),
@@ -296,6 +344,16 @@ func exportPartitionMetrics(pe *PrometheusExporter) string {
 	// WAL fsync (summary)
 	output += exportPartitionDurations("docdb_partition_wal_fsync_seconds", "WAL fsync latency per partition", pe.partitionWALFsyncDurations)
 
+	// Datafile fsync (summary)
+	output += exportPartitionDurations("docdb_partition_datafile_sync_seconds", "Datafile fsync latency per partition", pe.partitionDatafileSyncDurations)
+
+	// WAL rotation (summary)
+	output += exportPartitionDurations("docdb_partition_wal_rotation_seconds", "WAL rotation duration per partition", pe.partitionWALRotationDurations)
+
+	// Commit mutex wait/hold (per DB, bottleneck profiling)
+	output += exportDBDurations("docdb_commit_mu_wait_seconds", "Time waiting to acquire commit mutex per DB", pe.commitMuWaitDurations)
+	output += exportDBDurations("docdb_commit_mu_hold_seconds", "Time commit mutex was held per DB", pe.commitMuHoldDurations)
+
 	// Replay (summary)
 	output += exportPartitionDurations("docdb_partition_replay_seconds", "Recovery replay duration per partition", pe.partitionReplayDurations)
 
@@ -337,6 +395,36 @@ func exportPartitionDurations(metricName, help string, data map[string]map[strin
 	return output
 }
 
+func exportDBDurations(metricName, help string, data map[string][]float64) string {
+	var output string
+	output += fmt.Sprintf("# HELP %s %s\n", metricName, help)
+	output += fmt.Sprintf("# TYPE %s summary\n", metricName)
+	for db, durations := range data {
+		if len(durations) == 0 {
+			continue
+		}
+		var sum float64
+		var min, max float64 = durations[0], durations[0]
+		for _, d := range durations {
+			sum += d
+			if d < min {
+				min = d
+			}
+			if d > max {
+				max = d
+			}
+		}
+		avg := sum / float64(len(durations))
+		labels := fmt.Sprintf("db=\"%s\"", db)
+		output += fmt.Sprintf("%s{%s,quantile=\"0\"} %f\n", metricName, labels, min)
+		output += fmt.Sprintf("%s{%s,quantile=\"0.5\"} %f\n", metricName, labels, avg)
+		output += fmt.Sprintf("%s{%s,quantile=\"1\"} %f\n", metricName, labels, max)
+		output += fmt.Sprintf("%s_sum{%s} %f\n", metricName, labels, sum)
+		output += fmt.Sprintf("%s_count{%s} %d\n", metricName, labels, len(durations))
+	}
+	return output
+}
+
 // RecordPartitionLockWait records lock wait time for a partition.
 func (pe *PrometheusExporter) RecordPartitionLockWait(db, partition string, duration time.Duration) {
 	pe.mu.Lock()
@@ -365,6 +453,60 @@ func (pe *PrometheusExporter) RecordPartitionWALFsync(db, partition string, dura
 		durations = durations[len(durations)-1000:]
 	}
 	pe.partitionWALFsyncDurations[db][partition] = durations
+}
+
+// RecordPartitionDatafileSync records datafile fsync latency for a partition.
+func (pe *PrometheusExporter) RecordPartitionDatafileSync(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionDatafileSyncDurations[db] == nil {
+		pe.partitionDatafileSyncDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionDatafileSyncDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionDatafileSyncDurations[db][partition] = durations
+}
+
+// RecordPartitionWALRotation records WAL rotation duration for a partition.
+func (pe *PrometheusExporter) RecordPartitionWALRotation(db, partition string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if pe.partitionWALRotationDurations[db] == nil {
+		pe.partitionWALRotationDurations[db] = make(map[string][]float64)
+	}
+	durations := pe.partitionWALRotationDurations[db][partition]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.partitionWALRotationDurations[db][partition] = durations
+}
+
+// RecordCommitMuWait records time spent waiting to acquire commitMu per DB.
+func (pe *PrometheusExporter) RecordCommitMuWait(db string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	durations := pe.commitMuWaitDurations[db]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.commitMuWaitDurations[db] = durations
+}
+
+// RecordCommitMuHold records time commitMu was held per DB.
+func (pe *PrometheusExporter) RecordCommitMuHold(db string, duration time.Duration) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	durations := pe.commitMuHoldDurations[db]
+	durations = append(durations, duration.Seconds())
+	if len(durations) > 1000 {
+		durations = durations[len(durations)-1000:]
+	}
+	pe.commitMuHoldDurations[db] = durations
 }
 
 // RecordPartitionReplay records replay duration for a partition.

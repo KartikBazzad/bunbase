@@ -35,6 +35,9 @@ func main() {
 	writePercent := flag.Int("write-percent", 30, "Percentage of write operations")
 	updatePercent := flag.Int("update-percent", 20, "Percentage of update operations")
 	deletePercent := flag.Int("delete-percent", 10, "Percentage of delete operations")
+	batchSize := flag.Int("batch-size", 1, "Ops per IPC request (1 = one round-trip per op; >1 uses ExecuteBatch)")
+	matrixDb := flag.String("matrix-db", "", "When set with -matrix-run-id, insert result into this SQLite DB only (no JSON/CSV)")
+	matrixRunID := flag.Int64("matrix-run-id", 0, "Run ID for matrix DB insert (use with -matrix-db)")
 	flag.Parse()
 
 	var cfg *load.MultiDBLoadTestConfig
@@ -48,7 +51,7 @@ func main() {
 		}
 	} else if *databasesFlag != "" {
 		// Create config from command-line flags
-		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *connectionsPerDB, *duration, *socketPath, *walDir, *outputPath, *outputDir, *csvOutput, *seed, *docSize, *docCount, *readPercent, *writePercent, *updatePercent, *deletePercent)
+		cfg = createConfigFromFlags(*databasesFlag, *workersPerDB, *connectionsPerDB, *duration, *socketPath, *walDir, *outputPath, *outputDir, *csvOutput, *seed, *docSize, *docCount, *readPercent, *writePercent, *updatePercent, *deletePercent, *batchSize)
 	} else {
 		log.Fatalf("Must specify either -config or -databases")
 	}
@@ -195,35 +198,56 @@ func main() {
 	// Collect results
 	results := collectMultiDBResults(cfg, metrics, actualDuration, totalOps)
 
-	// Write results
-	if err := writeMultiDBResults(results, cfg); err != nil {
-		log.Fatalf("Failed to write results: %v", err)
-	}
-
-	log.Printf("Results written to %s", cfg.OutputPath)
-
-	// Write CSV if requested
-	if cfg.CSVOutput {
-		baseDir := filepath.Dir(cfg.OutputPath)
-		if baseDir == "" {
-			baseDir = "."
+	if *matrixDb != "" && *matrixRunID != 0 {
+		// Insert into matrix SQLite DB only; no JSON/CSV report
+		db, err := load.OpenMatrixDB(*matrixDb)
+		if err != nil {
+			log.Fatalf("Failed to open matrix DB %s: %v", *matrixDb, err)
 		}
-		csvResults := &load.MultiDBTestResults{
-			TestConfig:      results.TestConfig,
-			DurationSeconds: results.DurationSeconds,
-			TotalOperations: results.TotalOperations,
-			Databases:       results.Databases,
-			Global:          results.Global,
+		defer db.Close()
+		configName := filepath.Base(cfg.OutputPath)
+		if ext := filepath.Ext(configName); ext != "" {
+			configName = configName[:len(configName)-len(ext)]
 		}
-		if err := load.WriteMultiDBCSV(csvResults, baseDir); err != nil {
-			log.Printf("Warning: Failed to write CSV files: %v", err)
-		} else {
-			log.Printf("CSV files written to %s", baseDir)
+		databases := len(cfg.Databases)
+		workersPerDB := 1
+		if databases > 0 && cfg.Databases[0].Workers > 0 {
+			workersPerDB = cfg.Databases[0].Workers
+		}
+		resultData := load.BuildTestResultDataFromMultiDB(results, configName, databases, cfg.ConnectionsPerDB, workersPerDB, "")
+		if err := load.InsertResult(db, *matrixRunID, resultData); err != nil {
+			log.Fatalf("Failed to insert result into matrix DB: %v", err)
+		}
+		log.Printf("Result inserted into matrix DB (run_id=%d, config=%s)", *matrixRunID, configName)
+	} else {
+		// Write JSON report
+		if err := writeMultiDBResults(results, cfg); err != nil {
+			log.Fatalf("Failed to write results: %v", err)
+		}
+		log.Printf("Results written to %s", cfg.OutputPath)
+		// Write CSV if requested
+		if cfg.CSVOutput {
+			baseDir := filepath.Dir(cfg.OutputPath)
+			if baseDir == "" {
+				baseDir = "."
+			}
+			csvResults := &load.MultiDBTestResults{
+				TestConfig:      results.TestConfig,
+				DurationSeconds: results.DurationSeconds,
+				TotalOperations: results.TotalOperations,
+				Databases:       results.Databases,
+				Global:          results.Global,
+			}
+			if err := load.WriteMultiDBCSV(csvResults, baseDir); err != nil {
+				log.Printf("Warning: Failed to write CSV files: %v", err)
+			} else {
+				log.Printf("CSV files written to %s", baseDir)
+			}
 		}
 	}
 }
 
-func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB int, duration time.Duration, socketPath, walDir, outputPath, outputDir string, csvOutput bool, seed int64, docSize, docCount, readPercent, writePercent, updatePercent, deletePercent int) *load.MultiDBLoadTestConfig {
+func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB int, duration time.Duration, socketPath, walDir, outputPath, outputDir string, csvOutput bool, seed int64, docSize, docCount, readPercent, writePercent, updatePercent, deletePercent, batchSize int) *load.MultiDBLoadTestConfig {
 	cfg := load.NewMultiDBConfig()
 	cfg.Duration = duration
 	cfg.SocketPath = socketPath
@@ -234,6 +258,7 @@ func createConfigFromFlags(databasesStr string, workersPerDB, connectionsPerDB i
 	cfg.Seed = seed
 	cfg.MetricsInterval = 1 * time.Second
 	cfg.ConnectionsPerDB = connectionsPerDB
+	cfg.BatchSize = batchSize
 
 	// Set CRUD percentages
 	cfg.ReadPercent = readPercent

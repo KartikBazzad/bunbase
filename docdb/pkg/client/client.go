@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 var (
 	ErrConnectionFailed = errors.New("failed to connect to server")
 	ErrInvalidResponse  = errors.New("invalid response from server")
+	ErrConnectionClosed = errors.New("connection closed")
 )
 
 type Client struct {
@@ -251,6 +253,74 @@ func (c *Client) Update(dbID uint64, collection string, docID uint64, payload []
 	}
 
 	return nil
+}
+
+// ExecuteBatch sends a single request frame with multiple operations and returns the
+// serialized response data (count + per-response length + payload). Use ParseBatchResponse
+// to parse the result. Reduces round-trips when batch size > 1.
+func (c *Client) ExecuteBatch(dbID uint64, ops []ipc.Operation) ([]byte, error) {
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+	if len(ops) == 0 {
+		return nil, errors.New("ExecuteBatch requires at least one op")
+	}
+	copyOps := make([]ipc.Operation, len(ops))
+	for i := range ops {
+		copyOps[i] = ops[i]
+		if copyOps[i].Collection == "" {
+			copyOps[i].Collection = "_default"
+		}
+		if copyOps[i].OpType == types.OpCreate || copyOps[i].OpType == types.OpUpdate {
+			if err := validateJSON(copyOps[i].Payload); err != nil {
+				return nil, err
+			}
+		}
+	}
+	frame := &ipc.RequestFrame{
+		RequestID: c.nextRequestID(),
+		Command:   ipc.CmdExecute,
+		DBID:      dbID,
+		OpCount:   uint32(len(copyOps)),
+		Ops:       copyOps,
+	}
+	resp, err := c.sendRequest(frame)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != types.StatusOK {
+		return nil, errors.New(string(resp.Data))
+	}
+	return resp.Data, nil
+}
+
+// ParseBatchResponse parses the serialized response from ExecuteBatch (format: 4-byte
+// count, then for each response 4-byte length + payload). Returns one slice per op.
+func ParseBatchResponse(data []byte) ([][]byte, error) {
+	if len(data) < 4 {
+		return nil, ErrInvalidResponse
+	}
+	n := binary.LittleEndian.Uint32(data[0:4])
+	if n == 0 {
+		return [][]byte{}, nil
+	}
+	out := make([][]byte, 0, n)
+	offset := 4
+	for i := uint32(0); i < n; i++ {
+		if offset+4 > len(data) {
+			return nil, ErrInvalidResponse
+		}
+		sz := binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
+		if offset+int(sz) > len(data) {
+			return nil, ErrInvalidResponse
+		}
+		payload := make([]byte, sz)
+		copy(payload, data[offset:offset+int(sz)])
+		out = append(out, payload)
+		offset += int(sz)
+	}
+	return out, nil
 }
 
 func (c *Client) Delete(dbID uint64, collection string, docID uint64) error {
@@ -518,6 +588,9 @@ func (c *Client) sendRequest(frame *ipc.RequestFrame) (*ipc.ResponseFrame, error
 }
 
 func (c *Client) writeFrame(data []byte) error {
+	if c.conn == nil {
+		return ErrConnectionClosed
+	}
 	lenBuf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(data)))
 
@@ -533,8 +606,11 @@ func (c *Client) writeFrame(data []byte) error {
 }
 
 func (c *Client) readFrame() ([]byte, error) {
+	if c.conn == nil {
+		return nil, ErrConnectionClosed
+	}
 	lenBuf := make([]byte, 4)
-	if _, err := c.conn.Read(lenBuf); err != nil {
+	if _, err := io.ReadFull(c.conn, lenBuf); err != nil {
 		return nil, err
 	}
 
@@ -544,7 +620,7 @@ func (c *Client) readFrame() ([]byte, error) {
 	}
 
 	buf := make([]byte, length)
-	if _, err := c.conn.Read(buf); err != nil {
+	if _, err := io.ReadFull(c.conn, buf); err != nil {
 		return nil, err
 	}
 

@@ -129,7 +129,12 @@ func (r *Rotator) ListSegments() ([]string, error) {
 		return seqI < seqJ
 	})
 
-	r.logger.Info("Found %d WAL segments", len(segments))
+	// Log at Debug to avoid flooding console when listing is frequent (e.g. WAL size checks).
+	if len(segments) > 0 {
+		r.logger.Info("Found %d WAL segments", len(segments))
+	} else {
+		r.logger.Debug("Found %d WAL segments", len(segments))
+	}
 	return segments, nil
 }
 

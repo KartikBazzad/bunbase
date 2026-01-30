@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	docdberrors "github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
@@ -30,6 +31,14 @@ type DataFile struct {
 	retryCtrl    *docdberrors.RetryController
 	classifier   *docdberrors.Classifier
 	errorTracker *docdberrors.ErrorTracker
+	onSync       func(d time.Duration) // optional callback after Sync (for metrics)
+}
+
+// SetSyncCallback sets a callback invoked after each Sync() with the fsync duration.
+func (df *DataFile) SetSyncCallback(cb func(d time.Duration)) {
+	df.mu.Lock()
+	defer df.mu.Unlock()
+	df.onSync = cb
 }
 
 func NewDataFile(path string, log *logger.Logger) *DataFile {
@@ -111,12 +120,16 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 			return docdberrors.ErrFileWrite
 		}
 
-		// Single sync at the end to ensure all data is durable.
-		// This reduces fsync overhead by ~50% while maintaining durability.
-		// Trade-off: Slightly larger window (0.1-1ms) where crash could lose data,
-		// but verification flag prevents partial records from being read.
+	// Single sync at the end to ensure all data is durable.
+	// This reduces fsync overhead by ~50% while maintaining durability.
+	// Trade-off: Slightly larger window (0.1-1ms) where crash could lose data,
+	// but verification flag prevents partial records from being read.
+		fsyncStart := time.Now()
 		if err := df.file.Sync(); err != nil {
 			return docdberrors.ErrFileSync
+		}
+		if df.onSync != nil {
+			df.onSync(time.Since(fsyncStart))
 		}
 
 		df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)

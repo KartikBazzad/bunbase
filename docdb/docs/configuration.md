@@ -233,6 +233,15 @@ cfg.WAL.MaxFileSizeMB = 500 // 500 MB before warning
 cfg.WAL.FsyncOnCommit = false
 ```
 
+### WAL Fsync (Group Commit) Tuning
+
+When WAL uses group commit (`Fsync.Mode` is `FsyncGroup` or `FsyncInterval`), these knobs control batching:
+
+- **IntervalMS:** Flush interval in milliseconds (default: 1). Larger values batch more records per fsync and improve throughput but increase the window of data at risk on crash.
+- **MaxBatchSize:** Max records per batch (default: 100). Larger batches reduce fsync frequency; gains are incremental (about 10–30%) once datafile and IPC are optimized.
+
+**Trade-offs:** Larger interval or batch size = higher throughput, slightly larger durability window. Expose via CLI: `-wal-fsync-interval-ms`, `-wal-fsync-max-batch-size` (0 = use default).
+
 ### Checkpoint Configuration
 
 **Description:** Controls checkpoint creation for bounded recovery time.
@@ -394,6 +403,26 @@ cfg.WAL.KeepSegments = 3 // Keep 3 segments before checkpoint
 
 ```go
 cfg.Sched.QueueDepth = 1000 // Accept bursts of 1000 requests
+```
+
+### MaxTotalQueued
+
+**Description:** Global cap on total queued requests across all databases. When set (e.g. 400–600), the scheduler returns `ErrQueueFull` once the total count of requests queued in all per-DB queues exceeds this limit, so clients get backpressure instead of unbounded queue buildup.
+
+**Default:** `0` (disabled; per-DB queue depth only)
+
+**When to use:** For deployments with many databases and many connections per DB (e.g. 20 DBs × 20 conn/DB). Without a global cap, total queued requests can grow to `QueueDepth × DB count` (e.g. 2000), leading to very high tail latency and throughput collapse. Setting `MaxTotalQueued` to 400–600 limits queue buildup and keeps latency stable; clients that receive `ErrQueueFull` should back off or retry.
+
+**Example (programmatic):**
+
+```go
+cfg.Sched.MaxTotalQueued = 500 // Cap total queued across all DBs
+```
+
+**Example (CLI):**
+
+```bash
+./docdb -unsafe-multi-writer -sched-max-total-queued 500
 ```
 
 ### RoundRobinDBs
@@ -581,6 +610,8 @@ When using partitioned mode (`PartitionCount > 1`), the following defaults and l
 - **Higher write throughput:** Increase `PartitionCount` (e.g. 4× CPU); stay ≤ `Query.MaxPartitionsPerDB`.
 - **Lower latency:** Keep `WorkerCount` at NumCPU; increase `QueueSize` for bursts.
 - **Many small DBs:** Use lower `PartitionCount` (e.g. 2) to reduce WAL files.
+
+**DefaultPartitionCount (DB config / `-partition-count`):** When opening a DB via the pool, the number of partitions is taken from `DB.DefaultPartitionCount` (default: 1). Higher values improve write parallelism (more WAL and datafile writers) but increase WAL files, memory usage, and recovery work. The two-phase replay design (replay budget, separate replay phase) keeps higher partition counts safe. CLI: `-partition-count N` (0 = use default 1).
 
 ### Query and WAL Limits (Phase D.8)
 
@@ -770,6 +801,7 @@ cfg.Healing.MaxBatchSize = 200 // Heal up to 200 documents per batch
 | `--unsafe-multi-writer` | Enable multiple scheduler workers (higher throughput) | false        |
 | `--sched-workers`       | Number of scheduler workers (use with -unsafe-multi-writer) | 0 (then 4 if multi-writer) |
 | `--sched-max-workers`   | Max scheduler workers cap                        | 0 (then 16 if multi-writer) |
+| `--sched-max-total-queued` | Global cap on total queued requests across all DBs (0 = disabled) | 0 |
 | `--memory-global`       | Global memory limit in MB                        | 1024            |
 | `--memory-per-db` | Per-database memory limit in MB | 256             |
 | `--wal-dir`       | Directory for WAL files         | ./data/wal      |
