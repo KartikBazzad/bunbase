@@ -114,13 +114,16 @@ go run ./docdb/tests/load/cmd/analyze_matrix/main.go \
 ```
 -results-dir string
     Matrix results base directory (default: "./matrix_results") containing:
-      - json/*.json
+      - matrix_results.db (optional; if present, analyzer loads latest run from SQLite)
+      - json/*.json (used when matrix_results.db is absent)
       - csv_global/*.csv
       - csv_dbs/<dbName>/latency_summary.csv
 
 -output string
     Output path for analysis report (default: "./matrix_results/reports/analysis.md")
 ```
+
+When `matrix_results.db` exists in the results directory, the analyzer reads all results from the latest matrix run stored in SQLite. Otherwise it scans `json/*.json` (backward compatibility).
 
 ## Test Execution Order
 
@@ -153,6 +156,7 @@ Each test configuration generates:
 
 The matrix runner also generates:
 
+- `matrix_results.db` - SQLite database of matrix runs and results (one run per invocation; analyzer uses latest run when present)
 - `summary.txt` - Test execution summary
 
 The analysis tool generates:
@@ -224,6 +228,34 @@ cat ./matrix_results/analysis.md
 - Ensure DocDB server is not overloaded
 - Check `MaxConnections` setting in DocDB config
 - Verify socket permissions
+
+## Recovery Testing
+
+Matrix/load tests do not restart the DocDB server. To exercise **recovery** (multi-segment replay and corrupt-tail truncation):
+
+1. Run matrix/load as usual so WAL and data are written.
+2. **Restart the DocDB server** using the same data and WAL directory (e.g. stop the server, then start it again with `--data-dir` and the same paths).
+3. Reconnect and open the databases used in the run (e.g. run a short verify step that opens each DB and optionally samples reads).
+
+Recovery behavior is covered by integration tests (e.g. WAL rotation and replay). The matrix runner does not perform restart-and-verify automatically; use an external script or manual restart if you want to validate recovery after a specific load run.
+
+## WAL Rotation in Matrix Runs
+
+WAL segment size is controlled by the DocDB server (e.g. `WAL.MaxFileSizeMB`), not by the matrix runner or multidb_loadtest. To **observe WAL rotation** during matrix/load tests (and have multi-segment size reflected in WAL metrics):
+
+- Start DocDB with a smaller segment size, e.g. set `WAL.MaxFileSizeMB` to 64 or lower so that the segment size is reached during the run.
+- After the WAL tracking fix (partitioned layout), matrix WAL metrics correctly sum all partition WAL files under `{walDir}/{dbName}/`, including rotated segments (`p*.wal`, `p*.wal.1`, etc.).
+
+## Transactions
+
+Matrix and multidb load tests use the **single-op (auto-commit) path** only. The IPC client and protocol expose `CmdExecute` for single operations or batches; there are no `BeginTx` / `Commit` / `Rollback` / `ExecuteInTx` commands.
+
+**Transaction behavior** (single-partition fast path, multi-partition 2PC, coordinator log, recovery) is covered by:
+
+- **Integration tests:** e.g. `go test ./docdb/tests/integration/ -run MultiPartition`
+- **docdbsh:** use `BeginTx`, `CommitTx`, `RollbackTx` and in-tx operations from the shell
+
+To extend matrix tests with transaction workload under load, IPC would need transaction commands and the load client would need to support them; that is a possible follow-up.
 
 ## Next Steps
 

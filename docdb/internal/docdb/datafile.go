@@ -2,13 +2,14 @@ package docdb
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"sync"
 
-	"github.com/kartikbazzad/docdb/internal/errors"
+	docdberrors "github.com/kartikbazzad/docdb/internal/errors"
 	"github.com/kartikbazzad/docdb/internal/logger"
 )
 
@@ -26,18 +27,18 @@ type DataFile struct {
 	file         *os.File
 	offset       uint64
 	logger       *logger.Logger
-	retryCtrl    *errors.RetryController
-	classifier   *errors.Classifier
-	errorTracker *errors.ErrorTracker
+	retryCtrl    *docdberrors.RetryController
+	classifier   *docdberrors.Classifier
+	errorTracker *docdberrors.ErrorTracker
 }
 
 func NewDataFile(path string, log *logger.Logger) *DataFile {
 	return &DataFile{
 		path:         path,
 		logger:       log,
-		retryCtrl:    errors.NewRetryController(),
-		classifier:   errors.NewClassifier(),
-		errorTracker: errors.NewErrorTracker(),
+		retryCtrl:    docdberrors.NewRetryController(),
+		classifier:   docdberrors.NewClassifier(),
+		errorTracker: docdberrors.NewErrorTracker(),
 	}
 }
 
@@ -47,13 +48,13 @@ func (df *DataFile) Open() error {
 
 	file, err := os.OpenFile(df.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		return errors.ErrFileOpen
+		return docdberrors.ErrFileOpen
 	}
 
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
-		return errors.ErrFileOpen
+		return docdberrors.ErrFileOpen
 	}
 
 	df.file = file
@@ -64,7 +65,7 @@ func (df *DataFile) Open() error {
 
 func (df *DataFile) Write(payload []byte) (uint64, error) {
 	if uint32(len(payload)) > MaxPayloadSize {
-		err := errors.ErrPayloadTooLarge
+		err := docdberrors.ErrPayloadTooLarge
 		category := df.classifier.Classify(err)
 		df.errorTracker.RecordError(err, category)
 		return 0, err
@@ -75,6 +76,14 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 	err := df.retryCtrl.Retry(func() error {
 		df.mu.Lock()
 		defer df.mu.Unlock()
+
+		// Sync in-memory offset with on-disk size so that after external truncation
+		// (e.g. in healing tests) we write at the correct position and return the right offset.
+		if df.file != nil {
+			if info, err := df.file.Stat(); err == nil {
+				df.offset = uint64(info.Size())
+			}
+		}
 
 		payloadLen := uint32(len(payload))
 		crc32Value := crc32.ChecksumIEEE(payload)
@@ -87,19 +96,19 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 
 		// Write header (len + crc32)
 		if _, err := df.file.Write(header); err != nil {
-			return errors.ErrFileWrite
+			return docdberrors.ErrFileWrite
 		}
 
 		// Write payload
 		if _, err := df.file.Write(payload); err != nil {
-			return errors.ErrFileWrite
+			return docdberrors.ErrFileWrite
 		}
 
 		// Write verification flag LAST - this is a critical part
 		// for partial write protection. If crash occurs before this, record is unverified.
 		verificationFlag := []byte{VerificationValue}
 		if _, err := df.file.Write(verificationFlag); err != nil {
-			return errors.ErrFileWrite
+			return docdberrors.ErrFileWrite
 		}
 
 		// Single sync at the end to ensure all data is durable.
@@ -107,7 +116,7 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 		// Trade-off: Slightly larger window (0.1-1ms) where crash could lose data,
 		// but verification flag prevents partial records from being read.
 		if err := df.file.Sync(); err != nil {
-			return errors.ErrFileSync
+			return docdberrors.ErrFileSync
 		}
 
 		df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
@@ -127,7 +136,7 @@ func (df *DataFile) Write(payload []byte) (uint64, error) {
 // Used during recovery to avoid ~N fsyncs; one Sync at end is sufficient.
 func (df *DataFile) WriteNoSync(payload []byte) (uint64, error) {
 	if uint32(len(payload)) > MaxPayloadSize {
-		err := errors.ErrPayloadTooLarge
+		err := docdberrors.ErrPayloadTooLarge
 		category := df.classifier.Classify(err)
 		df.errorTracker.RecordError(err, category)
 		return 0, err
@@ -146,14 +155,14 @@ func (df *DataFile) WriteNoSync(payload []byte) (uint64, error) {
 	offset := df.offset
 
 	if _, err := df.file.Write(header); err != nil {
-		return 0, errors.ErrFileWrite
+		return 0, docdberrors.ErrFileWrite
 	}
 	if _, err := df.file.Write(payload); err != nil {
-		return 0, errors.ErrFileWrite
+		return 0, docdberrors.ErrFileWrite
 	}
 	verificationFlag := []byte{VerificationValue}
 	if _, err := df.file.Write(verificationFlag); err != nil {
-		return 0, errors.ErrFileWrite
+		return 0, docdberrors.ErrFileWrite
 	}
 
 	df.offset += uint64(PayloadLenSize + CRCLenSize + len(payload) + VerificationSize)
@@ -165,12 +174,12 @@ func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
 	defer df.mu.Unlock()
 
 	if _, err := df.file.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, errors.ErrFileRead
+		return nil, docdberrors.ErrFileRead
 	}
 
 	header := make([]byte, PayloadLenSize+CRCLenSize)
 	if _, err := io.ReadFull(df.file, header); err != nil {
-		return nil, errors.ErrFileRead
+		return nil, df.readErrorToCategory(err)
 	}
 
 	storedLen := binary.LittleEndian.Uint32(header[0:])
@@ -182,7 +191,7 @@ func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
 
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(df.file, payload); err != nil {
-		return nil, errors.ErrFileRead
+		return nil, df.readErrorToCategory(err)
 	}
 
 	// Read verification flag
@@ -190,26 +199,38 @@ func (df *DataFile) Read(offset uint64, length uint32) ([]byte, error) {
 	if _, err := io.ReadFull(df.file, verificationFlag); err != nil {
 		// If we can't read verification flag, record is incomplete/unverified
 		df.logger.Warn("Failed to read verification flag at offset %d: %v", offset, err)
-		return nil, errors.ErrCorruptRecord
+		return nil, docdberrors.ErrCorruptRecord
 	}
 
 	// Check verification flag - only verified records should be read
 	if verificationFlag[0] != VerificationValue {
 		df.logger.Warn("Unverified record at offset %d (verification flag=%d)", offset, verificationFlag[0])
-		return nil, errors.ErrCorruptRecord
+		return nil, docdberrors.ErrCorruptRecord
 	}
 
 	// Verify CRC32 checksum
 	computedCRC := crc32.ChecksumIEEE(payload)
 	if storedCRC != computedCRC {
 		df.logger.Error("CRC mismatch at offset %d: stored=%x, computed=%x", offset, storedCRC, computedCRC)
-		err := errors.ErrCRCMismatch
+		err := docdberrors.ErrCRCMismatch
 		category := df.classifier.Classify(err)
 		df.errorTracker.RecordError(err, category)
 		return nil, err
 	}
 
 	return payload, nil
+}
+
+// readErrorToCategory maps read failures to the right error for classification.
+// EOF/short read indicates truncated/corrupt data (ErrorValidation); other read errors stay ErrFileRead (transient).
+func (df *DataFile) readErrorToCategory(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return docdberrors.ErrCorruptRecord
+	}
+	return docdberrors.ErrFileRead
 }
 
 func (df *DataFile) Sync() error {

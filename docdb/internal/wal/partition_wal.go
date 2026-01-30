@@ -183,34 +183,47 @@ func (pw *PartitionWAL) Write(txID uint64, dbID uint64, collection string, docID
 }
 
 // rotate rotates the partition WAL file.
+// Flushes group commit and syncs the current file before rename so the rotated
+// segment has all data on disk for recovery.
 func (pw *PartitionWAL) rotate() error {
 	if pw.rotator == nil {
 		return nil
 	}
 
-	newPath, err := pw.rotator.Rotate()
+	basePath := pw.path // active WAL path (e.g. p0.wal); after rename this path will hold new file
+
+	// Flush group commit and sync current file before rename so recovery can read full segment.
+	if pw.groupCommit != nil {
+		pw.groupCommit.Stop()
+		pw.groupCommit = nil
+	}
+	if pw.file != nil {
+		_ = pw.file.Sync()
+	}
+
+	_, err := pw.rotator.Rotate()
 	if err != nil {
 		return err
 	}
 
-	// Close old file
+	// Close old file (fd referred to the file that was just renamed to base.N)
 	if pw.file != nil {
 		pw.file.Close()
+		pw.file = nil
 	}
 
-	// Open new file
-	file, err := os.OpenFile(newPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	// Open new active WAL at base path (Rotate renames base -> base.N; base no longer exists, O_CREATE makes new)
+	file, err := os.OpenFile(basePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
 
 	pw.file = file
-	pw.path = newPath
+	pw.path = basePath
 	pw.size = 0
 
-	// Reinitialize group commit if needed
-	if pw.groupCommit != nil {
-		pw.groupCommit.Stop()
+	// Reinitialize group commit for new file (old one was stopped above)
+	if pw.fsyncConfig != nil && (pw.fsyncConfig.Mode == config.FsyncGroup || pw.fsyncConfig.Mode == config.FsyncInterval) {
 		pw.groupCommit = NewGroupCommit(file, pw.fsyncConfig, pw.logger)
 		if pw.onFsync != nil {
 			pw.groupCommit.OnFsync = pw.onFsync
@@ -218,6 +231,22 @@ func (pw *PartitionWAL) rotate() error {
 		pw.groupCommit.Start()
 	}
 
+	return nil
+}
+
+// Sync flushes buffered WAL records and syncs the file to disk.
+// Use before corrupting data files in tests so replay can see all records.
+func (pw *PartitionWAL) Sync() error {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	if pw.groupCommit != nil {
+		if err := pw.groupCommit.Sync(); err != nil {
+			return err
+		}
+	}
+	if pw.file != nil {
+		return pw.file.Sync()
+	}
 	return nil
 }
 

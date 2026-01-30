@@ -480,6 +480,34 @@ func (m *MVCC) IsVisible(version *types.DocumentVersion, snapshotTxID uint64) bo
 }
 ```
 
+### Read-your-writes within a transaction
+
+Within the same transaction, a read can see that transaction's own pending writes by using **`ReadInTx(tx, collection, docID)`**. It returns the document as visible to that transaction: pending create/update/patch for the doc return the pending payload; pending delete returns "not found"; if the transaction has no pending op for that doc, the read uses the transaction's snapshot (`tx.SnapshotTxID`) so the result is consistent with the snapshot plus the transaction's own writes.
+
+**Example:**
+
+```go
+tx := db.Begin()
+db.AddOpToTx(tx, "_default", types.OpCreate, 1, []byte(`{"a":1}`))
+data, err := db.ReadInTx(tx, "_default", 1) // sees pending create: data == []byte(`{"a":1}`)
+db.AddOpToTx(tx, "_default", types.OpUpdate, 1, []byte(`{"a":2}`))
+data, _ = db.ReadInTx(tx, "_default", 1)    // sees pending update: data == []byte(`{"a":2}`)
+db.Commit(tx)
+```
+
+Use `ReadInTx` when you need to read a document inside a transaction and have already written to it in that transaction. Normal `Read(collection, docID)` uses the current snapshot and does not see uncommitted writes.
+
+### Serializable isolation (SSI-lite)
+
+DocDB provides **best-effort serializable isolation** via conflict detection at commit time (SSI-lite):
+
+- **Read set:** When you call `ReadInTx(tx, collection, docID)`, the `(collection, docID)` pair is added to the transaction's read set. Only reads performed via `ReadInTx` are tracked.
+- **Write set:** At commit, the write set is derived from `tx.Operations` (all create/update/delete/patch ops).
+- **Conflict check:** Before writing to the WAL, we consider every transaction that **committed after this transaction's snapshot** (i.e. after `tx.SnapshotTxID`). If any such transaction wrote a document this transaction read, or read a document this transaction wrote, we abort this transaction and return **`ErrSerializationFailure`**.
+- **Commit history:** Commit read/write sets are stored in a bounded in-memory history (e.g. last 100k commits). If the committing transaction's snapshot is older than the oldest record in the history, we cannot check all conflicts and we **allow** the commit (falling back to snapshot isolation). So serializability is guaranteed only when the commit history window covers all concurrent commits.
+
+**Example:** Two transactions each `ReadInTx` the same document, then one updates it and the other updates a different document. When they commit, one will succeed and the other will get `ErrSerializationFailure` (read-write conflict), avoiding write skew.
+
 ---
 
 ## Concurrency Behavior
@@ -624,10 +652,10 @@ These are intentional scope limits of the current multi-partition design; overco
 
 | Limitation                               | What it means                                                                                                                                                                                                             | How it could be overcome                                                                                                                                                                                                                |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Serializable isolation**               | No global ordering across partitions; concurrent multi-partition transactions can interleave in ways that snapshot isolation allows but serializable would forbid (e.g. write skew).                                      | Introduce a global commit order (e.g. single coordinator that assigns commit timestamps, or SSI-style conflict detection across partitions).                                                                                            |
-| **Read-your-writes across partitions**   | A transaction sees a snapshot taken at begin; its own writes are not visible to its reads until commit, and there is no guarantee that a read in partition A sees a write committed in partition B in the same "session." | Session guarantees (e.g. sticky snapshot or "causal" reads) or explicit read-after-write barriers and version propagation.                                                                                                              |
+| **Serializable isolation**               | Snapshot isolation alone allows write skew. | **Best-effort (SSI-lite):** Transactions that use `ReadInTx` have their read set recorded; at commit we check for conflicts with transactions that committed after our snapshot. On conflict we return `ErrSerializationFailure` and abort. Serializable within the bounded commit-history window; if the window is exceeded we allow commit (snapshot isolation).                                                                                            |
+| **Read-your-writes within a transaction** | Within the same transaction, reads can see that transaction's own pending writes. | **Satisfied:** Use `ReadInTx(tx, collection, docID)` to read a doc and see pending create/update/patch/delete for that doc in the same tx. Normal `Read()` uses the current snapshot and does not see uncommitted writes.                                                                                                                                   |
 | **Distributed commits**                  | All partitions and the coordinator run in one process; no multi-node or multi-process 2PC.                                                                                                                                | Distributed coordinator (separate process or RPC), participant protocol (prepare/commit/abort) over the network, and failure handling for node/network partitions.                                                                      |
-| **Deadlock-free cross-partition writes** | Cross-partition writes can deadlock if different transactions lock partitions in different orders. The current design avoids this by **always** locking partitions in a deterministic order (e.g. by partition ID).       | The plan already enforces lock order by partition ID, so correct use is deadlock-free. To relax this (e.g. allow app-defined order), you would need deadlock detection (timeouts, wait-for graph) or a single global lock (bottleneck). |
+| **Deadlock-free cross-partition writes** | Cross-partition writes can deadlock if different transactions lock partitions in different orders. | **Satisfied:** Partition locks are always taken in deterministic order (ascending partition ID) in both Phase 1 and Phase 2, so concurrent multi-partition commits do not deadlock. To relax this (e.g. app-defined order) would require deadlock detection (timeouts, wait-for graph) or a global lock. |
 
 ### Future Enhancements (v0.1+)
 

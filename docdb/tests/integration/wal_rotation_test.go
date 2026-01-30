@@ -59,8 +59,11 @@ func TestWALRotation(t *testing.T) {
 		}
 	}
 
-	// Check for rotated segments
-	rotator := wal.NewRotator(filepath.Join(walDir, "testdb.wal"), cfg.WAL.MaxFileSizeMB*1024*1024, false, log)
+	// Close DB so WAL is flushed and rotation is persisted, then list segments
+	p.Stop()
+
+	// Check for rotated segments (partitioned layout: wal/dbName/p0.wal)
+	rotator := wal.NewRotator(filepath.Join(walDir, "testdb", "p0.wal"), cfg.WAL.MaxFileSizeMB*1024*1024, false, log)
 	segments, err := rotator.ListSegments()
 	if err != nil {
 		t.Fatalf("failed to list segments: %v", err)
@@ -114,6 +117,10 @@ func TestMultiSegmentRecovery(t *testing.T) {
 		}
 	}
 
+	// Flush WAL so all segments are on disk before stop (recovery replays from disk)
+	if err := db1.Sync(); err != nil {
+		t.Fatalf("sync before stop: %v", err)
+	}
 	p1.Stop()
 
 	// Phase 2: Simulate crash and restart
@@ -184,15 +191,16 @@ func TestRotationDuringCrash(t *testing.T) {
 		}
 	}
 
-	// Get WAL size before potential rotation (v0.4: walDir/dbName/p0.wal)
-	walPath := filepath.Join(walDir, "testdb", "p0.wal")
-	walInfo, err := os.Stat(walPath)
-	if err != nil {
-		t.Fatalf("failed to stat WAL: %v", err)
+	// Flush WAL so recovery sees all data after "crash"
+	if err := db.Sync(); err != nil {
+		t.Fatalf("sync before crash: %v", err)
 	}
-	sizeBefore := walInfo.Size()
 
-	t.Logf("WAL size before crash: %d bytes", sizeBefore)
+	// Log active WAL size (may be 0 after rotations; rotated data is in p0.wal.1, etc.)
+	walPath := filepath.Join(walDir, "testdb", "p0.wal")
+	if walInfo, err := os.Stat(walPath); err == nil {
+		t.Logf("Active WAL size before crash: %d bytes", walInfo.Size())
+	}
 
 	// Simulate crash
 	p.Stop()

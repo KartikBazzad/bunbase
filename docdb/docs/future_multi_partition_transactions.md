@@ -69,7 +69,7 @@ This document describes the **implemented** multi-partition transaction design i
 
 ### Two-phase Commit(tx) flow
 
-- **Phase 1 – Prepare:** Group ops by partition; sort partition IDs; for each partition in order: acquire lock, validate and write data + op records to partition WAL only (no `OpCommit`), release lock. If any step fails: if no partition WAL was touched, fast abort (no coordinator). If any partition was written, write `(txID, abort)` to coordinator and fsync; write `OpAbort` to every prepared partition; free memory; return error.
+- **Phase 1 – Prepare:** Group ops by partition; sort partition IDs (deterministic lock order by partition ID to avoid deadlock); for each partition in order: acquire lock, validate and write data + op records to partition WAL only (no `OpCommit`), release lock. If any step fails: if no partition WAL was touched, fast abort (no coordinator). If any partition was written, write `(txID, abort)` to coordinator and fsync; write `OpAbort` to every prepared partition; free memory; return error.
 - **Phase 2 – Commit:** Append `(tx.ID, commit=true)` to coordinator log and fsync. For each partition in order: write `OpCommit` to partition WAL, apply index updates, release lock. Mark transaction committed, return nil.
 
 ### Recovery order

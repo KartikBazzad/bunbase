@@ -42,8 +42,8 @@ func TestWALTrimmingAfterCheckpoint(t *testing.T) {
 		}
 	}
 
-	// List WAL segments
-	walFiles, err := filepath.Glob(filepath.Join(walDir, "trimdb.wal*"))
+	// List WAL segments (partitioned layout: wal/dbName/p0.wal*)
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "trimdb", "p0.wal*"))
 	if err != nil {
 		t.Fatalf("Failed to list WAL files: %v", err)
 	}
@@ -88,8 +88,8 @@ func TestWALTrimmingDisabled(t *testing.T) {
 		}
 	}
 
-	// List WAL segments
-	walFiles, err := filepath.Glob(filepath.Join(walDir, "notrimdb.wal*"))
+	// List WAL segments (partitioned layout: wal/dbName/p0.wal*)
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "notrimdb", "p0.wal*"))
 	if err != nil {
 		t.Fatalf("Failed to list WAL files: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestWALTrimmingSegmentRetention(t *testing.T) {
 	}
 
 	// List WAL segments
-	walFiles, err := filepath.Glob(filepath.Join(walDir, "retentiondb.wal*"))
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "retentiondb", "p0.wal*"))
 	if err != nil {
 		t.Fatalf("Failed to list WAL files: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestWALTrimmingCheckpointCoordination(t *testing.T) {
 	}
 
 	// List WAL segments
-	walFiles, err := filepath.Glob(filepath.Join(walDir, "checkpointdb.wal*"))
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "checkpointdb", "p0.wal*"))
 	if err != nil {
 		t.Fatalf("Failed to list WAL files: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestWALTrimmingSafetyMargin(t *testing.T) {
 	}
 
 	// List WAL segments
-	walFiles, err := filepath.Glob(filepath.Join(walDir, "safetydb.wal*"))
+	walFiles, err := filepath.Glob(filepath.Join(walDir, "safetydb", "p0.wal*"))
 	if err != nil {
 		t.Fatalf("Failed to list WAL files: %v", err)
 	}

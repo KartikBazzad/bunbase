@@ -86,6 +86,8 @@ type LogicalDB struct {
 	collections    *CollectionRegistry  // Collection management
 	querySemaphore chan struct{}        // Phase D.8: Semaphore for concurrent query limiting
 	coordinator    *CoordinatorLog      // Multi-partition 2PC: decision log (commit/abort)
+	commitHistory  *CommitHistory      // SSI-lite: recent commit read/write sets for conflict detection
+	commitMu       sync.Mutex           // Serializes commit + conflict check + append to history
 }
 
 // preparedPartitionState holds state for one prepared partition during 2PC Phase 1.
@@ -121,6 +123,7 @@ func NewLogicalDB(dbID uint64, dbName string, cfg *config.Config, memCaps *memor
 		errorTracker:   errors.NewErrorTracker(),
 		collections:    NewCollectionRegistry(log),
 		querySemaphore: querySemaphore, // Phase D.8: Initialize semaphore
+		commitHistory:  NewCommitHistory(0),
 	}
 
 	// Use default LogicalDB config (PartitionCount=1 for backward compatibility)
@@ -153,6 +156,7 @@ func NewLogicalDBWithConfig(dbID uint64, dbName string, cfg *config.Config, dbCf
 		errorTracker:   errors.NewErrorTracker(),
 		collections:    NewCollectionRegistry(log),
 		querySemaphore: querySemaphore, // Phase D.8: Initialize semaphore
+		commitHistory:  NewCommitHistory(0),
 	}
 
 	return db
@@ -312,6 +316,11 @@ func (db *LogicalDB) executeReadOnPartition(partition *Partition, collection str
 // executeReadOnPartitionLockFree performs a read without holding partition.mu (lock-free / snapshot read).
 // Caller must not hold partition write lock. Used by worker pool for OpRead tasks.
 func (db *LogicalDB) executeReadOnPartitionLockFree(partition *Partition, collection string, docID uint64) *Result {
+	return db.executeReadOnPartitionAtSnapshot(partition, collection, docID, db.mvcc.CurrentSnapshot())
+}
+
+// executeReadOnPartitionAtSnapshot performs a lock-free read at the given snapshot (for ReadInTx).
+func (db *LogicalDB) executeReadOnPartitionAtSnapshot(partition *Partition, collection string, docID uint64, snapshotTxID uint64) *Result {
 	if db.closed {
 		return &Result{Status: types.StatusError, Error: ErrDBNotOpen}
 	}
@@ -321,7 +330,6 @@ func (db *LogicalDB) executeReadOnPartitionLockFree(partition *Partition, collec
 	if !db.collections.Exists(collection) {
 		return &Result{Status: types.StatusError, Error: errors.ErrCollectionNotFound}
 	}
-	snapshotTxID := db.mvcc.CurrentSnapshot()
 	version, exists := partition.index.Get(collection, docID, snapshotTxID)
 	if !exists || version.DeletedTxID != nil {
 		return &Result{Status: types.StatusNotFound, Error: ErrDocNotFound}
@@ -534,12 +542,12 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		return fmt.Errorf("failed to create checkpoint directory: %w", err)
 	}
 
-	// Create partitions
+	// Create partitions (WAL not opened yet so recovery can read active segment from disk).
 	db.partitions = make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
 		db.partitions[i] = NewPartition(i, db.dbConfig.QueueSize, db.memory, db.logger)
 
-		// Create partition WAL under walDir/dbName/p{i}.wal
+		// Create partition WAL under walDir/dbName/p{i}.wal (do not Open yet)
 		walPath := filepath.Join(partitionWalDir, fmt.Sprintf("p%d.wal", i))
 		maxSize := db.dbConfig.MaxSegmentSize
 		if maxSize == 0 {
@@ -552,12 +560,9 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		partitionWAL.SetFsyncCallback(func(duration time.Duration) {
 			metrics.RecordPartitionWALFsync(db.dbName, partitionIDStr, duration)
 		})
-		if err := partitionWAL.Open(); err != nil {
-			return fmt.Errorf("failed to open partition %d WAL: %w", i, err)
-		}
 		db.partitions[i].SetWAL(partitionWAL)
 
-		// Create partition datafile
+		// Create partition datafile (needed for recovery to apply records)
 		partitionDataFile := NewDataFile(
 			filepath.Join(dataDir, fmt.Sprintf("%s_p%d.data", db.dbName, i)),
 			db.logger,
@@ -568,11 +573,7 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		db.partitions[i].SetDataFile(partitionDataFile)
 	}
 
-	// Create worker pool
-	db.workerPool = NewWorkerPool(db, db.dbConfig, db.logger)
-	db.workerPool.Start()
-
-	// Ensure default collection exists
+	// Ensure default collection exists (recovery may create docs in default)
 	db.collections.EnsureDefault()
 
 	// Coordinator log for multi-partition 2PC: replay first so we can resolve in-doubt transactions.
@@ -586,7 +587,7 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 		return fmt.Errorf("failed to replay coordinator log: %w", err)
 	}
 
-	// Parallel partition recovery: replay each partition's WAL (v0.4) and rebuild index.
+	// Replay WAL while active segment is not open for writing (ensures multi-segment recovery sees all data).
 	var replayWg sync.WaitGroup
 	maxTxIDs := make([]uint64, partitionCount)
 	maxLSNs := make([]uint64, partitionCount)
@@ -619,12 +620,20 @@ func (db *LogicalDB) openPartitioned(dataDir string, walDir string, partitionCou
 	if globalMaxTxID > 0 {
 		db.mvcc.SetCurrentTxID(globalMaxTxID + 1)
 	}
-	// Set each partition WAL's next LSN so new writes use maxLSN+1
+
+	// Open partition WALs for writing (after recovery so active segment was read from disk).
 	for i := 0; i < partitionCount; i++ {
-		if db.partitions[i].GetWAL() != nil && maxLSNs[i] > 0 {
+		if err := db.partitions[i].GetWAL().Open(); err != nil {
+			return fmt.Errorf("failed to open partition %d WAL: %w", i, err)
+		}
+		if maxLSNs[i] > 0 {
 			db.partitions[i].GetWAL().SetNextLSN(maxLSNs[i])
 		}
 	}
+
+	// Create worker pool
+	db.workerPool = NewWorkerPool(db, db.dbConfig, db.logger)
+	db.workerPool.Start()
 
 	// Start healing service if enabled
 	if db.cfg.Healing.Enabled {
@@ -1236,6 +1245,31 @@ func (db *LogicalDB) ListCollections() []string {
 	return db.collections.ListCollections()
 }
 
+// Sync flushes all partition WALs and data files to disk.
+// Use before corrupting data files in tests so healing replay can see all WAL records.
+func (db *LogicalDB) Sync() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed || db.partitions == nil {
+		return nil
+	}
+
+	for _, partition := range db.partitions {
+		if w := partition.GetWAL(); w != nil {
+			if err := w.Sync(); err != nil {
+				return err
+			}
+		}
+		if df := partition.GetDataFile(); df != nil {
+			if err := df.Sync(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (db *LogicalDB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -1322,6 +1356,88 @@ func (db *LogicalDB) Read(collection string, docID uint64) ([]byte, error) {
 		return nil, result.Error
 	}
 	return result.Data, nil
+}
+
+// ReadInTx reads a document within a transaction. It sees the transaction's own pending writes
+// (create/update/patch/delete) for that doc, and uses tx.SnapshotTxID for snapshot visibility otherwise.
+func (db *LogicalDB) ReadInTx(tx *Tx, collection string, docID uint64) ([]byte, error) {
+	if tx.state != TxOpen {
+		if tx.state == TxCommitted {
+			return nil, ErrTxAlreadyCommitted
+		}
+		return nil, ErrTxAlreadyRolledBack
+	}
+	if collection == "" {
+		collection = DefaultCollection
+	}
+	// Overlay: last pending op for (collection, docID) in tx.Operations
+	var lastOp types.OperationType
+	var lastPayload []byte
+	for _, rec := range tx.Operations {
+		c := rec.Collection
+		if c == "" {
+			c = DefaultCollection
+		}
+		if c != collection || rec.DocID != docID {
+			continue
+		}
+		lastOp = rec.OpType
+		lastPayload = rec.Payload
+	}
+	switch lastOp {
+	case types.OpDelete:
+		addToReadSet(tx, collection, docID)
+		return nil, ErrDocNotFound
+	case types.OpCreate, types.OpUpdate, types.OpPatch:
+		addToReadSet(tx, collection, docID)
+		if len(lastPayload) == 0 {
+			return []byte{}, nil
+		}
+		out := make([]byte, len(lastPayload))
+		copy(out, lastPayload)
+		return out, nil
+	}
+	// No pending op for this doc: snapshot read at tx.SnapshotTxID
+	db.mu.RLock()
+	if db.closed {
+		db.mu.RUnlock()
+		return nil, ErrDBNotOpen
+	}
+	if db.workerPool == nil {
+		db.mu.RUnlock()
+		return nil, ErrDBNotOpen
+	}
+	partCount := len(db.partitions)
+	partitionID := RouteToPartition(docID, partCount)
+	partition := db.getPartition(partitionID)
+	db.mu.RUnlock()
+	if partition == nil {
+		return nil, ErrInvalidPartition
+	}
+	res := db.executeReadOnPartitionAtSnapshot(partition, collection, docID, tx.SnapshotTxID)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	addToReadSet(tx, collection, docID)
+	return res.Data, nil
+}
+
+func addToReadSet(tx *Tx, collection string, docID uint64) {
+	if tx.readSet == nil {
+		tx.readSet = make(map[string]struct{})
+	}
+	tx.readSet[docKey(collection, docID)] = struct{}{}
+}
+
+func computeWriteSet(ops []*types.WALRecord) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, rec := range ops {
+		switch rec.OpType {
+		case types.OpCreate, types.OpUpdate, types.OpDelete, types.OpPatch:
+			out[docKey(rec.Collection, rec.DocID)] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (db *LogicalDB) Update(collection string, docID uint64, payload []byte) error {
@@ -1561,6 +1677,7 @@ func (db *LogicalDB) commitMultiPartitionTx(tx *Tx, partitionOrder []int, opsByP
 		}
 	}()
 
+	// Deterministic lock order by partition ID to avoid deadlock.
 	for _, pid := range partitionOrder {
 		partition := db.getPartition(pid)
 		if partition == nil {
@@ -1803,6 +1920,18 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 		_, _ = db.txManager.Commit(tx)
 		return nil
 	}
+	// SSI-lite: serialize commit, check conflicts, then append to history on success
+	db.commitMu.Lock()
+	defer db.commitMu.Unlock()
+	writeSet := computeWriteSet(tx.Operations)
+	if db.commitHistory != nil {
+		recs := db.commitHistory.CommitsAfter(tx.SnapshotTxID)
+		for _, rec := range recs {
+			if hasConflict(tx.readSet, writeSet, rec.readSet, rec.writeSet) {
+				return ErrSerializationFailure
+			}
+		}
+	}
 	// Group operations by partition (deterministic order)
 	partitionIDsSet := make(map[int]struct{})
 	var partitionOrder []int
@@ -1815,7 +1944,7 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 		}
 		opsByPartition[pid] = append(opsByPartition[pid], rec)
 	}
-	sort.Ints(partitionOrder)
+	sort.Ints(partitionOrder) // Deterministic lock order by partition ID to avoid deadlock.
 
 	// Single-partition fast path: no coordinator
 	if len(partitionOrder) == 1 {
@@ -1824,11 +1953,19 @@ func (db *LogicalDB) Commit(tx *Tx) error {
 		if partition == nil {
 			return ErrInvalidPartition
 		}
-		return db.commitSinglePartitionTx(partition, tx, opsByPartition[pid])
+		if err := db.commitSinglePartitionTx(partition, tx, opsByPartition[pid]); err != nil {
+			return err
+		}
+		db.commitHistory.Append(tx.ID, tx.readSet, writeSet)
+		return nil
 	}
 
 	// Multi-partition 2PC
-	return db.commitMultiPartitionTx(tx, partitionOrder, opsByPartition)
+	if err := db.commitMultiPartitionTx(tx, partitionOrder, opsByPartition); err != nil {
+		return err
+	}
+	db.commitHistory.Append(tx.ID, tx.readSet, writeSet)
+	return nil
 }
 
 func (db *LogicalDB) Rollback(tx *Tx) error {

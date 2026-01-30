@@ -69,7 +69,7 @@ func TestPartialWrite_UnverifiedRecordSkipped(t *testing.T) {
 	// Manually write an unverified record to the data file
 	// Format: [4: len] [N: payload] [4: crc32] [1: verified]
 	// We'll write everything except the verification flag, or write it as 0
-	dataFilePath := filepath.Join(dataDir, "partial-unverified.data")
+	dataFilePath := filepath.Join(dataDir, "partial-unverified_p0.data")
 	dataFile, err := os.OpenFile(dataFilePath, os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)
@@ -153,7 +153,7 @@ func TestPartialWrite_CrashBeforeVerificationFlag(t *testing.T) {
 
 	// Manually create a partial write scenario:
 	// Write header + payload + CRC but no verification flag
-	dataFilePath := filepath.Join(dataDir, "partial-crash.data")
+	dataFilePath := filepath.Join(dataDir, "partial-crash_p0.data")
 	dataFile, err := os.OpenFile(dataFilePath, os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)

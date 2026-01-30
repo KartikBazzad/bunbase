@@ -50,8 +50,8 @@ func TestAutomaticHealingOnCorruption(t *testing.T) {
 		t.Errorf("Payload mismatch: got %s, want %s", string(data), string(payload))
 	}
 
-	// Corrupt the data file
-	dataFilePath := filepath.Join(dataDir, "healdb.data")
+	// Corrupt the data file (partitioned layout: dbname_p0.data)
+	dataFilePath := filepath.Join(dataDir, "healdb_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)
@@ -134,8 +134,8 @@ func TestManualHealing(t *testing.T) {
 		}
 	}
 
-	// Corrupt data file
-	dataFilePath := filepath.Join(dataDir, "manualheal.data")
+	// Corrupt data file (partitioned layout: dbname_p0.data)
+	dataFilePath := filepath.Join(dataDir, "manualheal_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)
@@ -266,8 +266,13 @@ func TestBatchHealing(t *testing.T) {
 		}
 	}
 
-	// Corrupt data file to make documents unreadable
-	dataFilePath := filepath.Join(dataDir, "batchdb.data")
+	// Flush WAL so healing replay can see all records after we corrupt the data file
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Failed to sync before corrupt: %v", err)
+	}
+
+	// Corrupt data file to make documents unreadable (partitioned layout: dbname_p0.data)
+	dataFilePath := filepath.Join(dataDir, "batchdb_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)
@@ -336,8 +341,8 @@ func TestHealingDisabled(t *testing.T) {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
-	// Corrupt data file
-	dataFilePath := filepath.Join(dataDir, "disableddb.data")
+	// Corrupt data file (partitioned layout: dbname_p0.data)
+	dataFilePath := filepath.Join(dataDir, "disableddb_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)
@@ -401,8 +406,13 @@ func TestCollectionSpecificHealing(t *testing.T) {
 		t.Fatalf("Failed to create document in users collection: %v", err)
 	}
 
+	// Flush WAL so healing replay can see all records (including users/1) after we corrupt the data file
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Failed to sync before corrupt: %v", err)
+	}
+
 	// Corrupt data file
-	dataFilePath := filepath.Join(dataDir, "collectiondb.data")
+	dataFilePath := filepath.Join(dataDir, "collectiondb_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)

@@ -27,17 +27,39 @@ type TestResultData struct {
 }
 
 // AnalyzeMatrix analyzes all test results in a directory.
-// AnalyzeMatrix analyzes all test results under the given matrix base directory.
-// It expects JSON files under <resultsDir>/json.
+// If matrix_results.db exists in resultsDir, it loads results from the latest run.
+// Otherwise it scans resultsDir/json/*.json (backward compatibility).
 func AnalyzeMatrix(resultsDir string) (*MatrixAnalysis, error) {
 	analysis := &MatrixAnalysis{
 		ResultsDir: resultsDir,
 		Results:    make([]TestResultData, 0),
 	}
 
-	jsonDir := filepath.Join(resultsDir, "json")
+	dbPath := MatrixDBPath(resultsDir)
+	if _, err := os.Stat(dbPath); err == nil {
+		// SQLite DB exists: load from latest run
+		db, err := OpenMatrixDB(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("open matrix db: %w", err)
+		}
+		defer db.Close()
+		runID, err := QueryLatestRunID(db)
+		if err != nil {
+			return nil, fmt.Errorf("query latest run: %w", err)
+		}
+		if runID == 0 {
+			return analysis, nil
+		}
+		results, err := QueryResultsByRunID(db, runID)
+		if err != nil {
+			return nil, fmt.Errorf("query results for run %d: %w", runID, err)
+		}
+		analysis.Results = results
+		return analysis, nil
+	}
 
-	// Read all JSON result files
+	// No DB: fall back to scanning json/
+	jsonDir := filepath.Join(resultsDir, "json")
 	files, err := os.ReadDir(jsonDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read results directory: %w", err)
@@ -47,27 +69,21 @@ func AnalyzeMatrix(resultsDir string) (*MatrixAnalysis, error) {
 		if file.IsDir() || filepath.Ext(file.Name()) != ".json" {
 			continue
 		}
-
-		// Skip summary files
 		if file.Name() == "summary.txt" {
 			continue
 		}
-
 		resultPath := filepath.Join(jsonDir, file.Name())
 		resultData, err := parseResultFile(resultPath)
 		if err != nil {
 			fmt.Printf("Warning: Failed to parse %s: %v\n", file.Name(), err)
 			continue
 		}
-
 		analysis.Results = append(analysis.Results, *resultData)
 	}
 
-	// Sort by test name
 	sort.Slice(analysis.Results, func(i, j int) bool {
 		return analysis.Results[i].Config.Name < analysis.Results[j].Config.Name
 	})
-
 	return analysis, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,26 +52,39 @@ func (wt *WALTracker) Sample() error {
 	return nil
 }
 
-// getTotalWALSize calculates the total WAL size including all segments.
+// getTotalWALSize calculates the total WAL size for the partitioned layout.
+// Per-database WAL lives under {walDir}/{dbName}/ with per-partition files
+// p0.wal, p0.wal.1, p1.wal, etc. We sum sizes of all partition WAL files
+// (names starting with "p" and containing ".wal"); subdirectories (e.g. checkpoints) are ignored.
 func (wt *WALTracker) getTotalWALSize() (uint64, error) {
-	// Pattern to match all WAL files: {dbname}.wal, {dbname}.wal.1, {dbname}.wal.2, etc.
-	pattern := filepath.Join(wt.walDir, wt.dbName+".wal*")
-
-	matches, err := filepath.Glob(pattern)
+	dbWALDir := filepath.Join(wt.walDir, wt.dbName)
+	entries, err := os.ReadDir(dbWALDir)
 	if err != nil {
-		return 0, fmt.Errorf("failed to glob WAL files: %w", err)
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to read WAL dir %s: %w", dbWALDir, err)
 	}
 
 	var totalSize uint64
-	for _, match := range matches {
-		info, err := os.Stat(match)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Partition WAL files: p0.wal, p0.wal.1, p1.wal, etc. (prefix "p" and contains ".wal")
+		if len(name) < 2 || name[0] != 'p' {
+			continue
+		}
+		if !strings.Contains(name, ".wal") {
+			continue
+		}
+		info, err := entry.Info()
 		if err != nil {
-			// Skip files that don't exist or can't be accessed
 			continue
 		}
 		totalSize += uint64(info.Size())
 	}
-
 	return totalSize, nil
 }
 

@@ -44,6 +44,23 @@ func (mr *MatrixRunner) Run() error {
 		return fmt.Errorf("failed to create output directories: %w", err)
 	}
 
+	// Open SQLite DB for this run and insert run row
+	dbPath := MatrixDBPath(mr.config.OutputDir)
+	db, err := OpenMatrixDB(dbPath)
+	if err != nil {
+		log.Printf("Warning: Failed to open matrix DB at %s: %v (results will not be stored in SQLite)", dbPath, err)
+		db = nil
+	}
+	var runID int64
+	if db != nil {
+		defer db.Close()
+		runID, err = InsertRun(db, mr.config.OutputDir)
+		if err != nil {
+			log.Printf("Warning: Failed to insert run: %v", err)
+			runID = 0
+		}
+	}
+
 	totalTests := len(mr.testConfigs)
 	log.Printf("Starting test matrix: %d configurations", totalTests)
 
@@ -63,6 +80,16 @@ func (mr *MatrixRunner) Run() error {
 		result := mr.runTestConfiguration(testConfig)
 		mr.results = append(mr.results, result)
 
+		// On success, read JSON and insert into SQLite for analyzer
+		if result.Success && db != nil && runID != 0 {
+			resultData, parseErr := parseResultFile(result.OutputPath)
+			if parseErr != nil {
+				log.Printf("Warning: Failed to parse result file %s for SQLite: %v", result.OutputPath, parseErr)
+			} else if err := InsertResult(db, runID, resultData); err != nil {
+				log.Printf("Warning: Failed to insert result into SQLite: %v", err)
+			}
+		}
+
 		if result.Success {
 			log.Printf("[%d/%d] ✓ Completed: %s (duration: %v)", i+1, totalTests, testConfig.Name, result.Duration)
 		} else {
@@ -75,6 +102,21 @@ func (mr *MatrixRunner) Run() error {
 			// Note: This would require external script or process management
 			// For now, we'll log a warning
 			log.Printf("Warning: RestartDB=true but automatic restart not implemented. Please restart manually if needed.")
+		}
+	}
+
+	// Update run row with final counts
+	if db != nil && runID != 0 {
+		successCount, failCount := 0, 0
+		for _, r := range mr.results {
+			if r.Success {
+				successCount++
+			} else {
+				failCount++
+			}
+		}
+		if err := UpdateRun(db, runID, len(mr.results), successCount, failCount); err != nil {
+			log.Printf("Warning: Failed to update run in SQLite: %v", err)
 		}
 	}
 

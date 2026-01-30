@@ -11,6 +11,7 @@ var (
 	ErrTxNotFound          = errors.New("transaction not found")
 	ErrTxAlreadyCommitted  = errors.New("transaction already committed")
 	ErrTxAlreadyRolledBack = errors.New("transaction already rolled back")
+	ErrSerializationFailure = errors.New("serialization failure: conflict with concurrent transaction")
 )
 
 type TxState int
@@ -26,6 +27,9 @@ type Tx struct {
 	SnapshotTxID uint64
 	Operations   []*types.WALRecord
 	state        TxState
+	// readSet records (collection, docID) read via ReadInTx for SSI conflict detection.
+	// Key format: "collection:docID". Nil until first ReadInTx; initialized lazily or in Begin.
+	readSet map[string]struct{}
 }
 
 type TransactionManager struct {
@@ -53,6 +57,7 @@ func (tm *TransactionManager) Begin() *Tx {
 		SnapshotTxID: snapshotTxID,
 		Operations:   make([]*types.WALRecord, 0),
 		state:        TxOpen,
+		readSet:      make(map[string]struct{}),
 	}
 
 	tm.txs[txID] = tx

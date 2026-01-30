@@ -222,8 +222,8 @@ func TestCorruptionErrorTracking(t *testing.T) {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
-	// Corrupt the data file by truncating it
-	dataFilePath := filepath.Join(dataDir, "testdb.data")
+	// Corrupt the data file by truncating it (partitioned layout: dbname_p0.data)
+	dataFilePath := filepath.Join(dataDir, "testdb_p0.data")
 	file, err := os.OpenFile(dataFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to open data file: %v", err)

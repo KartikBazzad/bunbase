@@ -138,6 +138,8 @@ func (r *Recovery) isActiveWAL(walPath string) bool {
 // It discovers all segments (basePath, basePath.1, ...) via Rotator and replays each
 // using DecodeRecordV4. Handler is invoked for each record in order.
 // Returns nil if no WAL exists or replay completes; returns error on decode/read failure.
+// If the active WAL segment (last path) has a corrupt/torn tail, replay stops at the last
+// valid record, the active file is truncated to that offset, and recovery succeeds (nil).
 func ReplayPartitionWAL(walBasePath string, log *logger.Logger, handler RecoveryHandler) error {
 	rotator := NewRotator(walBasePath, 0, false, log)
 	walPaths, err := rotator.GetAllWALPaths()
@@ -148,7 +150,7 @@ func ReplayPartitionWAL(walBasePath string, log *logger.Logger, handler Recovery
 		return nil
 	}
 
-	for _, path := range walPaths {
+	for i, path := range walPaths {
 		reader := NewReader(path, log)
 		if err := reader.Open(); err != nil {
 			if os.IsNotExist(err) {
@@ -156,9 +158,23 @@ func ReplayPartitionWAL(walBasePath string, log *logger.Logger, handler Recovery
 			}
 			return fmt.Errorf("open %s: %w", path, err)
 		}
+		activeSegment := (i == len(walPaths)-1)
 		for {
 			record, err := reader.NextV4()
 			if err != nil {
+				if activeSegment {
+					// Tolerate corrupt/torn tail in active WAL: truncate and recover up to last valid record.
+					offset, seekErr := reader.CurrentOffset()
+					reader.Close()
+					if seekErr == nil && offset >= 0 {
+						if truncErr := os.Truncate(path, offset); truncErr != nil {
+							log.Warn("Failed to truncate active WAL at corrupt tail: %v", truncErr)
+						} else {
+							log.Info("Truncated active WAL to offset %d after corrupt/torn record", offset)
+						}
+					}
+					return nil
+				}
 				reader.Close()
 				return fmt.Errorf("read %s: %w", path, err)
 			}

@@ -262,7 +262,11 @@ func (p *Pool) OpenDB(dbID uint64) (*docdb.LogicalDB, error) {
 		return db, nil
 	}
 
-	db := docdb.NewLogicalDB(dbID, entry.DBName, p.cfg, p.memory, p.pool, p.logger)
+	// Use LogicalDBConfig so WAL rotation respects cfg.WAL.MaxFileSizeMB
+	dbCfg := config.DefaultLogicalDBConfig()
+	dbCfg.PartitionCount = 1
+	dbCfg.MaxSegmentSize = int64(p.cfg.WAL.MaxFileSizeMB) * 1024 * 1024
+	db := docdb.NewLogicalDBWithConfig(dbID, entry.DBName, p.cfg, dbCfg, p.memory, p.pool, p.logger)
 	if err := db.Open(p.cfg.DataDir, p.cfg.WAL.Dir); err != nil {
 		return nil, err
 	}

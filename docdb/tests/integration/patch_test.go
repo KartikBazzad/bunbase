@@ -291,12 +291,23 @@ func TestPatchInvalidPath(t *testing.T) {
 		t.Fatalf("Failed to create document: %v", err)
 	}
 
-	// Patch with invalid path
+	// Patch with path that does not exist: engine treats "set" as add (adds the key)
 	patchOps := []types.PatchOperation{
 		{Op: "set", Path: "/nonexistent", Value: "value"},
 	}
-	if err := db.Patch("_default", 1, patchOps); err == nil {
-		t.Error("Expected error for invalid path")
+	if err := db.Patch("_default", 1, patchOps); err != nil {
+		t.Fatalf("Patch failed: %v", err)
+	}
+	data, err := db.Read("_default", 1)
+	if err != nil {
+		t.Fatalf("Read after patch: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if doc["nonexistent"] != "value" {
+		t.Errorf("Expected nonexistent=value after set, got %v", doc["nonexistent"])
 	}
 }
 

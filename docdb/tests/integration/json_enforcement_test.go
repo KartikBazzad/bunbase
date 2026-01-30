@@ -66,8 +66,8 @@ func TestIPCValidatesJSON(t *testing.T) {
 		t.Errorf("expected ErrInvalidJSON, got: %v", resp.Error)
 	}
 
-	// Verify WAL was not corrupted
-	walPath := filepath.Join(tmpDir, "wal", "testdb.wal")
+	// Verify WAL was not corrupted (partitioned layout: wal/dbName/p0.wal)
+	walPath := filepath.Join(tmpDir, "wal", "testdb", "p0.wal")
 	walInfo, err := os.Stat(walPath)
 	if err != nil {
 		t.Fatalf("failed to stat WAL: %v", err)
@@ -94,8 +94,8 @@ func TestWALUnchangedOnInvalidInput(t *testing.T) {
 		t.Fatalf("failed to open database: %v", err)
 	}
 
-	// Get initial WAL size
-	walPath := filepath.Join(tmpDir, "wal", "testdb.wal")
+	// Get initial WAL size (partitioned layout: wal/dbName/p0.wal)
+	walPath := filepath.Join(tmpDir, "wal", "testdb", "p0.wal")
 	initialSize := getWALSize(t, walPath)
 
 	// Try to create multiple invalid documents
@@ -145,8 +145,8 @@ func TestEngineValidatesJSONBeforeWAL(t *testing.T) {
 		t.Fatalf("failed to create valid document: %v", err)
 	}
 
-	// Get WAL size after valid write
-	walPath := filepath.Join(tmpDir, "wal", "testdb.wal")
+	// Get WAL size after valid write (partitioned layout: wal/dbName/p0.wal)
+	walPath := filepath.Join(tmpDir, "wal", "testdb", "p0.wal")
 	sizeAfterValid := getWALSize(t, walPath)
 
 	// Try to create invalid document

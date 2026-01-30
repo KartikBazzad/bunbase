@@ -146,6 +146,14 @@ func (r *Reader) NextV4() (*types.WALRecord, error) {
 	return DecodeRecordV4(fullRecord)
 }
 
+// CurrentOffset returns the current read offset in the file (for truncation on corrupt tail).
+func (r *Reader) CurrentOffset() (int64, error) {
+	if r.file == nil {
+		return 0, nil
+	}
+	return r.file.Seek(0, io.SeekCurrent)
+}
+
 func (r *Reader) Close() error {
 	if r.file == nil {
 		return nil
