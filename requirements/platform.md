@@ -32,10 +32,6 @@ The goal is to provide a cohesive experience across:
   - Versioned deployments with bundles stored on disk.
   - Integration with the Functions service over Unix socket IPC.
 
-- **Data**
-  - DocDB as the primary persisted data engine.
-  - Platform API and Functions service can both talk to DocDB (directly or via client libraries).
-
 - **Developer Experience**
   - Single repository (this monorepo) hosting all services.
   - Clear, consistent build and run commands from the repo root.

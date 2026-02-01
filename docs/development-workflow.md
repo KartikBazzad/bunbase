@@ -12,8 +12,6 @@ This document describes how to work with the BunBase monorepo in day-to-day deve
 
 From the repository root, the `Makefile` provides common build and run targets:
 
-- `make docdb` – Build the DocDB server binary in `docdb/docdb`.
-- `make shell` – Build the DocDB shell binary in `docdb/docdbsh`.
 - `make functions` – Build the Functions service binary in `functions/functions`.
 - `make platform` – Build the Platform API server binary in `platform/platform-server`.
 - `make platform-web` – Install dependencies and start the Platform Web dev server with Bun.
@@ -22,14 +20,6 @@ From the repository root, the `Makefile` provides common build and run targets:
 ### Running the Full Stack Locally
 
 Use separate terminals (or panes) for each component:
-
-1. **DocDB**
-
-   ```bash
-   cd docdb
-   go build -o ./docdb ./cmd/docdb
-   ./docdb
-   ```
 
 2. **Functions Service**
 

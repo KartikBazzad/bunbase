@@ -5,7 +5,6 @@ BunBase is composed of five primary components that live in this monorepo:
 - `platform-web/` – React + Vite dashboard used by developers.
 - `platform/` – Go API server that handles auth, projects, and function deployment.
 - `functions/` – Go control plane managing Bun workers that execute JS/TS functions.
-- `docdb/` – Go document database used for persistent data.
 - `buncast/` – Go Pub/Sub service (event bus) for cross-service events (e.g. function deployed).
 
 ### High-Level Data Flow
@@ -46,11 +45,6 @@ flowchart LR
   - Provides an IPC interface used by the Platform API.
   - Stores function bundles and metadata on disk and in SQLite.
 
-- **DocDB (`docdb/`)**
-  - Provides an embedded document database.
-  - Includes a server binary, interactive shell, and client libraries (including a TypeScript client).
-  - **v0.2 Features:** Collections, path-based updates (patch operations), automatic document healing, WAL trimming, error classification, Prometheus metrics.
-
 - **Buncast (`buncast/`)**
   - In-memory Publish-Subscribe broker for events (e.g. function deployed).
   - Exposes Unix socket IPC for server-to-server publish/subscribe and HTTP + SSE for dashboard/CLI.
@@ -60,7 +54,6 @@ flowchart LR
 
 For detailed documentation of each component, see:
 
-- DocDB: `docdb/README.md`, `docdb/docs/`
 - Functions: `functions/README.md`, `functions/docs/`
 - Platform API: `platform/README.md`
 - Platform Web: `platform-web/README.md`

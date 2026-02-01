@@ -1,12 +1,11 @@
 ## Sharing Code Between Services
 
-This guide explains how to share code between the Go services (`docdb`, `functions`, `platform`) in the BunBase monorepo.
+This guide explains how to share code between the Go services (`functions`, `platform`) in the BunBase monorepo.
 
 ### Current State
 
 Each service is a **separate Go module**:
 
-- `github.com/kartikbazzad/bunbase/docdb`
 - `github.com/kartikbazzad/bunbase/functions`
 - `github.com/kartikbazzad/bunbase/platform`
 
@@ -27,7 +26,6 @@ Create a `go.work` file at the repository root:
 go 1.21
 
 use (
-	./docdb
 	./functions
 	./platform
 )
@@ -81,7 +79,7 @@ packages/
 
 ```go
 use (
-	./docdb
+	.
 	./functions
 	./platform
 	./packages/shared-go
@@ -140,9 +138,6 @@ For JS/TS code (like `platform-web`), use a `packages/` directory with Bun works
 
 ```
 packages/
-├── docdb-client-ts/    # Extracted from docdb/tsclient
-│   ├── package.json
-│   └── src/
 └── platform-types/     # Shared API types
     ├── package.json
     └── src/
@@ -153,7 +148,6 @@ packages/
 ```json
 {
   "dependencies": {
-    "@bunbase/docdb-client": "workspace:*",
     "@bunbase/platform-types": "workspace:*"
   }
 }
