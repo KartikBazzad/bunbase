@@ -3,6 +3,8 @@ import { useParams, Link } from "react-router-dom";
 import { api, type ProjectConfig } from "../lib/api";
 import { FunctionCard } from "../components/functions/FunctionCard";
 import { ProjectServicesCard } from "../components/projects/ProjectServicesCard";
+import { CollectionList } from "../components/database/CollectionList";
+import { DocumentBrowser } from "../components/database/DocumentBrowser";
 
 interface Project {
   id: string;
@@ -28,10 +30,16 @@ export function ProjectDetail() {
   const [project, setProject] = useState<Project | null>(null);
   const [functions, setFunctions] = useState<Function[]>([]);
   const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(
-    null
+    null,
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "database" | "functions" | "settings"
+  >("overview");
+
+  // Database State
+  const [selectedCollection, setSelectedCollection] = useState("");
 
   useEffect(() => {
     if (id) {
@@ -95,12 +103,31 @@ export function ProjectDetail() {
     );
   }
 
+  const TabButton = ({
+    id,
+    label,
+  }: {
+    id: typeof activeTab;
+    label: string;
+  }) => (
+    <button
+      onClick={() => setActiveTab(id)}
+      className={`px-4 py-2 text-sm font-medium border-b-2 mr-4 ${
+        activeTab === id
+          ? "border-primary-600 text-primary-600"
+          : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="container-custom py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4">
               <Link
                 to="/dashboard"
@@ -109,85 +136,94 @@ export function ProjectDetail() {
                 ← Back
               </Link>
               <h1 className="text-xl font-bold">{project.name}</h1>
+              <span className="bg-gray-100 text-xs px-2 py-1 rounded text-gray-500">
+                {project.slug}
+              </span>
             </div>
+          </div>
+
+          <div className="flex">
+            <TabButton id="overview" label="Overview" />
+            <TabButton id="database" label="Database" />
+            <TabButton id="functions" label="Functions" />
+            {/* <TabButton id="settings" label="Settings" /> */}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="container-custom py-8">
-        <div className="mb-6">
-          <div className="card">
-            <div className="card-body">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Slug</p>
-                  <code className="text-sm bg-gray-100 px-2 py-1 rounded">
-                    {project.slug}
-                  </code>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Created</p>
+      <main className="container-custom py-8 flex-1">
+        {/* OVERVIEW TAB */}
+        {activeTab === "overview" && (
+          <div className="space-y-6">
+            {projectConfig && (
+              <>
+                <div className="flex justify-between items-center">
+                  <h2 className="text-xl font-bold">API Services</h2>
                   <p className="text-sm">
-                    {new Date(project.created_at).toLocaleDateString()}
+                    Gateway:{" "}
+                    <code className="bg-gray-200 px-1 rounded">
+                      {projectConfig.gateway_url}
+                    </code>
                   </p>
                 </div>
-              </div>
-            </div>
+                <ProjectServicesCard config={projectConfig} />
+              </>
+            )}
           </div>
-        </div>
-
-        {projectConfig && (
-          <>
-            <h2 className="text-2xl font-bold mb-4">Services</h2>
-            <p className="text-gray-600 mb-6">
-              Gateway:{" "}
-              <code className="text-sm bg-gray-100 px-1.5 py-0.5 rounded">
-                {projectConfig.gateway_url}
-              </code>
-            </p>
-            <ProjectServicesCard config={projectConfig} />
-            <div className="my-8" />
-          </>
         )}
 
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">Functions</h2>
-        </div>
-
-        {loading ? (
-          <div className="flex justify-center py-12">
-            <div className="spinner"></div>
-          </div>
-        ) : functions?.length === 0 ? (
-          <div className="card">
-            <div className="card-body text-center py-12">
-              <p className="text-gray-600 mb-4">No functions deployed yet</p>
-              <div className="bg-gray-50 rounded-lg p-6 text-left max-w-2xl mx-auto">
-                <h3 className="font-semibold mb-2">Deploy via CLI</h3>
-                <p className="text-sm text-gray-600 mb-4">
-                  Use the BunBase CLI to deploy functions to this project:
-                </p>
-                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm overflow-x-auto">
-                  <code>
-                    {`# Login to platform
-bunbase login
-
-# Set active project
-bunbase projects use ${project.id}
-
-# Deploy a function
-bunbase functions deploy hello-world`}
-                  </code>
-                </pre>
-              </div>
+        {/* DATABASE TAB */}
+        {activeTab === "database" && (
+          <div className="grid grid-cols-12 gap-6 h-[600px]">
+            <div className="col-span-3 h-full">
+              <CollectionList
+                projectId={project.id}
+                onSelectCollection={setSelectedCollection}
+              />
+            </div>
+            <div className="col-span-9 h-full">
+              <DocumentBrowser
+                projectId={project.id}
+                collection={selectedCollection}
+              />
             </div>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {functions?.map((fn) => (
-              <FunctionCard key={fn.id} function={fn} projectId={project.id} />
-            ))}
+        )}
+
+        {/* FUNCTIONS TAB */}
+        {activeTab === "functions" && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold">Deployed Functions</h2>
+            </div>
+            {functions.length === 0 ? (
+              <div className="card">
+                <div className="card-body text-center py-12">
+                  <p className="text-gray-600 mb-4">
+                    No functions deployed yet
+                  </p>
+                  <div className="bg-gray-50 rounded-lg p-6 text-left max-w-2xl mx-auto">
+                    <h3 className="font-semibold mb-2">Deploy via CLI</h3>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm overflow-x-auto">
+                      <code>
+                        {`bunbase projects use ${project.id}\nbunbase functions deploy <name>`}
+                      </code>
+                    </pre>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {functions.map((fn) => (
+                  <FunctionCard
+                    key={fn.id}
+                    function={fn}
+                    projectId={project.id}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>

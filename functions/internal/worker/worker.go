@@ -10,7 +10,7 @@ import (
 // Worker is the interface that all worker implementations must satisfy
 type Worker interface {
 	// Spawn starts the worker process
-	Spawn(cfg *config.WorkerConfig, workerScriptPath string, env map[string]string) error
+	Spawn(cfg *config.WorkerConfig, workerScriptPath string, initScriptPath string, env map[string]string) error
 
 	// Invoke sends an invoke message to the worker and waits for response
 	Invoke(ctx context.Context, payload *InvokePayload) (*ResponsePayload, *ErrorPayload, error)

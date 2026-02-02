@@ -1,6 +1,6 @@
 module github.com/kartikbazzad/bunbase/bundoc-server
 
-go 1.25.6
+go 1.23.0
 
 replace github.com/kartikbazzad/bunbase/bundoc => ../bundoc
 

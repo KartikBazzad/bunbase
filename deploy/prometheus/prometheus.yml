@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "bunbase-services"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets:
+        # We will add service targets here as we containerize them
+        # - 'bun-auth:8081'
+        # - 'platform:8082'

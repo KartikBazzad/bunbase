@@ -19,12 +19,13 @@ import (
 
 // Handler handles IPC requests
 type Handler struct {
-	router         *router.Router
-	scheduler      *scheduler.Scheduler
-	logger         *logger.Logger
-	metadata       *metadata.Store
-	cfg            *config.Config
-	workerScript   string
+	router       *router.Router
+	scheduler    *scheduler.Scheduler
+	logger       *logger.Logger
+	metadata     *metadata.Store
+	cfg          *config.Config
+	workerScript string
+	initScript   string
 }
 
 // NewHandler creates a new IPC handler
@@ -37,10 +38,11 @@ func NewHandler(r *router.Router, s *scheduler.Scheduler, log *logger.Logger) *H
 }
 
 // SetDependencies sets additional dependencies needed for function registration/deployment
-func (h *Handler) SetDependencies(meta *metadata.Store, cfg *config.Config, workerScript string) {
+func (h *Handler) SetDependencies(meta *metadata.Store, cfg *config.Config, workerScript string, initScript string) {
 	h.metadata = meta
 	h.cfg = cfg
 	h.workerScript = workerScript
+	h.initScript = initScript
 }
 
 // Handle handles an IPC request
@@ -464,6 +466,7 @@ func (h *Handler) createPoolForFunction(fn *metadata.Function, version *metadata
 		version.BundlePath,
 		&poolCfg,
 		runtimeWorkerScript,
+		h.initScript,
 		map[string]string{}, // TODO: Load env vars from database
 		h.logger,
 	)

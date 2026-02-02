@@ -7,52 +7,118 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/pkg/bunauth"
+	"github.com/kartikbazzad/bunbase/pkg/config"
+
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
+	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/database"
 	"github.com/kartikbazzad/bunbase/platform/internal/handlers"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
+type AppConfig struct {
+	Port   int             `mapstructure:"port"`
+	DB     database.Config `mapstructure:"db"`
+	Bundoc struct {
+		URL string `mapstructure:"url"`
+	} `mapstructure:"bundoc"`
+}
+
 func main() {
 	// Parse flags
-	dbPath := flag.String("db-path", "./data/platform.db", "Database file path")
 	port := flag.String("port", "3001", "Server port")
+	// Note: functions-socket etc should also be env vars or config, but keeping flags for now
 	functionsSocket := flag.String("functions-socket", "/tmp/functions.sock", "Functions service socket path")
 	bundleBasePath := flag.String("bundle-path", "../functions/data/bundles", "Base path for function bundles")
 	buncastSocket := flag.String("buncast-socket", "", "Buncast IPC socket path (optional; enables publish on deploy)")
 	gatewayURL := flag.String("gateway-url", "http://localhost:8080", "Gateway (Traefik) base URL for client-facing project config")
 	corsOrigin := flag.String("cors-origin", "http://localhost:5173", "Allowed CORS origin")
+	authURL := flag.String("auth-url", "http://localhost:8081", "BunAuth Service URL")
+	functionsURL := flag.String("functions-url", "http://localhost:8080", "Functions Service URL")
+
 	flag.Parse()
 
+	// Load Config
+	var cfg AppConfig
+
+	// Set defaults
+	// Set defaults
+	if os.Getenv("PLATFORM_PORT") == "" {
+		os.Setenv("PLATFORM_PORT", *port)
+	}
+	if os.Getenv("PLATFORM_DB_HOST") == "" {
+		os.Setenv("PLATFORM_DB_HOST", "localhost")
+	}
+	if os.Getenv("PLATFORM_DB_PORT") == "" {
+		os.Setenv("PLATFORM_DB_PORT", "5432")
+	}
+	if os.Getenv("PLATFORM_DB_USER") == "" {
+		os.Setenv("PLATFORM_DB_USER", "bunadmin")
+	}
+	if os.Getenv("PLATFORM_DB_PASSWORD") == "" {
+		os.Setenv("PLATFORM_DB_PASSWORD", "bunpassword")
+	}
+	if os.Getenv("PLATFORM_DB_NAME") == "" {
+		os.Setenv("PLATFORM_DB_NAME", "bunbase_system")
+	}
+	if os.Getenv("PLATFORM_DB_MIGRATIONSPATH") == "" {
+		os.Setenv("PLATFORM_DB_MIGRATIONSPATH", "./platform/migrations")
+	}
+	if os.Getenv("PLATFORM_BUNDOC_URL") == "" {
+		os.Setenv("PLATFORM_BUNDOC_URL", "http://localhost:8080")
+	}
+
+	if err := config.Load("PLATFORM_", &cfg); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	log.Printf("Loaded DB Config: Host=%s Port=%d MigrationsPath=%s", cfg.DB.Host, cfg.DB.Port, cfg.DB.MigrationsPath)
+
 	// Initialize database
-	db, err := database.NewDB(*dbPath)
+	db, err := database.NewDB(cfg.DB)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
+	log.Println("Connected to Postgres successfully")
+
 	// Initialize services
-	authService := auth.NewAuth(db.DB)
-	projectService := services.NewProjectService(db.DB)
-	functionService, err := services.NewFunctionService(db.DB, *functionsSocket, *bundleBasePath, *buncastSocket)
+	// Use localhost for local dev, or env for docker.
+	tenantAuthURL := "http://localhost:8083"
+	if url := os.Getenv("TENANT_AUTH_URL"); url != "" {
+		tenantAuthURL = url
+	}
+
+	authClient := bunauth.NewClient(*authURL)
+	tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
+	bundocClient := bundoc.NewClient(cfg.Bundoc.URL)
+
+	authService := auth.NewAuth(authClient)
+
+	projectService := services.NewProjectService(db.Pool)
+
+	functionService, err := services.NewFunctionService(db.Pool, *functionsSocket, *bundleBasePath, *buncastSocket)
 	if err != nil {
 		log.Fatalf("Failed to initialize function service: %v", err)
 	}
 	defer functionService.Close()
 
-	tokenService := services.NewTokenService(db.DB)
+	tokenService := services.NewTokenService(db.Pool)
 	projectConfigService := services.NewProjectConfigService(*gatewayURL)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
+	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
 	projectHandler := handlers.NewProjectHandler(projectService)
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
-	functionHandler := handlers.NewFunctionHandler(functionService, projectService)
+	functionHandler := handlers.NewFunctionHandler(functionService, projectService, *functionsURL)
 	tokenHandler := handlers.NewTokenHandler(tokenService)
+	databaseHandler := handlers.NewDatabaseHandler(bundocClient, projectService)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -68,6 +134,25 @@ func main() {
 	// API routes
 	api := router.Group("/api")
 
+	// v1 API (Public SDK)
+	v1 := router.Group("/v1")
+	v1.Use(middleware.CORSMiddleware("*")) // Relaxed CORS for SDK? Or strict? Use same for now.
+
+	v1Auth := v1.Group("/auth")
+	v1Auth.POST("/register", tenantAuthHandler.Register)
+	v1Auth.POST("/login", tenantAuthHandler.Login)
+
+	v1DB := v1.Group("/databases")
+	// /v1/databases/:dbName/collections/:collection/documents
+	v1DB.POST("/:dbName/collections/:collection/documents", databaseHandler.ProxyHandler)
+	v1DB.GET("/:dbName/collections/:collection/documents", databaseHandler.ProxyHandler)
+	v1DB.GET("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
+	v1DB.PUT("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
+	v1DB.DELETE("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
+
+	v1Functions := v1.Group("/functions")
+	v1Functions.POST("/:name/invoke", functionHandler.InvokeFunction)
+
 	// Auth routes
 	authRoutes := api.Group("/auth")
 	// Public auth endpoints
@@ -78,7 +163,7 @@ func main() {
 	authProtected.Use(middleware.AuthMiddleware(authService))
 	authProtected.POST("/logout", authHandler.Logout)
 	authProtected.GET("/me", authHandler.Me)
-	authProtected.GET("/stream", authHandler.AuthStream)
+	// authProtected.GET("/stream", authHandler.AuthStream) // Stream might need SSE special handling
 
 	// Project routes (protected; accept cookie or token auth)
 	projectsAPI := api.Group("/projects")
@@ -86,7 +171,7 @@ func main() {
 	projectsAPI.GET("", projectHandler.ListProjects)
 	projectsAPI.POST("", projectHandler.CreateProject)
 	projectsAPI.GET("/:id/config", projectConfigHandler.GetProjectConfig)
-	projectsAPI.GET("/:id/services", projectConfigHandler.GetProjectConfig)
+	projectsAPI.GET("/:id/services", projectConfigHandler.GetProjectConfig) // Alias
 	projectsAPI.GET("/:id", projectHandler.GetProject)
 	projectsAPI.PUT("/:id", projectHandler.UpdateProject)
 	projectsAPI.PATCH("/:id", projectHandler.UpdateProject)
@@ -97,6 +182,20 @@ func main() {
 	projectsAPI.POST("/:id/functions", functionHandler.DeployFunction)
 	projectsAPI.DELETE("/:id/functions/:functionId", functionHandler.DeleteFunction)
 
+	// Database routes (protected - developer access)
+	projectDB := projectsAPI.Group("/:id/database")
+	// /api/projects/:id/database/collections
+	projectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
+	projectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	projectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	// /api/projects/:id/database/collections/:collection/documents
+	projectDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	projectDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	// /api/projects/:id/database/collections/:collection/documents/:docID
+	projectDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	projectDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	projectDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+
 	// Token management routes (cookie-authenticated)
 	tokenAPI := api.Group("/auth/tokens")
 	tokenAPI.Use(middleware.AuthMiddleware(authService))
@@ -104,20 +203,12 @@ func main() {
 	tokenAPI.POST("", tokenHandler.Create)
 	tokenAPI.DELETE("/:id", tokenHandler.Delete)
 
-	// Start cleanup goroutine for expired sessions
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := authService.CleanupExpiredSessions(); err != nil {
-				log.Printf("Failed to cleanup expired sessions: %v", err)
-			}
-		}
-	}()
+	// Start cleanup goroutine - Not needed for Stateless Auth (bun-auth handles it)
+	// But if we want local cache cleanup, we can add it later.
 
 	// Graceful shutdown
 	go func() {
-		addr := fmt.Sprintf(":%s", *port)
+		addr := fmt.Sprintf(":%d", cfg.Port)
 		log.Printf("Platform API server starting on %s", addr)
 		if err := router.Run(addr); err != nil {
 			log.Fatalf("Server failed to start: %v", err)

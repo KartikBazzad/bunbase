@@ -1,0 +1,275 @@
+services:
+  # --- SERVICES ---
+  platform:
+    build:
+      context: .
+      dockerfile: platform/Dockerfile
+    container_name: bunbase-platform
+    restart: always
+    environment:
+      PLATFORM_PORT: 3001
+      PLATFORM_DB_HOST: postgres
+      PLATFORM_DB_PORT: 5432
+      PLATFORM_DB_USER: bunadmin
+      PLATFORM_DB_PASSWORD: bunpassword
+      PLATFORM_DB_NAME: bunbase_system
+      PLATFORM_DB_MIGRATIONSPATH: /app/migrations
+      PLATFORM_AUTH_URL: http://bun-auth:8081
+      PLATFORM_BUNDOC_URL: http://bundoc-data:8080
+      TENANT_AUTH_URL: http://tenant-auth:8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bun-auth:
+        condition: service_started
+      tenant-auth:
+        condition: service_started
+    networks:
+      - bunbase-net
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  bun-auth:
+    build:
+      context: .
+      dockerfile: bun-auth/Dockerfile
+    container_name: bunbase-auth
+    restart: always
+    environment:
+      BUNAUTH_PORT: 8081
+      BUNAUTH_DB_HOST: postgres
+      BUNAUTH_DB_PORT: 5432
+      BUNAUTH_DB_USER: bunadmin
+      BUNAUTH_DB_PASSWORD: bunpassword
+      BUNAUTH_DB_NAME: bunbase_system
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bunbase-net
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tenant-auth:
+    build:
+      context: .
+      dockerfile: tenant-auth/Dockerfile
+    container_name: bunbase-tenant-auth
+    restart: always
+    environment:
+      TENANTAUTH_PORT: 8083
+      TENANTAUTH_JWT_SECRET: tenant-dev-secret-key
+      TENANTAUTH_BUNDOC_URL: http://bundoc-auth:8080
+    depends_on:
+      - bundoc-auth
+    networks:
+      - bunbase-net
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  bundoc-data:
+    build:
+      context: .
+      dockerfile: bundoc-server/Dockerfile
+    container_name: bunbase-bundoc-data
+    restart: always
+    environment:
+      PORT: 8080
+    volumes:
+      - bundoc_data_data:/app/data
+    networks:
+      - bunbase-net
+    ports:
+      - "8085:8080"
+      - "4321:4321"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  bundoc-auth:
+    build:
+      context: .
+      dockerfile: bundoc-server/Dockerfile
+    container_name: bunbase-bundoc-auth
+    restart: always
+    environment:
+      PORT: 8080
+    volumes:
+      - bundoc_auth_data:/app/data
+    networks:
+      - bunbase-net
+    ports:
+      - "8084:8080"
+      - "4322:4321"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  functions:
+    build:
+      context: .
+      dockerfile: functions/Dockerfile
+    container_name: bunbase-functions
+    restart: always
+    environment:
+      FUNCTIONS_HTTP_PORT: 8080
+      FUNCTIONS_ENABLE_HTTP: "true"
+      FUNCTIONS_SOCKET: /tmp/functions.sock
+    volumes:
+      - functions_data:/app/data
+      - /tmp/functions.sock:/tmp/functions.sock # Shared socket if needed locally, but inside docker uses own path
+    networks:
+      - bunbase-net
+    ports:
+      - "8086:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- INFRASTRUCTURE ---
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: bunbase-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: bunadmin
+      POSTGRES_PASSWORD: bunpassword
+      POSTGRES_DB: bunbase_system
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bunbase-net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bunadmin -d bunbase_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    container_name: bunbase-minio
+    restart: always
+    command: server --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: bunadmin
+      MINIO_ROOT_PASSWORD: bunpassword
+    volumes:
+      - minio_data:/data
+    networks:
+      - bunbase-net
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bunder-sys:
+    build:
+      context: .
+      dockerfile: bunder/Dockerfile
+    container_name: bunbase-bunder-sys
+    restart: always
+    command:
+      ["/bin/bunder", "-addr", ":6379", "-http", ":8080", "-data", "/data"]
+    volumes:
+      - bunder_sys_data:/data
+    networks:
+      - bunbase-net
+    ports:
+      - "6379:6379"
+      - "8082:8080" # Exposed on 8082 to avoid conflict with Traefik dashboard
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bunbase-prometheus
+    restart: always
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - bunbase-net
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bunbase-grafana
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=bunpassword
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - bunbase-net
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  traefik:
+    image: traefik:v3.0
+    container_name: bunbase-gateway
+    restart: always
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "8080:8080" # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - bunbase-net
+
+networks:
+  bunbase-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  bunder_sys_data:
+  prometheus_data:
+  grafana_data:
+  bundoc_data_data:
+  bundoc_auth_data:

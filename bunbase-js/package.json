@@ -1,0 +1,26 @@
+{
+  "name": "bunbase-js",
+  "version": "0.1.0",
+  "description": "Javascript SDK for BunBase",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest"
+  },
+  "keywords": [
+    "bunbase",
+    "sdk",
+    "serverless",
+    "database"
+  ],
+  "author": "BunBase",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^0.34.0"
+  },
+  "dependencies": {
+    "cross-fetch": "^4.0.0"
+  }
+}

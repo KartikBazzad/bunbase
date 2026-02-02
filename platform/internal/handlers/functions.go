@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
+
+	"io"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
@@ -13,13 +16,15 @@ import (
 type FunctionHandler struct {
 	functionService *services.FunctionService
 	projectService  *services.ProjectService
+	functionsURL    string
 }
 
 // NewFunctionHandler creates a new FunctionHandler
-func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService) *FunctionHandler {
+func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, functionsURL string) *FunctionHandler {
 	return &FunctionHandler{
 		functionService: functionService,
 		projectService:  projectService,
+		functionsURL:    functionsURL,
 	}
 }
 
@@ -148,3 +153,69 @@ func (h *FunctionHandler) DeleteFunction(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "function deleted"})
 }
 
+// InvokeFunction handles function invocation
+func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
+	// 1. Get Project ID (from Client Key)
+	key := c.GetHeader("X-Bunbase-Client-Key")
+	var projectID string
+
+	if key != "" {
+		id, err := h.projectService.GetProjectIDByPublicKey(key)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API Key"})
+			return
+		}
+		projectID = id
+	} else {
+		// Fallback to User Auth if needed, but for now strict Key requirement for SDK
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "API Key required"})
+		return
+	}
+
+	functionName := c.Param("name")
+	if functionName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Function name required"})
+		return
+	}
+
+	// 2. Get Function by Name and Project
+	function, err := h.functionService.GetFunctionByName(projectID, functionName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Function not found"})
+		return
+	}
+
+	// 3. Proxy to Functions Service (HTTP Gateway)
+	targetURL := fmt.Sprintf("%s/functions/%s", h.functionsURL, function.FunctionServiceID)
+
+	proxyReq, err := http.NewRequest(c.Request.Method, targetURL, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request"})
+		return
+	}
+
+	for k, v := range c.Request.Header {
+		proxyReq.Header[k] = v
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("Failed to invoke function: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
+		return
+	}
+
+	for k, v := range resp.Header {
+		c.Writer.Header()[k] = v
+	}
+
+	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.Write(body)
+}

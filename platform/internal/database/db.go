@@ -1,144 +1,72 @@
 package database
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	// Initial Migration
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DB wraps the SQLite database connection
+// DB wraps the Postgres database connection pool
 type DB struct {
-	*sql.DB
+	Pool *pgxpool.Pool
 }
 
-// NewDB creates a new database connection and initializes the schema
-func NewDB(dbPath string) (*DB, error) {
-	// Ensure directory exists
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
+// Config holds database configuration
+type Config struct {
+	Host           string `mapstructure:"host"`
+	Port           int    `mapstructure:"port"`
+	User           string `mapstructure:"user"`
+	Password       string `mapstructure:"password"`
+	Name           string `mapstructure:"name"`
+	MigrationsPath string `mapstructure:"migrationspath"`
+}
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1")
+// NewDB creates a new database connection and runs migrations
+func NewDB(cfg Config) (*DB, error) {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name)
+
+	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pool: %w", err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	database := &DB{db}
-	if err := database.initSchema(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	// Run Migrations
+	if cfg.MigrationsPath != "" {
+		m, err := migrate.New(
+			"file://"+cfg.MigrationsPath,
+			dsn,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create migration instance: %w", err)
+		}
+		if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+			return nil, fmt.Errorf("failed to run migrations: %w", err)
+		}
 	}
 
-	return database, nil
-}
-
-// initSchema creates all database tables
-func (db *DB) initSchema() error {
-	schema := `
-	-- Users table
-	CREATE TABLE IF NOT EXISTS users (
-		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
-		password_hash TEXT NOT NULL,
-		name TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-	-- Sessions table
-	CREATE TABLE IF NOT EXISTS sessions (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		token TEXT UNIQUE NOT NULL,
-		expires_at INTEGER NOT NULL,
-		created_at INTEGER NOT NULL,
-		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
-	CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-	CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-
-	-- Projects table
-	CREATE TABLE IF NOT EXISTS projects (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		slug TEXT UNIQUE NOT NULL,
-		owner_id TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_projects_owner_id ON projects(owner_id);
-	CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects(slug);
-
-	-- Project members table
-	CREATE TABLE IF NOT EXISTS project_members (
-		id TEXT PRIMARY KEY,
-		project_id TEXT NOT NULL,
-		user_id TEXT NOT NULL,
-		role TEXT NOT NULL DEFAULT 'member',
-		created_at INTEGER NOT NULL,
-		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-		UNIQUE(project_id, user_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_project_members_project_id ON project_members(project_id);
-	CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
-
-	-- Functions table (links to functions service)
-	CREATE TABLE IF NOT EXISTS functions (
-		id TEXT PRIMARY KEY,
-		project_id TEXT NOT NULL,
-		function_service_id TEXT NOT NULL,
-		name TEXT NOT NULL,
-		runtime TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-		UNIQUE(project_id, name)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_functions_project_id ON functions(project_id);
-	CREATE INDEX IF NOT EXISTS idx_functions_function_service_id ON functions(function_service_id);
-
-	-- API tokens table (for CLI and integrations)
-	CREATE TABLE IF NOT EXISTS api_tokens (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		name TEXT NOT NULL,
-		token_hash TEXT NOT NULL UNIQUE,
-		scopes TEXT,
-		expires_at INTEGER,
-		last_used_at INTEGER,
-		created_at INTEGER NOT NULL,
-		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON api_tokens(user_id);
-	CREATE INDEX IF NOT EXISTS idx_api_tokens_token_hash ON api_tokens(token_hash);
-	`
-
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
-	}
-
-	return nil
+	return &DB{Pool: pool}, nil
 }
 
 // Close closes the database connection
-func (db *DB) Close() error {
-	return db.DB.Close()
+func (db *DB) Close() {
+	db.Pool.Close()
 }

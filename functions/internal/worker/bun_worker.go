@@ -86,7 +86,7 @@ func NewBunWorker(functionID, version, bundlePath string, log *logger.Logger) *B
 }
 
 // Spawn starts the Bun worker process
-func (w *BunWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string, env map[string]string) error {
+func (w *BunWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string, initScriptPath string, env map[string]string) error {
 	w.mu.Lock()
 
 	if w.process != nil {
@@ -112,8 +112,20 @@ func (w *BunWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string, env
 
 	w.logger.Debug("Spawning worker: bun=%s script=%s bundle=%s", cfg.BunPath, scriptPath, w.bundlePath)
 
+	// Prepare arguments
+	args := []string{}
+	if initScriptPath != "" {
+		// Verify init script exists
+		if _, err := os.Stat(initScriptPath); err == nil {
+			args = append(args, "--preload", initScriptPath)
+		} else {
+			w.logger.Warn("Init script not found at %s, skipping preload", initScriptPath)
+		}
+	}
+	args = append(args, scriptPath)
+
 	// Create command
-	cmd := exec.CommandContext(w.ctx, cfg.BunPath, scriptPath)
+	cmd := exec.CommandContext(w.ctx, cfg.BunPath, args...)
 
 	// Set environment variables
 	cmd.Env = os.Environ()

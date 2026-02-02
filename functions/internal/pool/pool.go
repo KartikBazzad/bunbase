@@ -12,33 +12,34 @@ import (
 )
 
 var (
-	ErrPoolStopped      = fmt.Errorf("pool is stopped")
+	ErrPoolStopped       = fmt.Errorf("pool is stopped")
 	ErrMaxWorkersReached = fmt.Errorf("max workers reached")
 	ErrNoWorkers         = fmt.Errorf("no workers available")
 )
 
 // WorkerPool manages workers for a function version
 type WorkerPool struct {
-	functionID   string
-	version      string
-	bundlePath   string
-	warm         []worker.Worker
-	busy         []worker.Worker
-	maxWorkers   int
-	warmWorkers  int
-	idleTimeout  time.Duration
-	mu           sync.RWMutex
-	logger       *logger.Logger
-	cfg          *config.WorkerConfig
-	workerScript string
-	env          map[string]string
-	stopped      bool
+	functionID    string
+	version       string
+	bundlePath    string
+	warm          []worker.Worker
+	busy          []worker.Worker
+	maxWorkers    int
+	warmWorkers   int
+	idleTimeout   time.Duration
+	mu            sync.RWMutex
+	logger        *logger.Logger
+	cfg           *config.WorkerConfig
+	workerScript  string
+	initScript    string
+	env           map[string]string
+	stopped       bool
 	cleanupTicker *time.Ticker
 	cleanupStop   chan struct{}
 }
 
 // NewPool creates a new worker pool
-func NewPool(functionID, version, bundlePath string, cfg *config.WorkerConfig, workerScript string, env map[string]string, log *logger.Logger) *WorkerPool {
+func NewPool(functionID, version, bundlePath string, cfg *config.WorkerConfig, workerScript string, initScript string, env map[string]string, log *logger.Logger) *WorkerPool {
 	p := &WorkerPool{
 		functionID:   functionID,
 		version:      version,
@@ -49,6 +50,7 @@ func NewPool(functionID, version, bundlePath string, cfg *config.WorkerConfig, w
 		logger:       log,
 		cfg:          cfg,
 		workerScript: workerScript,
+		initScript:   initScript,
 		env:          env,
 		warm:         make([]worker.Worker, 0),
 		busy:         make([]worker.Worker, 0),
@@ -69,7 +71,7 @@ func (p *WorkerPool) createWorker() worker.Worker {
 	if p.cfg != nil && p.cfg.Runtime != "" {
 		runtime = p.cfg.Runtime
 	}
-	
+
 	var w worker.Worker
 	switch runtime {
 	case "quickjs", "quickjs-ng":
@@ -115,7 +117,7 @@ func (p *WorkerPool) Acquire(ctx context.Context) (worker.Worker, error) {
 	// Spawn new worker
 	p.logger.Info("Spawning new worker for function %s (cold start)", p.functionID)
 	w := p.createWorker()
-	if err := w.Spawn(p.cfg, p.workerScript, p.env); err != nil {
+	if err := w.Spawn(p.cfg, p.workerScript, p.initScript, p.env); err != nil {
 		p.logger.Error("Failed to spawn worker for function %s: %v", p.functionID, err)
 		return nil, fmt.Errorf("failed to spawn worker: %w", err)
 	}
@@ -225,23 +227,23 @@ func (p *WorkerPool) Stop() {
 	p.stopped = true
 	p.cleanupTicker.Stop()
 	close(p.cleanupStop)
-	
+
 	// Copy workers to avoid holding lock during termination
 	warmWorkers := make([]worker.Worker, len(p.warm))
 	copy(warmWorkers, p.warm)
 	busyWorkers := make([]worker.Worker, len(p.busy))
 	copy(busyWorkers, p.busy)
-	
+
 	p.warm = nil
 	p.busy = nil
 	p.mu.Unlock()
 
 	// Terminate all workers (without holding lock)
 	p.logger.Info("Terminating %d warm and %d busy workers for function %s", len(warmWorkers), len(busyWorkers), p.functionID)
-	
+
 	// Terminate workers in parallel with timeout
 	done := make(chan bool, len(warmWorkers)+len(busyWorkers))
-	
+
 	for _, w := range warmWorkers {
 		go func(w worker.Worker) {
 			w.Terminate()
@@ -259,12 +261,12 @@ func (p *WorkerPool) Stop() {
 	timeout := time.After(3 * time.Second)
 	completed := 0
 	total := len(warmWorkers) + len(busyWorkers)
-	
+
 	if total == 0 {
 		p.logger.Info("No workers to terminate for function %s", p.functionID)
 		return
 	}
-	
+
 	for completed < total {
 		select {
 		case <-done:

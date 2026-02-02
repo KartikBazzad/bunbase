@@ -27,7 +27,7 @@ export class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`;
     const response = await fetch(url, {
@@ -118,7 +118,7 @@ export class ApiClient {
     runtime: string,
     handler: string,
     version: string,
-    bundle: string // Base64 encoded bundle
+    bundle: string, // Base64 encoded bundle
   ) {
     return this.request(`/projects/${projectId}/functions`, {
       method: "POST",
@@ -136,6 +136,64 @@ export class ApiClient {
     return this.request(`/projects/${projectId}/functions/${functionId}`, {
       method: "DELETE",
     });
+  }
+
+  // Database endpoints
+  async listCollections(projectId: string) {
+    return this.request(`/projects/${projectId}/database/collections`);
+  }
+
+  async createCollection(projectId: string, name: string) {
+    return this.request(`/projects/${projectId}/database/collections`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async deleteCollection(projectId: string, name: string) {
+    return this.request(`/projects/${projectId}/database/collections/${name}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listDocuments(projectId: string, collection: string) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/documents`,
+    );
+  }
+
+  async createDocument(projectId: string, collection: string, data: any) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/documents`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async updateDocument(
+    projectId: string,
+    collection: string,
+    id: string,
+    data: any,
+  ) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/documents/${id}`,
+      {
+        method: "PUT", // or PATCH
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
+  async deleteDocument(projectId: string, collection: string, id: string) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/documents/${id}`,
+      {
+        method: "DELETE",
+      },
+    );
   }
 }
 

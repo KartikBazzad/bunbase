@@ -50,3 +50,4 @@ certs/server.key
 bun-kms/bunkms-cli
 bun-kms/bunkms-loadtest
 bunder-manager/bunder-manager
+certs

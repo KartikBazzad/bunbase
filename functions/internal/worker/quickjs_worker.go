@@ -66,7 +66,7 @@ func (w *QuickJSWorker) SetCapabilities(caps *capabilities.Capabilities) {
 }
 
 // Spawn starts the QuickJS worker process
-func (w *QuickJSWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string, env map[string]string) error {
+func (w *QuickJSWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string, initScriptPath string, env map[string]string) error {
 	w.mu.Lock()
 
 	if w.process != nil {
@@ -105,7 +105,7 @@ func (w *QuickJSWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string,
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, fmt.Sprintf("BUNDLE_PATH=%s", w.bundlePath))
 	cmd.Env = append(cmd.Env, fmt.Sprintf("WORKER_ID=%s", w.id))
-	
+
 	// Add capabilities to environment (as JSON)
 	if w.capabilities != nil {
 		capsJSON, err := json.Marshal(w.capabilities)
@@ -113,7 +113,7 @@ func (w *QuickJSWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string,
 			cmd.Env = append(cmd.Env, fmt.Sprintf("CAPABILITIES=%s", string(capsJSON)))
 		}
 	}
-	
+
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
@@ -121,14 +121,14 @@ func (w *QuickJSWorker) Spawn(cfg *config.WorkerConfig, workerScriptPath string,
 	// Set resource limits before starting process
 	if w.capabilities != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		
+
 		// Set memory limit
 		if w.capabilities.MaxMemory > 0 {
 			// Note: Setrlimit will be called in the child process
 			// We'll pass it via environment and set it in the C wrapper
 			cmd.Env = append(cmd.Env, fmt.Sprintf("MAX_MEMORY=%d", w.capabilities.MaxMemory))
 		}
-		
+
 		// Set file descriptor limit
 		if w.capabilities.MaxFileDescriptors > 0 {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("MAX_FDS=%d", w.capabilities.MaxFileDescriptors))

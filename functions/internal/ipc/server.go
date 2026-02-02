@@ -42,8 +42,8 @@ func NewServer(cfg *config.Config, r *router.Router, s *scheduler.Scheduler, log
 }
 
 // SetDependencies sets dependencies needed for function registration/deployment
-func (s *Server) SetDependencies(meta *metadata.Store, workerScript string) {
-	s.handler.SetDependencies(meta, s.cfg, workerScript)
+func (s *Server) SetDependencies(meta *metadata.Store, workerScript string, initScript string) {
+	s.handler.SetDependencies(meta, s.cfg, workerScript, initScript)
 }
 
 // Start starts the IPC server

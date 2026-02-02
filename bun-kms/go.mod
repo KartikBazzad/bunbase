@@ -1,6 +1,6 @@
 module github.com/kartikbazzad/bunbase/bun-kms
 
-go 1.25.6
+go 1.23.0
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
