@@ -24,6 +24,7 @@ import (
 	"github.com/kartikbazzad/bunbase/bundoc/internal/transaction"
 	"github.com/kartikbazzad/bunbase/bundoc/internal/wal"
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
+	"github.com/kartikbazzad/bunbase/bundoc/security"
 	"github.com/kartikbazzad/bunbase/bundoc/storage"
 )
 
@@ -38,6 +39,8 @@ type Database struct {
 	snapshotMgr *mvcc.SnapshotManager           // Manages transaction snapshots
 	txnMgr      *transaction.TransactionManager // Coordinates transaction lifecycles
 	metadataMgr *MetadataManager                // Persists schema/index definitions
+	Security    *security.UserManager           // Manages Users and Auth
+	Audit       *security.AuditLogger           // Security Audit Logger
 	collections map[string]*Collection          // Registry of loaded collections
 	mu          sync.RWMutex                    // Protects map access and closure state
 	closed      bool                            // Flag indicating if DB is closed
@@ -56,6 +59,13 @@ type Options struct {
 
 	// MetadataPath for system catalog (default: Path/system_catalog.json)
 	MetadataPath string
+
+	// EncryptionKey for at-rest encryption (32 bytes for AES-256)
+	// If nil, encryption is disabled.
+	EncryptionKey []byte
+
+	// AuditLogPath for security events (default: Path/audit.log)
+	AuditLogPath string
 }
 
 // DefaultOptions returns default database options
@@ -65,6 +75,7 @@ func DefaultOptions(path string) *Options {
 		BufferPoolSize: 1000, // 8MB default
 		WALPath:        path + "/wal",
 		MetadataPath:   path + "/system_catalog.json",
+		AuditLogPath:   path + "/audit.log",
 	}
 }
 
@@ -86,7 +97,7 @@ func Open(opts *Options) (*Database, error) {
 	}
 
 	// Create pager for disk I/O
-	pager, err := storage.NewPager(opts.Path + "/data.db")
+	pager, err := storage.NewPager(opts.Path+"/data.db", opts.EncryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pager: %w", err)
 	}
@@ -132,6 +143,23 @@ func Open(opts *Options) (*Database, error) {
 		collections: make(map[string]*Collection),
 		closed:      false,
 	}
+
+	// Initialize Security
+	userStore := NewInternalUserStore(db)
+	db.Security = security.NewUserManager(userStore)
+
+	// Initialize Audit Logger
+	auditPath := opts.AuditLogPath
+	if auditPath == "" {
+		auditPath = opts.Path + "/audit.log"
+	}
+	auditLogger, err := security.NewAuditLogger(auditPath)
+	if err != nil {
+		// Log error but don't fail DB open? Or fail secure?
+		// Fail secure is better.
+		return nil, fmt.Errorf("failed to init audit logger: %w", err)
+	}
+	db.Audit = auditLogger
 
 	// Restore Collections from Metadata
 	for _, name := range metadataMgr.ListCollections() {
@@ -353,6 +381,11 @@ func (db *Database) Close() error {
 	// Close pager
 	if err := db.pager.Close(); err != nil {
 		return fmt.Errorf("failed to close pager: %w", err)
+	}
+
+	// Close Audit Logger
+	if db.Audit != nil {
+		db.Audit.Close()
 	}
 
 	return nil

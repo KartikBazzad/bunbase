@@ -13,23 +13,21 @@ import (
 	"sync"
 
 	"github.com/kartikbazzad/bunbase/bundoc/internal/util"
+	"github.com/kartikbazzad/bunbase/bundoc/security"
 )
 
 // Pager manages disk I/O for fixed-size pages.
-// It handles opening the database file, reading/writing pages at specific offsets,
-// and extending the file when new pages are allocated.
 type Pager struct {
-	file       *os.File
-	mu         sync.RWMutex
-	nextPageID PageID
+	file         *os.File
+	mu           sync.RWMutex
+	nextPageID   PageID
+	encryptor    *security.Encryptor
+	diskPageSize int64 // PageSize (+ Overhead if encrypted)
 }
 
-// NewPager creates a new Pager instance backed by the specified file.
-// It creates the file and parent directories if they don't exist.
-// Ideally, this should open the file with O_DIRECT for database usage, but for now
-// standard buffered I/O is used.
-func NewPager(filename string) (*Pager, error) {
-	// Create parent directories if they don't exist
+// NewPager creates a new Pager. If key is provided, enables encryption.
+func NewPager(filename string, key []byte) (*Pager, error) {
+	// Create parent directories
 	dir := filename[:len(filename)-len("/data.db")]
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
@@ -40,6 +38,18 @@ func NewPager(filename string) (*Pager, error) {
 		return nil, fmt.Errorf("%w: %v", util.ErrDiskWriteFailed, err)
 	}
 
+	var encryptor *security.Encryptor
+	diskPageSize := int64(PageSize)
+
+	if len(key) > 0 {
+		encryptor, err = security.NewEncryptor(key)
+		if err != nil {
+			file.Close()
+			return nil, fmt.Errorf("failed to init encryptor: %w", err)
+		}
+		diskPageSize += int64(security.Overhead)
+	}
+
 	// Get file size to determine next page ID
 	info, err := file.Stat()
 	if err != nil {
@@ -47,16 +57,17 @@ func NewPager(filename string) (*Pager, error) {
 		return nil, fmt.Errorf("%w: %v", util.ErrDiskReadFailed, err)
 	}
 
-	nextPageID := PageID(info.Size() / PageSize)
+	nextPageID := PageID(info.Size() / diskPageSize)
 
 	return &Pager{
-		file:       file,
-		nextPageID: nextPageID,
+		file:         file,
+		nextPageID:   nextPageID,
+		encryptor:    encryptor,
+		diskPageSize: diskPageSize,
 	}, nil
 }
 
 // AllocatePage reserves a new PageID and extends the file size.
-// It returns the ID of the newly allocated page.
 func (p *Pager) AllocatePage() (PageID, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -64,8 +75,8 @@ func (p *Pager) AllocatePage() (PageID, error) {
 	pageID := p.nextPageID
 	p.nextPageID++
 
-	// Extend the file to accommodate the new page
-	newSize := int64(p.nextPageID) * PageSize
+	// Extend the file
+	newSize := int64(p.nextPageID) * p.diskPageSize
 	if err := p.file.Truncate(newSize); err != nil {
 		return 0, fmt.Errorf("%w: %v", util.ErrDiskWriteFailed, err)
 	}
@@ -82,12 +93,30 @@ func (p *Pager) ReadPage(pageID PageID) (*Page, error) {
 		return nil, util.ErrInvalidPageID
 	}
 
-	page := &Page{ID: pageID}
-	offset := int64(pageID) * PageSize
+	page := &Page{ID: pageID} // Data is zeroed [PageSize]
+	offset := int64(pageID) * p.diskPageSize
 
-	n, err := p.file.ReadAt(page.Data[:], offset)
+	// Read Disk Data
+	diskData := make([]byte, p.diskPageSize)
+	n, err := p.file.ReadAt(diskData, offset)
 	if err != nil && n == 0 {
 		return nil, fmt.Errorf("%w: %v", util.ErrDiskReadFailed, err)
+	}
+
+	// Decrypt if needed
+	if p.encryptor != nil {
+		plaintext, err := p.encryptor.DecryptBlock(diskData)
+		if err != nil {
+			return nil, fmt.Errorf("decryption failed for page %d: %w", pageID, err)
+		}
+		// Copy plaintext to page.Data
+		// Note: plaintext MUST be PageSize (8192)
+		if len(plaintext) != PageSize {
+			return nil, fmt.Errorf("corrupt page size after decrypt: %d", len(plaintext))
+		}
+		copy(page.Data[:], plaintext)
+	} else {
+		copy(page.Data[:], diskData)
 	}
 
 	return page, nil
@@ -102,13 +131,26 @@ func (p *Pager) WritePage(page *Page) error {
 		return util.ErrInvalidPageID
 	}
 
-	offset := int64(page.ID) * PageSize
-	_, err := p.file.WriteAt(page.Data[:], offset)
+	var dataToWrite []byte
+
+	// Encrypt if needed
+	if p.encryptor != nil {
+		var err error
+		dataToWrite, err = p.encryptor.EncryptBlock(page.Data[:])
+		if err != nil {
+			return fmt.Errorf("encryption failed: %w", err)
+		}
+	} else {
+		dataToWrite = page.Data[:]
+	}
+
+	offset := int64(page.ID) * p.diskPageSize
+	_, err := p.file.WriteAt(dataToWrite, offset)
 	if err != nil {
 		return fmt.Errorf("%w: %v", util.ErrDiskWriteFailed, err)
 	}
 
-	// Mark as clean after writing
+	// Mark as clean
 	page.mu.Lock()
 	page.IsDirty = false
 	page.mu.Unlock()

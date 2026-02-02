@@ -10,6 +10,7 @@ import (
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	serverPkg "github.com/kartikbazzad/bunbase/bundoc-server/internal/server"
 	"github.com/kartikbazzad/bunbase/bundoc/client"
+	"github.com/kartikbazzad/bunbase/bundoc/security"
 )
 
 func TestE2E_NetworkFlow(t *testing.T) {
@@ -35,14 +36,29 @@ func TestE2E_NetworkFlow(t *testing.T) {
 	port := 4322
 	addr := fmt.Sprintf("localhost:%d", port)
 
-	srv := serverPkg.NewTCPServer(addr, mgr)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Failed to start server: %v", err)
-	}
-	defer srv.Stop()
+	// Start TCP server
+	tcpServer := serverPkg.NewTCPServer(addr, mgr, nil)
+	go tcpServer.Start()
+	defer tcpServer.Stop()
 
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
+
+	// 1.5 Create User (Backdoor via Manager/DB because client CreateUser isn't implemented)
+	// We need to acquire DB for "proj1" to create user there?
+	// Security is scoped to DB/Project.
+	// Users are in 'admin.users' of the DB.
+	// For "proj1".
+	db, _, _ := mgr.Acquire("proj1")
+	// Note: In real app, we might have global users or per-project.
+	// Our SecurityManager is per Database instance.
+	// So we need to create user in "proj1".
+
+	// Create "admin" user with RoleReadWrite (Defined in security/types.go)
+	err = db.Security.CreateUser("admin", "password123", []security.Role{security.RoleReadWrite})
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
 
 	// 2. Client Connect
 	cli, err := client.Connect(addr)
@@ -50,6 +66,11 @@ func TestE2E_NetworkFlow(t *testing.T) {
 		t.Fatalf("Failed to connect client: %v", err)
 	}
 	defer cli.Close()
+
+	// 2.5 Login
+	if err := cli.Login("admin", "password123", "proj1"); err != nil {
+		t.Fatalf("Login failed: %v", err)
+	}
 
 	// 3. Insert Data
 	col := cli.Database("db1").Collection("users")

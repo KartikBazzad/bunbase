@@ -8,9 +8,11 @@ A lightweight, embedded document database built in Go with MVCC transactions, Wr
 ✅ **Write-Ahead Logging** - Durability with group commits and shared flusher  
 ✅ **Connection Pooling** - Adaptive pool with health checks (5-100 connections)  
 ✅ **4 Isolation Levels** - ReadUncommitted, ReadCommitted, RepeatableRead, Serializable  
-✅ **Auto-ID Generation** - Automatic document ID generation  
-✅ **Index Persistence** - B-Tree indices and schema persist across restarts  
-✅ **Thread-Safe** - Concurrent reads and writes with 0 race conditions
+✅ **Advanced Query Engine** - SQL-like filtering with `Eq`, `Gt`, `And`, `Or` operators  
+✅ **Distributed Consensus** - Raft-based replication for high availability  
+✅ **B+Tree Indexing** - Persisted indexes for O(log n) lookups  
+✅ **Robust Security** - SCRAM Auth, RBAC, TLS, and Encryption at Rest (AES-GCM)  
+✅ **Audit Logging** - Comprehensive security event tracking
 
 ## Quick Start
 
@@ -268,6 +270,39 @@ mvcc.RepeatableRead   // Consistent reads within transaction
 mvcc.Serializable     // Full serializability
 ```
 
+## Security
+
+Bundoc is designed with a "Secure by Default" philosophy, offering a comprehensive security suite:
+
+### 1. Authentication (AuthN)
+
+- **Mechanism**: Challenge-Response using **SCRAM-SHA-256**.
+- **Credentials**: Passwords are never stored plainly. We store Salt + StoredKey + ServerKey.
+- **Client**: Use `client.Login(username, password, projectID)` to authenticate.
+
+### 2. Authorization (AuthZ)
+
+- **RBAC**: Role-Based Access Control with granular permissions.
+- **Roles**:
+  - `admin`: Full access to database.
+  - `read_write`: Read and write permissions.
+  - `read`: Read-only access.
+- **Enforcement**: Server validates permissions for every `Insert`, `Find`, and `Delete` operation.
+
+### 3. Encryption
+
+- **In-Transit**: Full **TLS 1.3** support for the Wire Protocol.
+  - Enable via `--tls-cert` and `--tls-key` flags in `bundoc-server`.
+- **At-Rest (TDE)**: Transparent AES-256-GCM encryption for disk pages.
+  - Configure `EncryptionKey` in `Options`.
+  - Protects data even if the physical disk is compromised.
+
+### 4. Auditing
+
+- **Audit Logs**: JSON-structured logs tracking security-critical events.
+- **Events**: Login Success/Failure, Access Denied, Privilege Changes.
+- **Path**: Configurable via `AuditLogPath` (default: `audit.log`).
+
 ## Configuration
 
 ### Database Options
@@ -277,6 +312,8 @@ opts := &bundoc.Options{
     Path:           "./dbpath",      // Database directory
     BufferPoolSize: 1000,            // Number of pages (default: 1000 = 8MB)
     WALPath:        "./dbpath/wal",  // WAL directory
+    EncryptionKey:  []byte("..."),   // 32-byte Key for AES-256 (Optional)
+    AuditLogPath:   "./audit.log",   // Security Audit Log path
 }
 ```
 

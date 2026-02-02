@@ -28,7 +28,7 @@ func BenchmarkScanResistance(b *testing.B) {
 	// but we heavily rely on the fact that we can just allocate pages
 	dir, _ := os.MkdirTemp("", "bench-scan")
 	defer os.RemoveAll(dir)
-	pager, _ := NewPager(dir + "/data.db")
+	pager, _ := NewPager(dir+"/data.db", nil)
 	defer pager.Close()
 
 	bp := NewBufferPool(poolSize, pager)
@@ -107,7 +107,7 @@ func TestScanResistance(t *testing.T) {
 	poolSize := 10
 	dir, _ := os.MkdirTemp("", "test-scan")
 	defer os.RemoveAll(dir)
-	pager, _ := NewPager(dir + "/data.db")
+	pager, _ := NewPager(dir+"/data.db", nil)
 	defer pager.Close()
 	bp := NewBufferPool(poolSize, pager)
 

@@ -42,3 +42,8 @@ services/server/functions
 data
 bundoc-server/bundoc-server
 bundoc-server/main
+
+
+quickjs-ng
+certs/server.crt
+certs/server.key

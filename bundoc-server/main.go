@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,6 +36,8 @@ func main() {
 	raftID := flag.String("raft-id", "", "Raft Node ID (e.g., node1)")
 	raftPeers := flag.String("peers", "", "Comma-separated list of peer addresses (e.g., node2:4321,node3:4321)")
 	port := flag.Int("port", 4321, "TCP Server Port")
+	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate")
+	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
 	flag.Parse()
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -109,8 +112,18 @@ func main() {
 		}
 	}()
 
+	// Load TLS Config if enabled
+	var tlsConfig *tls.Config
+	if *tlsCert != "" && *tlsKey != "" {
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Fatalf("Failed to load TLS keys: %v", err)
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
 	// Start TCP server
-	tcpServer := serverPkg.NewTCPServer(addr, mgr)
+	tcpServer := serverPkg.NewTCPServer(addr, mgr, tlsConfig)
 
 	// Initialize Raft if ID is provided
 	if *raftID != "" {

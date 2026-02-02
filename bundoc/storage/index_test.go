@@ -12,7 +12,7 @@ func TestBPlusTreeBasicOperations(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	// Create pager and buffer pool
-	pager, err := NewPager(tmpfile)
+	pager, err := NewPager(tmpfile, nil)
 	if err != nil {
 		t.Fatalf("Failed to create pager: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestBPlusTreeRangeScan(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	// Create pager and buffer pool
-	pager, err := NewPager(tmpfile)
+	pager, err := NewPager(tmpfile, nil)
 	if err != nil {
 		t.Fatalf("Failed to create pager: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBPlusTreeUpdate(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	// Create pager and buffer pool
-	pager, err := NewPager(tmpfile)
+	pager, err := NewPager(tmpfile, nil)
 	if err != nil {
 		t.Fatalf("Failed to create pager: %v", err)
 	}

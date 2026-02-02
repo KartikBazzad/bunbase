@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartikbazzad/bunbase/bundoc"
+	"github.com/kartikbazzad/bunbase/bundoc/security"
 	"github.com/kartikbazzad/bunbase/bundoc/wire"
 )
 
@@ -28,6 +29,88 @@ func Connect(addr string) (*Client, error) {
 		addr: addr,
 		conn: conn,
 	}, nil
+}
+
+// Login performs SCRAM-SHA-256 authentication
+func (c *Client) Login(username, password, projectID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Step 1: Send Username
+	req1 := wire.AuthRequest{
+		RequestMeta: wire.RequestMeta{ProjectID: projectID},
+		Step:        1,
+		Username:    username,
+	}
+	if err := wire.WriteMessage(c.conn, wire.OpAuth, req1); err != nil {
+		return fmt.Errorf("write step 1 error: %w", err)
+	}
+
+	// Read Challenge
+	header, err := wire.ReadHeader(c.conn)
+	if err != nil {
+		return fmt.Errorf("read header 1 error: %w", err)
+	}
+
+	if header.OpCode == wire.OpError {
+		var reply wire.Reply
+		if err := wire.ReadBody(c.conn, header.Length, &reply); err != nil {
+			return err
+		}
+		return fmt.Errorf("login failed: %s", reply.Error)
+	}
+
+	if header.OpCode != wire.OpAuthReply {
+		return fmt.Errorf("unexpected opcode: %d", header.OpCode)
+	}
+
+	var challenge wire.AuthChallenge
+	if err := wire.ReadBody(c.conn, header.Length, &challenge); err != nil {
+		return err
+	}
+
+	// Step 2: Compute Proof
+	proof, err := security.ComputeClientProof(password, challenge.Salt, challenge.Iterations, "bundoc-auth")
+	if err != nil {
+		return fmt.Errorf("failed to compute proof: %w", err)
+	}
+
+	// Send Proof
+	req2 := wire.AuthRequest{
+		RequestMeta: wire.RequestMeta{ProjectID: projectID},
+		Step:        2,
+		Username:    username,
+		Proof:       proof,
+	}
+	if err := wire.WriteMessage(c.conn, wire.OpAuth, req2); err != nil {
+		return fmt.Errorf("write step 2 error: %w", err)
+	}
+
+	// Read Final Reply
+	header2, err := wire.ReadHeader(c.conn)
+	if err != nil {
+		return fmt.Errorf("read header 2 error: %w", err)
+	}
+
+	if header2.OpCode == wire.OpError {
+		var reply wire.Reply
+		if err := wire.ReadBody(c.conn, header2.Length, &reply); err != nil {
+			return err
+		}
+		return fmt.Errorf("login verification failed: %s", reply.Error)
+	}
+
+	// Checks success
+	var finalReply wire.AuthChallenge // Or generic reply? TCPServer sends AuthChallenge with SessionID
+	if err := wire.ReadBody(c.conn, header2.Length, &finalReply); err != nil {
+		return err
+	}
+
+	if finalReply.SessionID == "" {
+		return fmt.Errorf("server didn't return session ID")
+	}
+
+	return nil
 }
 
 // Close closes the connection

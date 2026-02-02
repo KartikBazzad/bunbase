@@ -1,0 +1,9 @@
+*.db
+*.wal
+*.aof
+*.rdb
+/tmp/
+/data/
+*.log
+bunder
+bunder-server

@@ -29,12 +29,17 @@ const (
 	OpDelete OpCode = 4
 
 	// Server Responses
-	OpReply OpCode = 10
-	OpError OpCode = 11
+	// Server Responses
+	OpReply     OpCode = 10
+	OpError     OpCode = 11
+	OpAuthReply OpCode = 14
 
 	// Raft Consensus (Internal)
 	OpRequestVote   OpCode = 12
 	OpAppendEntries OpCode = 13
+
+	// Authentication
+	OpAuth OpCode = 20
 )
 
 // Header is the fixed-size message header (5 bytes)

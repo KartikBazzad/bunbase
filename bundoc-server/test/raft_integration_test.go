@@ -48,7 +48,7 @@ func TestRaftCluster_Integration(t *testing.T) {
 
 		// Server
 		addr := peers[i]
-		srv := serverPkg.NewTCPServer(addr, mgr)
+		srv := serverPkg.NewTCPServer(addr, mgr, nil) // Pass nil for TLS config
 		servers[i] = srv
 
 		// Raft Node

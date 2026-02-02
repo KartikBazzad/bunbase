@@ -87,3 +87,24 @@ type AppendEntriesReply struct {
 	Term    uint64 `json:"term"`
 	Success bool   `json:"success"`
 }
+
+// -- Authentication Types --
+
+// AuthRequest (OpAuth Client -> Server)
+// Step 1: Connect(User) -> Server Challenge matches
+// Step 3: ClientProof -> Server Verifies
+type AuthRequest struct {
+	RequestMeta
+	Step     int    `json:"step"` // 1=Connect, 2=Proof
+	Username string `json:"username,omitempty"`
+	Proof    string `json:"proof,omitempty"`
+}
+
+// AuthChallenge (OpAuthReply Server -> Client)
+// Step 2: Server sends Salt + Iters
+type AuthChallenge struct {
+	Salt       string `json:"salt"`
+	Iterations int    `json:"iters"`
+	ServerKey  string `json:"server_key,omitempty"` // Sent on success to mutually auth?
+	SessionID  string `json:"session_id,omitempty"`
+}
