@@ -47,3 +47,5 @@ bundoc-server/main
 quickjs-ng
 certs/server.crt
 certs/server.key
+bun-kms/bunkms-cli
+bun-kms/bunkms-loadtest

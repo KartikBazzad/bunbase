@@ -1,0 +1,15 @@
+version: "3.9"
+services:
+  bunkms:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      BUNKMS_ADDR: ":8080"
+      BUNKMS_MASTER_KEY: "base64:dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLTEyMzQ1"
+      BUNKMS_DATA_PATH: "/data"
+      BUNKMS_AUDIT_LOG: "/data/audit.log"
+    volumes:
+      - bunkms-data:/data
+volumes:
+  bunkms-data:

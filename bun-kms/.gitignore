@@ -1,0 +1,30 @@
+# Binary
+bunkms
+*.exe
+
+# Data and logs
+data/
+*.log
+*.db
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build
+/dist/
+/build/
+
+# Coverage
+coverage.out
+*.cover
+
+# OS
+.DS_Store
+Thumbs.db
