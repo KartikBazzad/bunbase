@@ -39,3 +39,6 @@ services/server/functions
 
 
 .go-build-cache
+data
+bundoc-server/bundoc-server
+bundoc-server/main

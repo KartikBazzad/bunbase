@@ -2,7 +2,9 @@ go 1.25.6
 
 use (
 	./buncast
-	./docdb
+	./bundoc
+	./bundoc-server
 	./functions
 	./platform
+	./cmd/bundoc-bench
 )

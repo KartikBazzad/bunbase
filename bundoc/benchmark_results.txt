@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/kartikbazzad/bunbase/bundoc
+cpu: Apple M4
+BenchmarkInsert-10              	    1000	  14431651 ns/op	        69.29 ops/sec	   45563 B/op	     147 allocs/op
+BenchmarkFindByID-10            	    1000	  14444954 ns/op	        69.23 ops/sec	  598217 B/op	     176 allocs/op
+BenchmarkUpdate-10              	    1000	  14444944 ns/op	        69.23 ops/sec	  104548 B/op	     159 allocs/op
+BenchmarkConcurrentWrites/Workers-1-10         	    1000	  14371313 ns/op	        69.58 ops/sec	   45195 B/op	     147 allocs/op
+BenchmarkConcurrentWrites/Workers-10-10        	    1000	   1431430 ns/op	       698.6 ops/sec	   44968 B/op	     149 allocs/op
+BenchmarkConcurrentWrites/Workers-50-10        	    1000	    273274 ns/op	      3659 ops/sec	   45307 B/op	     153 allocs/op
+BenchmarkConcurrentReads/Workers-1-10          	    1000	  14476051 ns/op	        69.08 ops/sec	  598459 B/op	     176 allocs/op
+BenchmarkConcurrentReads/Workers-10-10         	    1000	   1399804 ns/op	       714.4 ops/sec	  598634 B/op	     177 allocs/op
+BenchmarkConcurrentReads/Workers-50-10         	    1000	    616756 ns/op	      1621 ops/sec	  600057 B/op	     182 allocs/op
+BenchmarkMixedWorkload/ReadHeavy-80-20-10      	    1000	   1417867 ns/op	       705.3 ops/sec	  308435 B/op	     178 allocs/op
+BenchmarkMixedWorkload/Balanced-50-50-10       	    1000	   1443720 ns/op	       692.7 ops/sec	  308950 B/op	     181 allocs/op
+BenchmarkMixedWorkload/WriteHeavy-20-80-10     	    1000	   1416987 ns/op	       705.7 ops/sec	  309777 B/op	     184 allocs/op
+PASS
+ok  	github.com/kartikbazzad/bunbase/bundoc	1714.136s

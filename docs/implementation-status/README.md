@@ -6,6 +6,8 @@ This directory contains historical implementation status, progress reports, and 
 
 - **`platform.md`** - Platform API, Web UI, and CLI implementation status
 - **`functions/`** - Functions service implementation status and progress
+- **`buncast/`** - Buncast Pub/Sub service implementation status
+- **`bundoc/`** - Bundoc document database implementation status and roadmap
 
 ## Functions Files
 
