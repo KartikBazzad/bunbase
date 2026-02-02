@@ -8,35 +8,34 @@ Registry of all active and completed implementation plans for the BunBase monore
 
 ## Active Plans
 
+## Active Plans
+
+### Phase 1: Foundation (Infrastructure)
+**Status**: 🚀 Ready for Implementation
+**Docs**: [Roadmap](roadmap_phases.md), [Implementation Plan](implementation_plan.md)
+**Scope**: Docker, BunAuth, Postgres, MinIO.
+
+### Phase 2: Core Refactor
+**Status**: 📋 Planned
+**Docs**: [Functions Isolation](functions_runtime_isolation.md), [KMS Integration](kms_bundoc_integration.md), [Project Auth](project_auth_requirements.md)
+**Scope**: Platform DB Migration, Functions Preload, Bundoc Encryption, Tenant Auth.
+
+### Phase 3: Client Access
+**Status**: 📋 Planned
+**Docs**: [SDK Requirements](sdk_requirements.md), [Web Console](web_console_requirements.md), [CLI](cli_requirements.md), [Docs Site](docs_site_requirements.md)
+**Scope**: JS SDK, Admin SDK, CLI, Web Console, Documentation.
+
+### Phase 4: Observability
+**Status**: 📋 Planned
+**Docs**: [Monitoring](monitoring_requirements.md)
+**Scope**: Prometheus, Grafana.
+
+---
+
+## Past Plans (Archived)
 ### v0.2 Improvements and Documentation
-
-**Status:** ✅ Completed  
-**Created:** January 28, 2026  
-**Completed:** January 28, 2026  
-**Owner:** Implementation Team
-
-**Overview:** Comprehensive plan to improve v0.2 phase implementations (automatic healing, WAL trimming, error handling) and enhance documentation across DocDB, Functions, and Platform components.
-
-**Plan File:** `~/.cursor/plans/v0.2_improvements_and_documentation_d0419994.plan.md`
-
-**Related Documents:**
-
-- [DocDB v0.2 Status](../docs/implementation-status/docdb/V0.2_STATUS.md)
-- [DocDB Roadmap](../docs/implementation-status/docdb/ROADMAP.md)
-
-**Completed Items:**
-
-- ✅ Healing IPC integration
-- ✅ Error classification integration
-- ✅ Prometheus metrics exporter
-- ✅ Configuration documentation
-- ✅ Usage documentation
-- ✅ Architecture documentation
-- ✅ Healing tests enhancement
-- ✅ Trimming tests enhancement
-- ✅ Error handling tests
-- ✅ Cross-cutting documentation updates
-- ✅ Plan documentation infrastructure
+**Status**: ✅ Completed
+**Date**: Jan 2026
 
 ---
 

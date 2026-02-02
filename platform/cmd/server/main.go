@@ -24,6 +24,7 @@ func main() {
 	functionsSocket := flag.String("functions-socket", "/tmp/functions.sock", "Functions service socket path")
 	bundleBasePath := flag.String("bundle-path", "../functions/data/bundles", "Base path for function bundles")
 	buncastSocket := flag.String("buncast-socket", "", "Buncast IPC socket path (optional; enables publish on deploy)")
+	gatewayURL := flag.String("gateway-url", "http://localhost:8080", "Gateway (Traefik) base URL for client-facing project config")
 	corsOrigin := flag.String("cors-origin", "http://localhost:5173", "Allowed CORS origin")
 	flag.Parse()
 
@@ -44,10 +45,12 @@ func main() {
 	defer functionService.Close()
 
 	tokenService := services.NewTokenService(db.DB)
+	projectConfigService := services.NewProjectConfigService(*gatewayURL)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
 	projectHandler := handlers.NewProjectHandler(projectService)
+	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
 	functionHandler := handlers.NewFunctionHandler(functionService, projectService)
 	tokenHandler := handlers.NewTokenHandler(tokenService)
 
@@ -82,6 +85,8 @@ func main() {
 	projectsAPI.Use(middleware.AuthAnyMiddleware(authService, tokenService))
 	projectsAPI.GET("", projectHandler.ListProjects)
 	projectsAPI.POST("", projectHandler.CreateProject)
+	projectsAPI.GET("/:id/config", projectConfigHandler.GetProjectConfig)
+	projectsAPI.GET("/:id/services", projectConfigHandler.GetProjectConfig)
 	projectsAPI.GET("/:id", projectHandler.GetProject)
 	projectsAPI.PUT("/:id", projectHandler.UpdateProject)
 	projectsAPI.PATCH("/:id", projectHandler.UpdateProject)

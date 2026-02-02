@@ -2,10 +2,20 @@
  * API client for platform backend
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001/api";
 
 export interface ApiError {
   error: string;
+}
+
+export interface ProjectConfig {
+  gateway_url: string;
+  project_id: string;
+  project_slug: string;
+  kv: { path: string };
+  bundoc: { documents_path: string };
+  buncast: { topic_prefix: string };
+  functions: { invoke_path: string };
 }
 
 export class ApiClient {
@@ -22,9 +32,9 @@ export class ApiClient {
     const url = `${this.baseURL}${endpoint}`;
     const response = await fetch(url, {
       ...options,
-      credentials: 'include', // Include cookies
+      credentials: "include", // Include cookies
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         ...options.headers,
       },
     });
@@ -41,32 +51,32 @@ export class ApiClient {
 
   // Auth endpoints
   async register(email: string, password: string, name: string) {
-    return this.request('/auth/register', {
-      method: 'POST',
+    return this.request("/auth/register", {
+      method: "POST",
       body: JSON.stringify({ email, password, name }),
     });
   }
 
   async login(email: string, password: string) {
-    return this.request('/auth/login', {
-      method: 'POST',
+    return this.request("/auth/login", {
+      method: "POST",
       body: JSON.stringify({ email, password }),
     });
   }
 
   async logout() {
-    return this.request('/auth/logout', {
-      method: 'POST',
+    return this.request("/auth/logout", {
+      method: "POST",
     });
   }
 
   async getMe() {
-    return this.request('/auth/me');
+    return this.request("/auth/me");
   }
 
   // Project endpoints
   async listProjects() {
-    return this.request('/projects');
+    return this.request("/projects");
   }
 
   async getProject(id: string) {
@@ -74,23 +84,27 @@ export class ApiClient {
   }
 
   async createProject(name: string) {
-    return this.request('/projects', {
-      method: 'POST',
+    return this.request("/projects", {
+      method: "POST",
       body: JSON.stringify({ name }),
     });
   }
 
   async updateProject(id: string, name: string) {
     return this.request(`/projects/${id}`, {
-      method: 'PUT',
+      method: "PUT",
       body: JSON.stringify({ name }),
     });
   }
 
   async deleteProject(id: string) {
     return this.request(`/projects/${id}`, {
-      method: 'DELETE',
+      method: "DELETE",
     });
+  }
+
+  async getProjectConfig(projectId: string) {
+    return this.request<ProjectConfig>(`/projects/${projectId}/config`);
   }
 
   // Function endpoints
@@ -107,7 +121,7 @@ export class ApiClient {
     bundle: string // Base64 encoded bundle
   ) {
     return this.request(`/projects/${projectId}/functions`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({
         name,
         runtime,
@@ -120,7 +134,7 @@ export class ApiClient {
 
   async deleteFunction(projectId: string, functionId: string) {
     return this.request(`/projects/${projectId}/functions/${functionId}`, {
-      method: 'DELETE',
+      method: "DELETE",
     });
   }
 }

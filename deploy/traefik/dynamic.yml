@@ -1,0 +1,73 @@
+# Traefik dynamic configuration for BunBase gateway.
+# Load with: traefik --entrypoints.web.address=:8080 --providers.file.filename=./deploy/traefik/dynamic.yml
+#
+# Backends: Platform :3001, Bunder Manager :8085, Bundoc :8080, Buncast :8081, Functions :8082
+# Adjust server URLs for your environment (localhost for dev, service names for Docker).
+
+http:
+  routers:
+    # Platform API (projects, auth, config)
+    platform:
+      rule: "PathPrefix(`/api`)"
+      service: platform
+      entryPoints:
+        - web
+
+    # Bunder KV (instance manager; routes /kv/{project_id}/... to project Bunder)
+    bunder-manager:
+      rule: "PathPrefix(`/kv`)"
+      service: bunder-manager
+      entryPoints:
+        - web
+
+    # Bundoc (document DB)
+    bundoc:
+      rule: "PathPrefix(`/v1/projects`)"
+      service: bundoc
+      entryPoints:
+        - web
+
+    # Buncast (events / SSE)
+    buncast:
+      rule: "PathPrefix(`/events`)"
+      service: buncast
+      entryPoints:
+        - web
+
+    # Functions (invoke)
+    functions:
+      rule: "PathPrefix(`/invoke`)"
+      service: functions
+      entryPoints:
+        - web
+
+  services:
+    platform:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:3001"
+        passHostHeader: true
+
+    bunder-manager:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8085"
+        passHostHeader: true
+
+    bundoc:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8080"
+        passHostHeader: true
+
+    buncast:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8081"
+        passHostHeader: true
+
+    functions:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8082"
+        passHostHeader: true

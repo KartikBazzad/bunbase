@@ -3,6 +3,7 @@ go 1.25.6
 use (
 	./buncast
 	./bunder
+	./bunder-manager
 	./bun-kms
 	./bundoc
 	./bundoc-server

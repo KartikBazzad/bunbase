@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, type ProjectConfig } from "../lib/api";
 import { FunctionCard } from "../components/functions/FunctionCard";
+import { ProjectServicesCard } from "../components/projects/ProjectServicesCard";
 
 interface Project {
   id: string;
@@ -26,6 +27,9 @@ export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [functions, setFunctions] = useState<Function[]>([]);
+  const [projectConfig, setProjectConfig] = useState<ProjectConfig | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -33,6 +37,7 @@ export function ProjectDetail() {
     if (id) {
       loadProject();
       loadFunctions();
+      loadProjectConfig();
     }
   }, [id]);
 
@@ -53,6 +58,15 @@ export function ProjectDetail() {
       console.error("Failed to load functions:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadProjectConfig = async () => {
+    try {
+      const data = await api.getProjectConfig(id!);
+      setProjectConfig(data);
+    } catch (err) {
+      console.error("Failed to load project config:", err);
     }
   };
 
@@ -122,6 +136,20 @@ export function ProjectDetail() {
             </div>
           </div>
         </div>
+
+        {projectConfig && (
+          <>
+            <h2 className="text-2xl font-bold mb-4">Services</h2>
+            <p className="text-gray-600 mb-6">
+              Gateway:{" "}
+              <code className="text-sm bg-gray-100 px-1.5 py-0.5 rounded">
+                {projectConfig.gateway_url}
+              </code>
+            </p>
+            <ProjectServicesCard config={projectConfig} />
+            <div className="my-8" />
+          </>
+        )}
 
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold">Functions</h2>
