@@ -1,5 +1,11 @@
-import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
-import { api } from '../lib/api';
+import {
+  useState,
+  useEffect,
+  createContext,
+  useContext,
+  ReactNode,
+} from "react";
+import { api } from "../lib/api";
 
 export interface User {
   id: string;
@@ -42,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Start SSE auth stream once on mount
     const es = new EventSource(
-      `${import.meta.env.VITE_API_URL || "http://localhost:3001/api"}/auth/stream`,
+      `${import.meta.env.VITE_API_URL || "http://localhost:3001/v1"}/auth/stream`,
       { withCredentials: true } as any,
     );
 
@@ -80,7 +86,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, register, logout, refresh }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -89,8 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 }
-

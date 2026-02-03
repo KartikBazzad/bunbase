@@ -38,6 +38,7 @@ func main() {
 	port := flag.Int("port", 4321, "TCP Server Port")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate")
 	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
+	httpPort := flag.Int("http-port", 8080, "HTTP Server Port")
 	flag.Parse()
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -79,9 +80,17 @@ func main() {
 		// Route based on method and path
 		switch r.Method {
 		case "POST":
-			docHandlers.HandleCreateDocument(w, r)
+			if strings.HasSuffix(r.URL.Path, "/collections") {
+				docHandlers.HandleCreateCollection(w, r)
+			} else {
+				docHandlers.HandleCreateDocument(w, r)
+			}
 		case "GET":
-			docHandlers.HandleGetDocument(w, r)
+			if strings.HasSuffix(r.URL.Path, "/collections") {
+				docHandlers.HandleListCollections(w, r)
+			} else {
+				docHandlers.HandleGetDocument(w, r)
+			}
 		case "PATCH":
 			docHandlers.HandleUpdateDocument(w, r)
 		case "DELETE":
@@ -93,7 +102,7 @@ func main() {
 
 	// Create server
 	server := &http.Server{
-		Addr:         ":8080",
+		Addr:         fmt.Sprintf(":%d", *httpPort),
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,

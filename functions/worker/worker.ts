@@ -115,13 +115,24 @@ try {
   const bundle = await import(BUNDLE_PATH);
 
   // Try default export first
-  if (bundle.default && typeof bundle.default === "function") {
-    handler = bundle.default;
-  } else if (typeof bundle.handler === "function") {
+  if (bundle.default) {
+    if (typeof bundle.default === "function") {
+      handler = bundle.default;
+    } else if (
+      typeof bundle.default === "object" &&
+      typeof bundle.default.fetch === "function"
+    ) {
+      handler = bundle.default.fetch.bind(bundle.default);
+    }
+  }
+
+  if (!handler && typeof bundle.handler === "function") {
     handler = bundle.handler;
-  } else {
+  }
+
+  if (!handler) {
     throw new Error(
-      "No handler function found. Expected default export or named 'handler' export.",
+      "No handler function found. Expected default export (fn or object with fetch) or named 'handler' export.",
     );
   }
 } catch (error: any) {

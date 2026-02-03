@@ -197,7 +197,7 @@ export function ProjectDetail() {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold">Deployed Functions</h2>
             </div>
-            {functions.length === 0 ? (
+            {(functions || []).length === 0 ? (
               <div className="card">
                 <div className="card-body text-center py-12">
                   <p className="text-gray-600 mb-4">

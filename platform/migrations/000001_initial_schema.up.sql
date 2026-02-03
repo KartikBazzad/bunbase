@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_i
 CREATE TABLE IF NOT EXISTS functions (
     id UUID PRIMARY KEY,
     project_id UUID NOT NULL,
-    function_service_id UUID NOT NULL,
+    function_service_id VARCHAR(255) NOT NULL,
     name VARCHAR(255) NOT NULL,
     runtime VARCHAR(50) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

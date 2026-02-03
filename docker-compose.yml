@@ -273,3 +273,4 @@ volumes:
   grafana_data:
   bundoc_data_data:
   bundoc_auth_data:
+  functions_data:

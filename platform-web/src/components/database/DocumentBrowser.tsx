@@ -31,7 +31,11 @@ export function DocumentBrowser({
       setError("");
       const data = await api.listDocuments(projectId, collection);
       // Assuming Bundoc 'list' returns array of docs
-      setDocuments(Array.isArray(data) ? data : (data as any).items || []);
+      setDocuments(
+        Array.isArray(data)
+          ? data
+          : (data as any).documents || (data as any).items || [],
+      );
     } catch (err) {
       setError("Failed to load documents");
       console.error(err);

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/gin-gonic/gin"
@@ -32,7 +33,6 @@ func main() {
 	// Parse flags
 	port := flag.String("port", "3001", "Server port")
 	// Note: functions-socket etc should also be env vars or config, but keeping flags for now
-	functionsSocket := flag.String("functions-socket", "/tmp/functions.sock", "Functions service socket path")
 	bundleBasePath := flag.String("bundle-path", "../functions/data/bundles", "Base path for function bundles")
 	buncastSocket := flag.String("buncast-socket", "", "Buncast IPC socket path (optional; enables publish on deploy)")
 	gatewayURL := flag.String("gateway-url", "http://localhost:8080", "Gateway (Traefik) base URL for client-facing project config")
@@ -89,20 +89,25 @@ func main() {
 
 	// Initialize services
 	// Use localhost for local dev, or env for docker.
-	tenantAuthURL := "http://localhost:8083"
-	if url := os.Getenv("TENANT_AUTH_URL"); url != "" {
-		tenantAuthURL = url
-	}
+	// tenantAuthURL := "http://localhost:8083"
+	// if url := os.Getenv("TENANT_AUTH_URL"); url != "" {
+	// 	tenantAuthURL = url
+	// }
 
 	authClient := bunauth.NewClient(*authURL)
-	tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
+	// tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
 	bundocClient := bundoc.NewClient(cfg.Bundoc.URL)
 
 	authService := auth.NewAuth(authClient)
 
 	projectService := services.NewProjectService(db.Pool)
 
-	functionService, err := services.NewFunctionService(db.Pool, *functionsSocket, *bundleBasePath, *buncastSocket)
+	absBundlePath, err := filepath.Abs(*bundleBasePath)
+	if err != nil {
+		log.Fatalf("Failed to resolve bundle path: %v", err)
+	}
+
+	functionService, err := services.NewFunctionService(db.Pool, *functionsURL, absBundlePath, *buncastSocket)
 	if err != nil {
 		log.Fatalf("Failed to initialize function service: %v", err)
 	}
@@ -113,7 +118,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
-	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
+	// tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
 	projectHandler := handlers.NewProjectHandler(projectService)
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
 	functionHandler := handlers.NewFunctionHandler(functionService, projectService, *functionsURL)
@@ -136,11 +141,11 @@ func main() {
 
 	// v1 API (Public SDK)
 	v1 := router.Group("/v1")
-	v1.Use(middleware.CORSMiddleware("*")) // Relaxed CORS for SDK? Or strict? Use same for now.
+	v1.Use(middleware.CORSMiddleware(*corsOrigin)) // Use configured origin for v1 as well
 
-	v1Auth := v1.Group("/auth")
-	v1Auth.POST("/register", tenantAuthHandler.Register)
-	v1Auth.POST("/login", tenantAuthHandler.Login)
+	// v1Auth := v1.Group("/auth")
+	// v1Auth.POST("/register", tenantAuthHandler.Register)
+	// v1Auth.POST("/login", tenantAuthHandler.Login)
 
 	v1DB := v1.Group("/databases")
 	// /v1/databases/:dbName/collections/:collection/documents
@@ -163,7 +168,45 @@ func main() {
 	authProtected.Use(middleware.AuthMiddleware(authService))
 	authProtected.POST("/logout", authHandler.Logout)
 	authProtected.GET("/me", authHandler.Me)
-	// authProtected.GET("/stream", authHandler.AuthStream) // Stream might need SSE special handling
+	authProtected.GET("/stream", authHandler.AuthStream) // Added Stream
+
+	// Alias v1 auth routes to standard auth handlers for Web Console consistency if using v1 prefix
+	// The Web Console uses /v1 in its API client now, so we should expose the standard auth handlers there too.
+	v1AuthStandard := v1.Group("/auth")
+	v1AuthStandard.POST("/register", authHandler.Register)
+	v1AuthStandard.POST("/login", authHandler.Login)
+	v1AuthStandard.Use(middleware.AuthMiddleware(authService))
+	v1AuthStandard.POST("/logout", authHandler.Logout)
+	v1AuthStandard.GET("/me", authHandler.Me)
+	v1AuthStandard.GET("/stream", authHandler.AuthStream)
+
+	// Also alias Project routes to /v1/projects for Web Console
+	v1Projects := v1.Group("/projects")
+	v1Projects.Use(middleware.AuthAnyMiddleware(authService, tokenService))
+	v1Projects.GET("", projectHandler.ListProjects)
+	v1Projects.POST("", projectHandler.CreateProject)
+	v1Projects.GET("/:id/config", projectConfigHandler.GetProjectConfig)
+	v1Projects.GET("/:id/services", projectConfigHandler.GetProjectConfig)
+	v1Projects.GET("/:id", projectHandler.GetProject)
+	v1Projects.PUT("/:id", projectHandler.UpdateProject)
+	v1Projects.PATCH("/:id", projectHandler.UpdateProject)
+	v1Projects.DELETE("/:id", projectHandler.DeleteProject)
+
+	// Function routes (v1)
+	v1Projects.GET("/:id/functions", functionHandler.ListFunctions)
+	v1Projects.POST("/:id/functions", functionHandler.DeployFunction)
+	v1Projects.DELETE("/:id/functions/:functionId", functionHandler.DeleteFunction)
+
+	// Database routes (v1 - developer access)
+	v1ProjectDB := v1Projects.Group("/:id/database")
+	v1ProjectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
 
 	// Project routes (protected; accept cookie or token auth)
 	projectsAPI := api.Group("/projects")

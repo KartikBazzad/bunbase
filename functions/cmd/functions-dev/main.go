@@ -140,7 +140,7 @@ func main() {
 	}
 
 	// Start HTTP gateway.
-	gw := gateway.NewGateway(rtr, sched, &cfg.Gateway, log)
+	gw := gateway.NewGateway(rtr, sched, store, cfg, "", "", log)
 	go func() {
 		if err := gw.Start(); err != nil {
 			log.Error("Dev HTTP gateway error: %v", err)
@@ -221,4 +221,3 @@ func createDevPool(meta *metadata.Store, rtr *router.Router, cfg *config.Config,
 
 	return nil
 }
-

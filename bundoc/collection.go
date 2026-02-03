@@ -382,6 +382,35 @@ func (c *Collection) DeleteBatch(txn *transaction.Transaction, ids []string) err
 	return nil
 }
 
+// List returns a list of documents with pagination
+func (c *Collection) List(txn *transaction.Transaction, skip, limit int) ([]storage.Document, error) {
+	iter, err := NewTableScanIterator(c, txn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create iterator: %w", err)
+	}
+	defer iter.Close()
+
+	var currentIter Iterator = iter
+
+	if skip > 0 {
+		currentIter = NewSkipIterator(currentIter, skip)
+	}
+
+	if limit > 0 {
+		currentIter = NewLimitIterator(currentIter, limit)
+	}
+
+	var results []storage.Document
+	for currentIter.Next() {
+		doc, err := currentIter.Value()
+		if err == nil {
+			results = append(results, doc)
+		}
+	}
+
+	return results, nil
+}
+
 // Count returns an approximate count of documents (simplified)
 func (c *Collection) Count() int {
 	c.mu.RLock()

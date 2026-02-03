@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/kartikbazzad/bunbase/functions/internal/capabilities"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // FunctionStatus represents the status of a function
@@ -145,9 +145,10 @@ func (s *Store) GetFunctionByID(id string) (*Function, error) {
 
 	var f Function
 	var capsJSON sql.NullString
+	var activeVersionID sql.NullString
 	var createdAt, updatedAt int64
 	err := s.db.QueryRow(query, id).Scan(
-		&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &f.ActiveVersionID, &capsJSON,
+		&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &activeVersionID, &capsJSON,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -157,6 +158,9 @@ func (s *Store) GetFunctionByID(id string) (*Function, error) {
 		return nil, fmt.Errorf("failed to get function: %w", err)
 	}
 
+	if activeVersionID.Valid {
+		f.ActiveVersionID = activeVersionID.String
+	}
 	f.Capabilities = s.jsonToCapabilities(capsJSON)
 	f.CreatedAt = time.Unix(createdAt, 0)
 	f.UpdatedAt = time.Unix(updatedAt, 0)
@@ -173,9 +177,10 @@ func (s *Store) GetFunctionByName(name string) (*Function, error) {
 
 	var f Function
 	var capsJSON sql.NullString
+	var activeVersionID sql.NullString
 	var createdAt, updatedAt int64
 	err := s.db.QueryRow(query, name).Scan(
-		&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &f.ActiveVersionID, &capsJSON,
+		&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &activeVersionID, &capsJSON,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -185,6 +190,9 @@ func (s *Store) GetFunctionByName(name string) (*Function, error) {
 		return nil, fmt.Errorf("failed to get function: %w", err)
 	}
 
+	if activeVersionID.Valid {
+		f.ActiveVersionID = activeVersionID.String
+	}
 	f.Capabilities = s.jsonToCapabilities(capsJSON)
 	f.CreatedAt = time.Unix(createdAt, 0)
 	f.UpdatedAt = time.Unix(updatedAt, 0)
@@ -209,12 +217,16 @@ func (s *Store) ListFunctions() ([]*Function, error) {
 	for rows.Next() {
 		var f Function
 		var capsJSON sql.NullString
+		var activeVersionID sql.NullString
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
-			&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &f.ActiveVersionID, &capsJSON,
+			&f.ID, &f.Name, &f.Runtime, &f.Handler, &f.Status, &activeVersionID, &capsJSON,
 			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan function: %w", err)
+		}
+		if activeVersionID.Valid {
+			f.ActiveVersionID = activeVersionID.String
 		}
 		f.Capabilities = s.jsonToCapabilities(capsJSON)
 		f.CreatedAt = time.Unix(createdAt, 0)

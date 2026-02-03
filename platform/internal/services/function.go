@@ -27,8 +27,8 @@ type FunctionService struct {
 
 // NewFunctionService creates a new FunctionService.
 // buncastSocketPath is optional; if non-empty, deploy events are published to Buncast.
-func NewFunctionService(db *pgxpool.Pool, functionsSocketPath, bundleBasePath, buncastSocketPath string) (*FunctionService, error) {
-	fc, err := functions.NewClient(functionsSocketPath)
+func NewFunctionService(db *pgxpool.Pool, functionsURL, bundleBasePath, buncastSocketPath string) (*FunctionService, error) {
+	fc, err := functions.NewClient(functionsURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create functions client: %w", err)
 	}
@@ -95,7 +95,11 @@ func (s *FunctionService) DeployFunction(projectID, name, runtime, handler, vers
 		return nil, fmt.Errorf("failed to create bundle directory: %w", err)
 	}
 
-	bundlePath := filepath.Join(bundleDir, "bundle.js")
+	filename := "bundle.js"
+	if runtime == "bun" {
+		filename = "bundle.ts"
+	}
+	bundlePath := filepath.Join(bundleDir, filename)
 	if err := os.WriteFile(bundlePath, bundleData, 0644); err != nil {
 		return nil, fmt.Errorf("failed to write bundle: %w", err)
 	}

@@ -89,11 +89,26 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 	h.writeJSON(w, http.StatusCreated, doc)
 }
 
-// HandleGetDocument retrieves a document by ID
+// HandleGetDocument retrieves a document by ID or lists documents
 // GET /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
+// GET /v1/projects/{projectId}/databases/(default)/documents/{collection}
 func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Request) {
 	projectID, collection, docID := h.parseProjectCollectionAndDoc(r.URL.Path)
-	if projectID == "" || collection == "" || docID == "" {
+
+	// If missing docID, it might be a LIST request if path matches valid list pattern
+	if docID == "" {
+		// Try parsing as list request
+		pID, col := h.parseProjectAndCollection(r.URL.Path)
+		if pID != "" && col != "" {
+			h.HandleListDocuments(w, r, pID, col)
+			return
+		}
+		// Otherwise valid error
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	if projectID == "" || collection == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
@@ -129,6 +144,121 @@ func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Requ
 	}
 
 	h.writeJSON(w, http.StatusOK, doc)
+}
+
+// HandleListDocuments lists documents in a collection
+func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Request, projectID, collection string) {
+	// Acquire database instance
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	// Get collection
+	coll, err := db.GetCollection(collection)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	// Start transaction
+	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer db.CommitTransaction(txn)
+
+	// List documents
+	// TODO: Pagination
+	docs, err := coll.List(txn, 0, 100)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"documents": docs,
+	})
+}
+
+// HandleListCollections lists all collections in a database
+// GET /v1/projects/{projectId}/databases/(default)/collections
+func (h *DocumentHandlers) HandleListCollections(w http.ResponseWriter, r *http.Request) {
+	projectID := h.parseProjectFromCollectionsPath(r.URL.Path)
+	if projectID == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	// Acquire database instance
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	// List collections
+	collections := db.ListCollections()
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"collections": collections,
+	})
+}
+
+// HandleCreateCollection creates a new collection
+// POST /v1/projects/{projectId}/databases/(default)/collections
+func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http.Request) {
+	projectID := h.parseProjectFromCollectionsPath(r.URL.Path)
+	if projectID == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse body for collection name
+	// { "name": "my_collection" }
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if req.Name == "" {
+		h.writeError(w, http.StatusBadRequest, "collection name is required")
+		return
+	}
+
+	// Acquire database instance
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	// Create collection
+	_, err = db.CreateCollection(req.Name)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error()) // Often duplicate error
+		return
+	}
+
+	h.writeJSON(w, http.StatusCreated, map[string]string{
+		"name": req.Name,
+	})
 }
 
 // HandleUpdateDocument updates a document
@@ -265,6 +395,16 @@ func (h *DocumentHandlers) parseProjectCollectionAndDoc(path string) (string, st
 		return "", "", ""
 	}
 	return parts[2], parts[6], parts[7]
+}
+
+func (h *DocumentHandlers) parseProjectFromCollectionsPath(path string) string {
+	// /v1/projects/{projectId}/databases/(default)/collections
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	// 0:v1, 1:projects, 2:projectId, 3:databases, 4:default, 5:collections
+	if len(parts) < 6 || parts[5] != "collections" {
+		return ""
+	}
+	return parts[2]
 }
 
 func (h *DocumentHandlers) writeJSON(w http.ResponseWriter, status int, data interface{}) {

@@ -72,7 +72,7 @@ func (r *Router) RegisterPool(functionID string, p *pool.WorkerPool) {
 	if _, exists := r.pools[functionID]; exists {
 		r.logger.Debug("Pool already exists for function %s, replacing", functionID)
 	}
-	
+
 	r.pools[functionID] = p
 	r.scheduler.RegisterPool(functionID, p)
 	r.logger.Info("Registered pool for function %s", functionID)
@@ -116,7 +116,9 @@ func (r *Router) Route(nameOrID string) (*metadata.Function, *pool.WorkerPool, e
 	// Get pool
 	p, err := r.GetPool(fn.ID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("function %s has no active pool", fn.ID)
+		// Pool not active, return nil pool but function info
+		// This signals the caller (Gateway) to create the pool
+		return fn, nil, nil
 	}
 
 	return fn, p, nil
