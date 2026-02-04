@@ -62,7 +62,7 @@ func TestConcurrentReadersWriters(t *testing.T) {
 					"data":     fmt.Sprintf("data from writer %d", writerID),
 				}
 
-				if err := coll.Insert(txn, doc); err != nil {
+				if err := coll.Insert(nil, txn, doc); err != nil {
 					errorCount.Add(1)
 					continue
 				}
@@ -94,7 +94,7 @@ func TestConcurrentReadersWriters(t *testing.T) {
 				writerID := readerID % numWriters
 				docID := fmt.Sprintf("writer-%d-doc-%d", writerID, j%writesPerWriter)
 
-				_, err = coll.FindByID(txn, docID)
+				_, err = coll.FindByID(nil, txn, docID)
 				// It's okay if document doesn't exist yet (concurrent)
 
 				db.CommitTransaction(txn)
@@ -176,7 +176,7 @@ func TestPoolUnderLoad(t *testing.T) {
 					"op":     j,
 				}
 
-				if err := coll.Insert(txn, doc); err != nil {
+				if err := coll.Insert(nil, txn, doc); err != nil {
 					connPool.Release(conn)
 					errorCount.Add(1)
 					continue
@@ -264,7 +264,7 @@ func TestMemoryLeaks(t *testing.T) {
 						"count":  count,
 					}
 
-					coll.Insert(txn, doc)
+					coll.Insert(nil, txn, doc)
 					db.CommitTransaction(txn)
 
 					opCount.Add(1)
@@ -317,12 +317,12 @@ func TestTransactionIsolation_DISABLED(t *testing.T) {
 		"_id":   "test-doc",
 		"value": 100,
 	}
-	coll.Insert(txn1, initialDoc)
+	coll.Insert(nil, txn1, initialDoc)
 	db.CommitTransaction(txn1)
 
 	// Test RepeatableRead isolation
 	txn2, _ := db.BeginTransaction(mvcc.RepeatableRead)
-	doc1, _ := coll.FindByID(txn2, "test-doc")
+	doc1, _ := coll.FindByID(nil, txn2, "test-doc")
 
 	// Another transaction modifies the document
 	txn3, _ := db.BeginTransaction(mvcc.ReadCommitted)
@@ -330,11 +330,11 @@ func TestTransactionIsolation_DISABLED(t *testing.T) {
 		"_id":   "test-doc", // Must include _id
 		"value": 200,
 	}
-	coll.Update(txn3, "test-doc", updateDoc)
+	coll.Update(nil, txn3, "test-doc", updateDoc)
 	db.CommitTransaction(txn3)
 
 	// RepeatableRead should still see old value
-	doc2, _ := coll.FindByID(txn2, "test-doc")
+	doc2, _ := coll.FindByID(nil, txn2, "test-doc")
 
 	if doc1["value"] != doc2["value"] {
 		t.Errorf("RepeatableRead violation: first read=%v, second read=%v",

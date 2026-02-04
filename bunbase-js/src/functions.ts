@@ -9,4 +9,16 @@ export class FunctionsClient {
       body: JSON.stringify(body),
     });
   }
+
+  async listFunctions() {
+    return this.client.request(`/v1/functions`, {
+      method: "GET",
+    });
+  }
+
+  async deleteFunction(functionName: string) {
+    return this.client.request(`/v1/functions/${functionName}`, {
+      method: "DELETE",
+    });
+  }
 }

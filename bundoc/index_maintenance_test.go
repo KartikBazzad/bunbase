@@ -25,7 +25,7 @@ func TestSecondaryIndexMaintenance(t *testing.T) {
 	doc.SetID("user1")
 
 	txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	col.Insert(txn, doc)
+	col.Insert(nil, txn, doc)
 	db.CommitTransaction(txn)
 
 	// Force Index Create by querying
@@ -40,7 +40,7 @@ func TestSecondaryIndexMaintenance(t *testing.T) {
 	// 2. Update Document (Age 25 -> 26)
 	doc["age"] = 26
 	txn3, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	col.Update(txn3, "user1", doc)
+	col.Update(nil, txn3, "user1", doc)
 	db.CommitTransaction(txn3)
 
 	// Verify Age 25 is GONE
@@ -61,7 +61,7 @@ func TestSecondaryIndexMaintenance(t *testing.T) {
 
 	// 3. Delete Document
 	txn6, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	col.Delete(txn6, "user1")
+	col.Delete(nil, txn6, "user1")
 	db.CommitTransaction(txn6)
 
 	// Verify Age 26 is GONE

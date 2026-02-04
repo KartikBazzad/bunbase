@@ -40,7 +40,7 @@ func BenchmarkWrite(b *testing.B) {
 			"data":  "benchmark data for testing write performance",
 		}
 
-		if err := coll.Insert(txn, doc); err != nil {
+		if err := coll.Insert(nil, txn, doc); err != nil {
 			b.Fatalf("Insert failed: %v", err)
 		}
 
@@ -83,7 +83,7 @@ func BenchmarkRead_DISABLED(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		coll.Insert(txnPrepare, doc)
+		coll.Insert(nil, txnPrepare, doc)
 	}
 	db.CommitTransaction(txnPrepare)
 
@@ -94,7 +94,7 @@ func BenchmarkRead_DISABLED(b *testing.B) {
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 		docID := fmt.Sprintf("doc-%d", i%numDocs)
 
-		_, err := coll.FindByID(txn, docID)
+		_, err := coll.FindByID(nil, txn, docID)
 		if err != nil {
 			b.Fatalf("Read failed: %v", err)
 		}
@@ -140,7 +140,7 @@ func BenchmarkConcurrentWrites(b *testing.B) {
 				"data":  "concurrent write benchmark",
 			}
 
-			coll.Insert(txn, doc)
+			coll.Insert(nil, txn, doc)
 			db.CommitTransaction(txn)
 			i++
 		}
@@ -181,7 +181,7 @@ func BenchmarkCommitLatency(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		coll.Insert(txn, doc)
+		coll.Insert(nil, txn, doc)
 
 		start := time.Now()
 		db.CommitTransaction(txn)
@@ -235,7 +235,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		coll.Insert(txn, doc)
+		coll.Insert(nil, txn, doc)
 	}
 	db.CommitTransaction(txn)
 
@@ -249,21 +249,21 @@ func BenchmarkMixedWorkload(b *testing.B) {
 		switch i % 10 {
 		case 0, 1, 2, 3, 4, 5, 6: // Read
 			docID := fmt.Sprintf("doc-%d", i%100)
-			coll.FindByID(txn, docID)
+			coll.FindByID(nil, txn, docID)
 
 		case 7, 8: // Write
 			doc := storage.Document{
 				"_id":   fmt.Sprintf("new-doc-%d", i),
 				"value": i,
 			}
-			coll.Insert(txn, doc)
+			coll.Insert(nil, txn, doc)
 
 		case 9: // Update
 			docID := fmt.Sprintf("doc-%d", i%100)
 			doc := storage.Document{
 				"value": i * 2,
 			}
-			coll.Update(txn, docID, doc)
+			coll.Update(nil, txn, docID, doc)
 		}
 
 		db.CommitTransaction(txn)

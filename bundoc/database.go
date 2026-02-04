@@ -19,31 +19,37 @@ package bundoc
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/kartikbazzad/bunbase/bundoc/internal/transaction"
 	"github.com/kartikbazzad/bunbase/bundoc/internal/wal"
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
+	"github.com/kartikbazzad/bunbase/bundoc/rules"
 	"github.com/kartikbazzad/bunbase/bundoc/security"
 	"github.com/kartikbazzad/bunbase/bundoc/storage"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 // Database represents a bundoc database instance.
 // It acts as the central coordinator for all database subsystems.
 type Database struct {
-	path        string
-	bufferPool  *storage.BufferPool             // Manages in-memory page cache
-	pager       *storage.Pager                  // Handles raw disk I/O
-	walWriter   *wal.WAL                        // Write-Ahead Log for durability
-	versionMgr  *mvcc.VersionManager            // Manages MVCC version chains
-	snapshotMgr *mvcc.SnapshotManager           // Manages transaction snapshots
-	txnMgr      *transaction.TransactionManager // Coordinates transaction lifecycles
-	metadataMgr *MetadataManager                // Persists schema/index definitions
-	Security    *security.UserManager           // Manages Users and Auth
-	Audit       *security.AuditLogger           // Security Audit Logger
-	collections map[string]*Collection          // Registry of loaded collections
-	mu          sync.RWMutex                    // Protects map access and closure state
-	closed      bool                            // Flag indicating if DB is closed
+	path         string
+	bufferPool   *storage.BufferPool             // Manages in-memory page cache
+	pager        *storage.Pager                  // Handles raw disk I/O
+	walWriter    *wal.WAL                        // Write-Ahead Log for durability
+	versionMgr   *mvcc.VersionManager            // Manages MVCC version chains
+	snapshotMgr  *mvcc.SnapshotManager           // Manages transaction snapshots
+	txnMgr       *transaction.TransactionManager // Coordinates transaction lifecycles
+	metadataMgr  *MetadataManager                // Persists schema/index definitions
+	Security     *security.UserManager           // Manages Users and Auth
+	Audit        *security.AuditLogger           // Security Audit Logger
+	RulesEngine  *rules.RulesEngine              // CEL Rules Engine
+	collections  map[string]*Collection          // Registry of loaded collections
+	groupIndexes map[string]*storage.BPlusTree   // Registry of active Group Indexes (Key: pattern::field)
+	mu           sync.RWMutex                    // Protects map access and closure state
+	closed       bool                            // Flag indicating if DB is closed
 }
 
 // Options configures a database instance
@@ -131,17 +137,25 @@ func Open(opts *Options) (*Database, error) {
 	// Create transaction manager
 	txnMgr := transaction.NewTransactionManager(snapshotMgr, walWriter)
 
+	// Initialize Rules Engine
+	re, err := rules.NewRulesEngine()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize rules engine: %w", err)
+	}
+
 	db := &Database{
-		path:        opts.Path,
-		bufferPool:  bufferPool,
-		pager:       pager,
-		walWriter:   walWriter,
-		versionMgr:  versionMgr,
-		snapshotMgr: snapshotMgr,
-		txnMgr:      txnMgr,
-		metadataMgr: metadataMgr,
-		collections: make(map[string]*Collection),
-		closed:      false,
+		path:         opts.Path,
+		bufferPool:   bufferPool,
+		pager:        pager,
+		walWriter:    walWriter,
+		versionMgr:   versionMgr,
+		snapshotMgr:  snapshotMgr,
+		txnMgr:       txnMgr,
+		metadataMgr:  metadataMgr,
+		RulesEngine:  re,
+		collections:  make(map[string]*Collection),
+		groupIndexes: make(map[string]*storage.BPlusTree),
+		closed:       false,
 	}
 
 	// Initialize Security
@@ -214,7 +228,59 @@ func Open(opts *Options) (*Database, error) {
 			coll.indexes[field] = idx
 		}
 
+		// Restore Schema
+		if meta.Schema != "" {
+			loader := gojsonschema.NewStringLoader(meta.Schema)
+			schema, err := gojsonschema.NewSchema(loader)
+			if err != nil {
+				// Log error but allow loading?
+				// Better to fail or warn?
+				// For now, WARN and continue without schema enforcement could be dangerous
+				// But failing DB open is also bad.
+				// Let's log info via println for now (since no logger passed)
+				fmt.Printf("[WARN] Failed to load schema for collection %s: %v\n", name, err)
+			} else {
+				coll.schemaLoader = schema
+			}
+		}
+
 		db.collections[name] = coll
+	}
+
+	// Restore Group Indexes
+	for _, meta := range metadataMgr.ListGroupIndexes() {
+		idx, err := storage.LoadBPlusTree(bufferPool, storage.PageID(meta.RootID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to load group index %s::%s: %w", meta.Pattern, meta.Field, err)
+		}
+
+		p, f := meta.Pattern, meta.Field
+		idx.SetOnRootChange(func(newRootID storage.PageID) {
+			metadataMgr.UpdateGroupIndex(p, f, newRootID)
+		})
+
+		key := meta.Pattern + "::" + meta.Field
+		db.groupIndexes[key] = idx
+	}
+
+	// Link Collections to Group Indexes
+	// We do this after both are loaded
+	for _, coll := range db.collections {
+		for key, gIdx := range db.groupIndexes {
+			parts := strings.Split(key, "::")
+			if len(parts) != 2 {
+				continue
+			}
+			pattern, field := parts[0], parts[1]
+
+			matched, _ := filepath.Match(pattern, coll.Name())
+			if matched {
+				coll.linkedGroupIndexes = append(coll.linkedGroupIndexes, &GroupIndexLink{
+					Index: gIdx,
+					Field: field,
+				})
+			}
+		}
 	}
 
 	return db, nil
@@ -263,6 +329,35 @@ func (db *Database) CreateCollection(name string) (*Collection, error) {
 		}
 		db.metadataMgr.UpdateCollection(name, saveIdx)
 	})
+
+	// Link Group Indexes
+	for key, gIdx := range db.groupIndexes {
+		// key is pattern::field
+		// We need to parse pattern
+		// But we can just use metadata manager list if we stored it separate,
+		// OR just split key.
+		// Let's iterate metadata to get pattern cleanly?
+		// Actually, we initialized db.groupIndexes from metadata list.
+		// But map key loses structure effectively unless we split.
+		// Let's use metadata manager list again or cache it better.
+		// Optimization: Split key "pattern::field"
+
+		parts := strings.Split(key, "::")
+		if len(parts) != 2 {
+			continue
+		}
+		pattern, field := parts[0], parts[1]
+
+		// Match
+		matched, _ := filepath.Match(pattern, name)
+		if matched {
+			coll.linkedGroupIndexes = append(coll.linkedGroupIndexes, &GroupIndexLink{
+				Index: gIdx,
+				Field: field,
+			})
+			fmt.Printf("[INFO] Linked collection %s to Group Index %s::%s\n", name, pattern, field)
+		}
+	}
 
 	db.collections[name] = coll
 
@@ -321,6 +416,24 @@ func (db *Database) ListCollections() []string {
 	names := make([]string, 0, len(db.collections))
 	for name := range db.collections {
 		names = append(names, name)
+	}
+	return names
+}
+
+// ListCollectionsWithPrefix returns names of collections filtering by prefix
+func (db *Database) ListCollectionsWithPrefix(prefix string) []string {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	names := make([]string, 0)
+	for name := range db.collections {
+		if prefix == "" {
+			names = append(names, name)
+			continue
+		}
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			names = append(names, name)
+		}
 	}
 	return names
 }
@@ -391,9 +504,197 @@ func (db *Database) Close() error {
 	return nil
 }
 
+// EnsureGroupIndex creates a collection group index.
+// Arguments:
+// - pattern: Glob pattern or prefix (e.g. "users/*/posts" or just glob match)
+// - field: Field to index
+func (db *Database) EnsureGroupIndex(pattern, field string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed {
+		return fmt.Errorf("database is closed")
+	}
+
+	key := pattern + "::" + field
+	if _, exists := db.groupIndexes[key]; exists {
+		return nil
+	}
+
+	fmt.Printf("[INFO] Creating Group Index: %s :: %s\n", pattern, field)
+
+	// Create Index
+	index, err := storage.NewBPlusTree(db.bufferPool)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	// Backfill
+	// 1. Find all matching collections
+	// Simple matching: if pattern has *, use path.Match, else strict?
+	// The user asked for "users/*/posts".
+	// Let's implement simple glob matching from "path"
+	// But we iterate all collections.
+
+	// Helper for matching
+	// path.Match might be enough.
+	// NOTE: path.Match uses shell patterns. "*" matches everything.
+	// users/*/posts matches users/123/posts.
+
+	// We iterate DB collections, NOT file system.
+	for _, coll := range db.collections {
+		// Use filepath.Match or path.Match?
+		// path.Match uses '/' as separator? Yes.
+		matched, _ := filepath.Match(pattern, coll.Name())
+		if !matched {
+			continue
+		}
+
+		fmt.Printf("[INFO] Backfilling from collection: %s\n", coll.Name())
+
+		// Scan Primary Index of matched collection
+		startKey := []byte{0x00}
+		endKey := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
+		scanResults, err := coll.indexes["_id"].RangeScan(startKey, endKey)
+		if err != nil {
+			// Log error but continue?
+			fmt.Printf("[WARN] Failed to scan collection %s: %v\n", coll.Name(), err)
+			continue
+		}
+
+		for _, entry := range scanResults {
+			doc, err := storage.DeserializeDocument(entry.Value)
+			if err != nil {
+				continue
+			}
+
+			id, _ := doc.GetID()
+			if val, ok := doc[field]; ok {
+				valStr := fmt.Sprintf("%v", val)
+				// Composite Key: Value \0 Collection \0 ID
+				// This ensures uniqueness (Coll+ID is unique globally-ish)
+				compKey := []byte(valStr + "\x00" + coll.Name() + "\x00" + string(id))
+
+				// Value? Group Index needs to point to (Collection, ID).
+				// We can store Collection \0 ID as value.
+				// OR just use empty value and parse key?
+				// Using Value is better for retrieval.
+				compVal := []byte(coll.Name() + "\x00" + string(id))
+
+				if err := index.Insert(compKey, compVal); err != nil {
+					return fmt.Errorf("failed to insert group index entry: %w", err)
+				}
+			}
+		}
+	}
+
+	// Persist Metadata
+	index.SetOnRootChange(func(newRootID storage.PageID) {
+		db.metadataMgr.UpdateGroupIndex(pattern, field, newRootID)
+	})
+
+	db.groupIndexes[key] = index
+
+	if err := db.metadataMgr.UpdateGroupIndex(pattern, field, index.GetRootID()); err != nil {
+		return fmt.Errorf("failed to persist group index metadata: %w", err)
+	}
+
+	return nil
+}
+
 // IsClosed returns true if the database is closed
 func (db *Database) IsClosed() bool {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.closed
+}
+
+// FindInGroup executes a query against a collection group using an index.
+// Currently only supports simple equality checks on indexed fields.
+func (db *Database) FindInGroup(auth *rules.AuthContext, txn *transaction.Transaction, pattern string, queryMap map[string]interface{}) ([]storage.Document, error) {
+	// 1. Analyze Query (Simplified: Find strict equality on indexed field)
+	// We need to find ONE field in the query that matches an existing Group Index.
+	var index *storage.BPlusTree
+	var value interface{}
+
+	db.mu.RLock()
+	// Check all fields in query
+	for k, v := range queryMap {
+		key := pattern + "::" + k
+		if idx, ok := db.groupIndexes[key]; ok {
+			index = idx
+			value = v
+			break // Found an index!
+		}
+	}
+	db.mu.RUnlock()
+
+	if index == nil {
+		// Fallback: Scatter-Gather (Iterate all collections)
+		return db.scanGroup(auth, txn, pattern, queryMap)
+	}
+
+	// 2. Index Scan
+	valStr := fmt.Sprintf("%v", value)
+	startKey := []byte(valStr + "\x00")
+	endKey := []byte(valStr + "\x00" + "\xFF")
+
+	scanResults, err := index.RangeScan(startKey, endKey)
+	if err != nil {
+		return nil, fmt.Errorf("group index scan failed: %w", err)
+	}
+
+	var results []storage.Document
+	for _, entry := range scanResults {
+		// Value is CollectionName \0 DocID
+		parts := strings.Split(string(entry.Value), "\x00")
+		if len(parts) != 2 {
+			continue
+		}
+		collName, docID := parts[0], parts[1]
+
+		coll, err := db.GetCollection(collName)
+		if err != nil {
+			continue // Collection deleted?
+		}
+
+		doc, err := coll.FindByID(auth, txn, docID)
+		if err != nil {
+			continue
+		}
+
+		// Re-validate query (in case of index collision or complex query)
+		results = append(results, doc)
+	}
+
+	return results, nil
+}
+
+// scanGroup performs a scatter-gather scan of all matching collections
+func (db *Database) scanGroup(auth *rules.AuthContext, txn *transaction.Transaction, pattern string, queryMap map[string]interface{}) ([]storage.Document, error) {
+	var results []storage.Document
+
+	colls := db.ListCollections() // helper
+
+	for _, name := range colls {
+		matched, _ := filepath.Match(pattern, name)
+		if !matched {
+			continue
+		}
+
+		coll, err := db.GetCollection(name)
+		if err != nil {
+			continue
+		}
+
+		// Execute Query on Collection
+		docs, err := coll.FindQuery(auth, txn, queryMap)
+		if err != nil {
+			continue
+		}
+		results = append(results, docs...)
+	}
+
+	return results, nil
 }

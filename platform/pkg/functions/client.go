@@ -125,3 +125,46 @@ func (c *Client) DeployFunction(functionID, version, bundlePath string) (*Deploy
 
 	return &result, nil
 }
+
+// LogEntry represents a single function log line from the functions service.
+type LogEntry struct {
+	FunctionID   string    `json:"function_id"`
+	InvocationID string    `json:"invocation_id"`
+	Level        string    `json:"level"`
+	Message      string    `json:"message"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// GetLogs fetches logs for a function from the functions service.
+func (c *Client) GetLogs(functionServiceID string, since *time.Time, limit int) ([]LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	sinceVal := time.Now().Add(-24 * time.Hour)
+	if since != nil {
+		sinceVal = *since
+	}
+	u := fmt.Sprintf("%s/functions/%s/logs?limit=%d&since=%s",
+		c.baseURL, functionServiceID, limit, sinceVal.UTC().Format(time.RFC3339))
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("functions service error (status %d): %s", resp.StatusCode, string(body))
+	}
+	var entries []LogEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return entries, nil
+}

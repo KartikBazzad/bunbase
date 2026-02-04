@@ -145,19 +145,38 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 	// We'll trust the params.
 	collection := c.Param("collection")
 	docID := c.Param("docID")
+	field := c.Param("field")
 
 	// Determine operation based on path params available
+	// Determine operation based on path params available
 	var upstreamPath string
+	fullPath := c.FullPath()
 
-	if collection == "" {
-		// List Collections (GET /collections) or Create Collection (POST /collections)
-		upstreamPath = "/databases/" + dbName + "/collections"
-	} else if docID == "" {
-		// List Documents or Create Document
-		upstreamPath = "/databases/" + dbName + "/documents/" + collection
-	} else {
+	// Base path for Bundoc Server: /v1/projects/{projectId}/databases/default
+	basePath := "/v1/projects/" + dbName + "/databases/default"
+
+	if strings.Contains(fullPath, "/indexes") {
+		// Index Operations: Remap to /indexes?collection=...&field=...
+		upstreamPath = basePath + "/indexes?collection=" + collection
+		if field != "" {
+			upstreamPath += "&field=" + field
+		}
+	} else if strings.HasSuffix(fullPath, "/query") {
+		// Query Operation: Remap to /documents/query
+		upstreamPath = basePath + "/documents/query"
+	} else if collection == "" {
+		// /collections (List/Create Collections)
+		upstreamPath = basePath + "/collections"
+	} else if strings.Contains(fullPath, "/documents") {
 		// Document Operations
-		upstreamPath = "/databases/" + dbName + "/documents/" + collection + "/" + docID
+		upstreamPath = basePath + "/documents/" + collection
+		if docID != "" {
+			upstreamPath += "/" + docID
+		}
+	} else {
+		// Collection Operations (Get/Update/Delete Collection)
+		// /collections/:collection
+		upstreamPath = basePath + "/collections/" + collection
 	}
 
 	// Handle Query String

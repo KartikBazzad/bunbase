@@ -138,6 +138,44 @@ export class ApiClient {
     });
   }
 
+  async invokeFunction(
+    projectId: string,
+    functionName: string,
+    method: string = "GET",
+    body?: any,
+    headers?: any,
+  ) {
+    return this.request(
+      `/projects/${projectId}/functions/${functionName}/invoke`,
+      {
+        method: method,
+        headers: headers,
+        body: body ? JSON.stringify(body) : undefined,
+      },
+    );
+  }
+
+  async getFunctionLogs(
+    projectId: string,
+    options?: { functionId?: string; since?: string; limit?: number },
+  ) {
+    const params = new URLSearchParams();
+    if (options?.functionId) params.set("function_id", options.functionId);
+    if (options?.since) params.set("since", options.since);
+    if (options?.limit != null) params.set("limit", String(options.limit));
+    const q = params.toString();
+    return this.request<
+      Array<{
+        function_id: string;
+        invocation_id: string;
+        level: string;
+        message: string;
+        created_at: string;
+        function_name?: string;
+      }>
+    >(`/projects/${projectId}/functions/logs${q ? `?${q}` : ""}`);
+  }
+
   // Database endpoints
   async listCollections(projectId: string) {
     return this.request(`/projects/${projectId}/database/collections`);
@@ -156,10 +194,25 @@ export class ApiClient {
     });
   }
 
-  async listDocuments(projectId: string, collection: string) {
-    return this.request(
-      `/projects/${projectId}/database/collections/${collection}/documents`,
-    );
+  async getCollection(projectId: string, name: string) {
+    return this.request(`/projects/${projectId}/database/collections/${name}`);
+  }
+
+  async listDocuments(
+    projectId: string,
+    collection: string,
+    params?: { skip?: number; limit?: number; prefix?: string },
+  ) {
+    const query = new URLSearchParams();
+    if (params?.skip) query.set("skip", String(params.skip));
+    if (params?.limit) query.set("limit", String(params.limit));
+    if (params?.prefix) query.set("prefix", params.prefix);
+
+    const qs = query.toString();
+    const url = `/projects/${projectId}/database/collections/${collection}/documents${
+      qs ? "?" + qs : ""
+    }`;
+    return this.request(url);
   }
 
   async createDocument(projectId: string, collection: string, data: any) {
@@ -192,6 +245,82 @@ export class ApiClient {
       `/projects/${projectId}/database/collections/${collection}/documents/${id}`,
       {
         method: "DELETE",
+      },
+    );
+  }
+
+  // Schema & Indexes
+  async updateCollectionSchema(
+    projectId: string,
+    collection: string,
+    schema: any,
+  ) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ schema }),
+      },
+    );
+  }
+
+  async updateCollectionRules(
+    projectId: string,
+    collection: string,
+    rules: Record<string, string>,
+  ) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/rules`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ rules }),
+      },
+    );
+  }
+
+  async listIndexes(projectId: string, collection: string) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/indexes`,
+    );
+  }
+
+  async createIndex(projectId: string, collection: string, field: string) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/indexes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ collection, field }), // Collection required by backend
+      },
+    );
+  }
+
+  async deleteIndex(projectId: string, collection: string, field: string) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/indexes/${field}`,
+      {
+        method: "DELETE",
+      },
+    );
+  }
+
+  async queryDocuments(
+    projectId: string,
+    collection: string,
+    query: any,
+    opts?: any,
+  ) {
+    return this.request(
+      `/projects/${projectId}/database/collections/${collection}/documents/query`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          collection, // Required by backend
+          query,
+          skip: opts?.skip || 0,
+          limit: opts?.limit || 100,
+          sortField: opts?.sortField,
+          sortDesc: opts?.sortDesc,
+        }),
       },
     );
   }

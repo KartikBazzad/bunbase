@@ -16,7 +16,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/functions/internal/capabilities"
 	"github.com/kartikbazzad/bunbase/functions/internal/config"
+	"github.com/kartikbazzad/bunbase/functions/internal/logstore"
 	"github.com/kartikbazzad/bunbase/functions/internal/logger"
+	"github.com/kartikbazzad/bunbase/functions/internal/prometrics"
 )
 
 // QuickJSWorker represents a QuickJS-NG worker process
@@ -40,6 +42,7 @@ type QuickJSWorker struct {
 	capabilities       *capabilities.Capabilities
 	pendingInvocations map[string]chan *Message
 	invocationMu       sync.RWMutex
+	logStore           logstore.Store // optional; when set, log messages are appended here
 }
 
 // NewQuickJSWorker creates a new QuickJS worker instance (does not spawn process)
@@ -63,6 +66,13 @@ func (w *QuickJSWorker) SetCapabilities(caps *capabilities.Capabilities) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.capabilities = caps
+}
+
+// SetLogStore sets the log store for persisting function logs (e.g. to Loki). Optional.
+func (w *QuickJSWorker) SetLogStore(store logstore.Store) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.logStore = store
 }
 
 // Spawn starts the QuickJS worker process
@@ -330,6 +340,13 @@ func (w *QuickJSWorker) readMessages() {
 			payload, err := ParseLogPayload(msg)
 			if err == nil {
 				w.logger.Info("QuickJS Worker %s log [%s]: %s", w.id, payload.Level, payload.Message)
+				w.mu.Lock()
+				store := w.logStore
+				w.mu.Unlock()
+				if store != nil {
+					_ = store.Append(w.functionID, msg.ID, payload.Level, payload.Message)
+				}
+				prometrics.IncLogLines(w.functionID, payload.Level)
 			}
 		case MessageTypeResponse, MessageTypeError:
 			w.invocationMu.RLock()

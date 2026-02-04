@@ -152,13 +152,13 @@ func TestInsertAndFind(t *testing.T) {
 		"age":  30,
 	}
 
-	err = coll.Insert(txn, doc)
+	err = coll.Insert(nil, txn, doc)
 	if err != nil {
 		t.Fatalf("Failed to insert document: %v", err)
 	}
 
 	// Find document in same transaction
-	found, err := coll.FindByID(txn, "user1")
+	found, err := coll.FindByID(nil, txn, "user1")
 	if err != nil {
 		t.Fatalf("Failed to find document: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestUpdateDocument(t *testing.T) {
 		"name": "Alice",
 		"age":  30,
 	}
-	coll.Insert(txn, doc)
+	coll.Insert(nil, txn, doc)
 
 	// Update
 	updatedDoc := storage.Document{
@@ -207,13 +207,13 @@ func TestUpdateDocument(t *testing.T) {
 		"name": "Alice Updated",
 		"age":  31,
 	}
-	err = coll.Update(txn, "user1", updatedDoc)
+	err = coll.Update(nil, txn, "user1", updatedDoc)
 	if err != nil {
 		t.Fatalf("Failed to update document: %v", err)
 	}
 
 	// Verify update
-	found, _ := coll.FindByID(txn, "user1")
+	found, _ := coll.FindByID(nil, txn, "user1")
 	if found["name"] != "Alice Updated" {
 		t.Errorf("Expected updated name, got '%v'", found["name"])
 	}
@@ -240,10 +240,10 @@ func TestDeleteDocument(t *testing.T) {
 		"_id":  "user1",
 		"name": "Alice",
 	}
-	coll.Insert(txn, doc)
+	coll.Insert(nil, txn, doc)
 
 	// Delete
-	err = coll.Delete(txn, "user1")
+	err = coll.Delete(nil, txn, "user1")
 	if err != nil {
 		t.Fatalf("Failed to delete document: %v", err)
 	}

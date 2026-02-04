@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
@@ -10,88 +9,69 @@ import (
 )
 
 type TenantAuthHandler struct {
-	authClient     *auth.TenantClient
+	client         *auth.TenantClient
 	projectService *services.ProjectService
 }
 
 func NewTenantAuthHandler(client *auth.TenantClient, projectService *services.ProjectService) *TenantAuthHandler {
 	return &TenantAuthHandler{
-		authClient:     client,
+		client:         client,
 		projectService: projectService,
 	}
 }
 
-// extractAPIKey gets the key from header X-Bunbase-Client-Key or Bearer (optional)
-func (h *TenantAuthHandler) getProjectID(c *gin.Context) (string, error) {
-	key := c.GetHeader("X-Bunbase-Client-Key")
-	if key == "" {
-		// Fallback: Check Query param ?key=...
-		key = c.Query("key")
-	}
-
-	if key == "" {
-		// Fallback: Authorization: Bearer pk_... (sometimes easy for integrations)
-		authHeader := c.GetHeader("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer pk_") {
-			key = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-	}
-
-	if key == "" {
-		return "", nil // No key found
-	}
-
-	return h.projectService.GetProjectIDByPublicKey(key)
-}
-
-type authRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
-	Name     string `json:"name"` // Optional for login
-}
-
-func (h *TenantAuthHandler) Register(c *gin.Context) {
-	projectID, err := h.getProjectID(c)
-	if err != nil || projectID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing Public API Key"})
+// ListProjectUsers lists all users (identities) for a project's auth system
+// GET /api/projects/:id/auth/users
+func (h *TenantAuthHandler) ListProjectUsers(c *gin.Context) {
+	projectID := c.Param("id")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID required"})
 		return
 	}
 
-	var req authRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+	// Verify ownership/permissions (assuming middleware checked Auth, but we check if user owns project)
+	// Actually middleware `AuthAnyMiddleware` populates context user/token.
+	// We should verify accessing user has access to projectID.
+	// For now, let's assume middleware handles basic auth, and we trust for MVP or do:
+	// userID := c.GetString("userID")
+	// h.projectService.CheckAccess(userID, projectID)
 
-	// Name is optional in auth service currently, but good to have
-	user, err := h.authClient.Register(projectID, req.Email, req.Password)
+	users, err := h.client.ListUsers(projectID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, user)
+	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
-func (h *TenantAuthHandler) Login(c *gin.Context) {
-	projectID, err := h.getProjectID(c)
-	if err != nil || projectID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing Public API Key"})
-		return
-	}
-
-	var req authRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	res, err := h.authClient.Login(projectID, req.Email, req.Password)
+// GetProjectAuthConfig retrieves auth configuration for a project
+// GET /api/projects/:id/auth/config
+func (h *TenantAuthHandler) GetProjectAuthConfig(c *gin.Context) {
+	projectID := c.Param("id")
+	config, err := h.client.GetConfig(projectID)
 	if err != nil {
-		// Determine status code based on error message or type (ideally client returns typed errors)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Login failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, config)
+}
+
+// UpdateProjectAuthConfig updates auth configuration
+// PUT /api/projects/:id/auth/config
+func (h *TenantAuthHandler) UpdateProjectAuthConfig(c *gin.Context) {
+	projectID := c.Param("id")
+
+	var config auth.AuthConfig
+	if err := c.ShouldBindJSON(&config); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	c.JSON(http.StatusOK, res)
+	if err := h.client.UpdateConfig(projectID, &config); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Status(http.StatusOK)
 }

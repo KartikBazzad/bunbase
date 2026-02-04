@@ -16,7 +16,11 @@ services:
       PLATFORM_DB_MIGRATIONSPATH: /app/migrations
       PLATFORM_AUTH_URL: http://bun-auth:8081
       PLATFORM_BUNDOC_URL: http://bundoc-data:8080
+      PLATFORM_FUNCTIONS_URL: http://functions:8080
+      PLATFORM_BUNDLE_PATH: /app/data/bundles
       TENANT_AUTH_URL: http://tenant-auth:8083
+    volumes:
+      - functions_data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,12 +28,33 @@ services:
         condition: service_started
       tenant-auth:
         condition: service_started
+      functions:
+        condition: service_started
     networks:
       - bunbase-net
     ports:
       - "3001:3001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.platform.rule=PathPrefix(`/api`) || Path(`/health`)"
+      - "traefik.http.routers.platform.entrypoints=web"
+      - "traefik.http.services.platform.loadbalancer.server.port=3001"
+
+  platform-web:
+    build:
+      context: platform-web
+      dockerfile: Dockerfile
+    container_name: bunbase-web
+    restart: always
+    networks:
+      - bunbase-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -96,7 +121,6 @@ services:
       - bunbase-net
     ports:
       - "8085:8080"
-      - "4321:4321"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 5s
@@ -117,7 +141,6 @@ services:
       - bunbase-net
     ports:
       - "8084:8080"
-      - "4322:4321"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 5s
@@ -133,10 +156,10 @@ services:
     environment:
       FUNCTIONS_HTTP_PORT: 8080
       FUNCTIONS_ENABLE_HTTP: "true"
-      FUNCTIONS_SOCKET: /tmp/functions.sock
+      LOKI_URL: http://loki:3100
+      # Worker binary/script paths are set in Dockerfile ENV
     volumes:
       - functions_data:/app/data
-      - /tmp/functions.sock:/tmp/functions.sock # Shared socket if needed locally, but inside docker uses own path
     networks:
       - bunbase-net
     ports:
@@ -144,7 +167,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      loki:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -216,6 +239,18 @@ services:
       timeout: 3s
       retries: 5
 
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: bunbase-loki
+    restart: always
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks:
+      - bunbase-net
+    ports:
+      - "3100:3100"
+
   prometheus:
     image: prom/prometheus:latest
     container_name: bunbase-prometheus
@@ -236,28 +271,29 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=bunpassword
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
     networks:
       - bunbase-net
     ports:
       - "3000:3000"
     depends_on:
       - prometheus
+      - loki
 
   traefik:
-    image: traefik:v3.0
+    image: traefik:v2.10
     container_name: bunbase-gateway
     restart: always
     command:
       - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
     ports:
       - "80:80"
       - "8080:8080" # Dashboard
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       - bunbase-net
 
@@ -271,6 +307,7 @@ volumes:
   bunder_sys_data:
   prometheus_data:
   grafana_data:
+  loki_data:
   bundoc_data_data:
   bundoc_auth_data:
   functions_data:

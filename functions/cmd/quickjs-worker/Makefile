@@ -3,7 +3,7 @@
 # This builds the quickjs-worker binary that embeds QuickJS-NG and libuv
 
 CC = gcc
-CFLAGS = -O2 -Wall -fPIC -std=c99
+CFLAGS = -O2 -Wall -fPIC -std=gnu99 -D_GNU_SOURCE
 LDFLAGS = 
 
 # QuickJS-NG directory (assumes quickjs-ng is cloned in bunbase directory)

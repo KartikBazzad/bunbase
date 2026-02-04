@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -23,11 +24,12 @@ type FunctionService struct {
 	functionsClient *functions.Client
 	buncastClient   *client.Client // optional: publish events on deploy
 	bundleBasePath  string
+	builderScript   string
 }
 
 // NewFunctionService creates a new FunctionService.
 // buncastSocketPath is optional; if non-empty, deploy events are published to Buncast.
-func NewFunctionService(db *pgxpool.Pool, functionsURL, bundleBasePath, buncastSocketPath string) (*FunctionService, error) {
+func NewFunctionService(db *pgxpool.Pool, functionsURL, bundleBasePath, buncastSocketPath, builderScript string) (*FunctionService, error) {
 	fc, err := functions.NewClient(functionsURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create functions client: %w", err)
@@ -37,6 +39,7 @@ func NewFunctionService(db *pgxpool.Pool, functionsURL, bundleBasePath, buncastS
 		db:              db,
 		functionsClient: fc,
 		bundleBasePath:  bundleBasePath,
+		builderScript:   builderScript,
 	}
 	if buncastSocketPath != "" {
 		svc.buncastClient = client.New(buncastSocketPath)
@@ -53,6 +56,14 @@ func (s *FunctionService) Close() error {
 		_ = s.buncastClient.Close()
 	}
 	return nil
+}
+
+// GetLogs fetches logs for a function from the functions service.
+func (s *FunctionService) GetLogs(functionServiceID string, since *time.Time, limit int) ([]functions.LogEntry, error) {
+	if s.functionsClient == nil {
+		return nil, fmt.Errorf("functions client not available")
+	}
+	return s.functionsClient.GetLogs(functionServiceID, since, limit)
 }
 
 // DeployFunction deploys a function to a project
@@ -89,19 +100,40 @@ func (s *FunctionService) DeployFunction(projectID, name, runtime, handler, vers
 		functionServiceID = existingFunction.FunctionServiceID
 	}
 
-	// Save bundle to filesystem
+	// Save SOURCE to filesystem
 	bundleDir := filepath.Join(s.bundleBasePath, functionServiceID, version)
 	if err := os.MkdirAll(bundleDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create bundle directory: %w", err)
 	}
 
-	filename := "bundle.js"
-	if runtime == "bun" {
-		filename = "bundle.ts"
+	sourceFilename := "source.ts" // Always treat as TS/JS source
+	sourcePath := filepath.Join(bundleDir, sourceFilename)
+	if err := os.WriteFile(sourcePath, bundleData, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write source: %w", err)
 	}
-	bundlePath := filepath.Join(bundleDir, filename)
-	if err := os.WriteFile(bundlePath, bundleData, 0644); err != nil {
-		return nil, fmt.Errorf("failed to write bundle: %w", err)
+
+	// EXECUTE BUILD
+	// bun run builder.ts <source> <outDir>
+	// We assume "bun" is in PATH
+
+	// Determine output bundle path (Bun build outputs to outdir/entrypoint_basename.js usually, or just entrypoint_basename.js)
+	// If entrypoint is "source.ts", output is "source.js".
+	// Let's verify builder output.
+	// Our builder uses `outdir`. Bun.build writes to `outdir/source.js` (keeping basename).
+
+	builderCmd := exec.Command("bun", "run", s.builderScript, sourcePath, bundleDir)
+	output, err := builderCmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("build failed: %s", string(output))
+	}
+
+	// Verify bundle.js exists (Bun transforms .ts -> .js)
+	bundlePath := filepath.Join(bundleDir, "source.js")
+	if _, err := os.Stat(bundlePath); os.IsNotExist(err) {
+		// Try .js if source was .js?
+		// Bun build output naming: entrypoints: ["source.ts"] -> "source.js"
+		// If input was "source.js" -> "source.js" (overwrite?)
+		return nil, fmt.Errorf("build artifact missing at %s", bundlePath)
 	}
 
 	// Deploy function version

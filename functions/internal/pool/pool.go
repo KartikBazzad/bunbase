@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartikbazzad/bunbase/functions/internal/config"
+	"github.com/kartikbazzad/bunbase/functions/internal/logstore"
 	"github.com/kartikbazzad/bunbase/functions/internal/logger"
 	"github.com/kartikbazzad/bunbase/functions/internal/worker"
 )
@@ -36,6 +37,7 @@ type WorkerPool struct {
 	stopped       bool
 	cleanupTicker *time.Ticker
 	cleanupStop   chan struct{}
+	logStore      logstore.Store // optional; when set, workers persist logs here
 }
 
 // NewPool creates a new worker pool
@@ -64,6 +66,11 @@ func NewPool(functionID, version, bundlePath string, cfg *config.WorkerConfig, w
 	return p
 }
 
+// SetLogStore sets the log store for persisting function logs. Optional; call after NewPool to enable.
+func (p *WorkerPool) SetLogStore(store logstore.Store) {
+	p.logStore = store
+}
+
 // createWorker creates a new worker instance based on runtime configuration
 func (p *WorkerPool) createWorker() worker.Worker {
 	// Determine runtime from config (default to "bun" for backward compatibility)
@@ -76,10 +83,12 @@ func (p *WorkerPool) createWorker() worker.Worker {
 	switch runtime {
 	case "quickjs", "quickjs-ng":
 		w = worker.NewQuickJSWorker(p.functionID, p.version, p.bundlePath, p.logger)
-		// Set capabilities if available
-		if p.cfg != nil && p.cfg.Capabilities != nil {
-			if qw, ok := w.(*worker.QuickJSWorker); ok {
+		if qw, ok := w.(*worker.QuickJSWorker); ok {
+			if p.cfg != nil && p.cfg.Capabilities != nil {
 				qw.SetCapabilities(p.cfg.Capabilities)
+			}
+			if p.logStore != nil {
+				qw.SetLogStore(p.logStore)
 			}
 		}
 		return w

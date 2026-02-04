@@ -29,7 +29,7 @@ func TestPersistence_DataRecovery(t *testing.T) {
 
 		txn, _ := db.BeginTransaction(mvcc.RepeatableRead)
 		doc := storage.Document{"name": "Alice", "age": 30}
-		if err := coll.Insert(txn, doc); err != nil {
+		if err := coll.Insert(nil, txn, doc); err != nil {
 			t.Fatalf("Insert failed: %v", err)
 		}
 		if err := db.CommitTransaction(txn); err != nil {
@@ -54,7 +54,7 @@ func TestPersistence_DataRecovery(t *testing.T) {
 		}
 
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-		results, err := coll.FindQuery(txn, map[string]interface{}{
+		results, err := coll.FindQuery(nil, txn, map[string]interface{}{
 			"name": "Alice",
 		})
 		if err != nil {
@@ -96,8 +96,8 @@ func TestPersistence_IndexRecovery(t *testing.T) {
 		}
 
 		txn, _ := db.BeginTransaction(mvcc.RepeatableRead)
-		coll.Insert(txn, storage.Document{"name": "Laptop", "category": "electronics"})
-		coll.Insert(txn, storage.Document{"name": "Chair", "category": "furniture"})
+		coll.Insert(nil, txn, storage.Document{"name": "Laptop", "category": "electronics"})
+		coll.Insert(nil, txn, storage.Document{"name": "Chair", "category": "furniture"})
 		db.CommitTransaction(txn)
 
 		db.Close()

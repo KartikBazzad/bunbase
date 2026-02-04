@@ -2,14 +2,17 @@ import { AuthClient } from "./auth";
 import { DatabaseClient } from "./database";
 import { FunctionsClient } from "./functions";
 
-export class BunBaseClient {
+export class BunBaseClient<
+  SchemaRegistry extends Record<string, any> = Record<string, any>,
+> {
   public auth: AuthClient;
-  public db: DatabaseClient;
+  public db: DatabaseClient<SchemaRegistry>;
   public functions: FunctionsClient;
 
   constructor(
     public url: string,
     public apiKey: string,
+    public projectId: string = "default", // Default for backward compat? Or make required?
   ) {
     this.auth = new AuthClient(this);
     this.db = new DatabaseClient(this);

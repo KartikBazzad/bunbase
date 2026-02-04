@@ -4,12 +4,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"sort"
+	"time"
 
 	"io"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
+	"github.com/kartikbazzad/bunbase/platform/internal/models"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
+	"github.com/kartikbazzad/bunbase/platform/pkg/functions"
 )
 
 // FunctionHandler handles function endpoints
@@ -218,4 +222,185 @@ func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
 
 	c.Writer.WriteHeader(resp.StatusCode)
 	c.Writer.Write(body)
+}
+
+// InvokeProjectFunction handles function invocation from the console (via Project ID)
+func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
+	user, ok := middleware.RequireAuth(c)
+	if !ok {
+		return
+	}
+
+	projectID := c.Param("id")
+	functionName := c.Param("name")
+
+	// Check if user has access to this project
+	// We allow Members to invoke functions for testing
+	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !isMember && !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	if functionName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Function name required"})
+		return
+	}
+
+	// Get Function by Name and Project
+	function, err := h.functionService.GetFunctionByName(projectID, functionName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Function not found"})
+		return
+	}
+
+	// Proxy to Functions Service (HTTP Gateway)
+	targetURL := fmt.Sprintf("%s/functions/%s", h.functionsURL, function.FunctionServiceID)
+
+	proxyReq, err := http.NewRequest(c.Request.Method, targetURL, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request"})
+		return
+	}
+
+	// Copy headers, but filter out sensitive ones if needed
+	// For console invocation, we might want to inject a special header indicating it's a test
+	for k, v := range c.Request.Header {
+		// Skip Host header, let Go set it
+		if k == "Host" {
+			continue
+		}
+		proxyReq.Header[k] = v
+	}
+
+	// Ensure we pass the Authorization header if the function needs it (though console usually uses cookies)
+	// If the user provided custom headers in the UI, they should be in c.Request.Header
+
+	client := &http.Client{}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("Failed to invoke function: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
+		return
+	}
+
+	for k, v := range resp.Header {
+		c.Writer.Header()[k] = v
+	}
+
+	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.Write(body)
+}
+
+// GetProjectFunctionLogs returns logs for the project's functions (optionally filtered by function).
+func (h *FunctionHandler) GetProjectFunctionLogs(c *gin.Context) {
+	user, ok := middleware.RequireAuth(c)
+	if !ok {
+		return
+	}
+	projectID := c.Param("id")
+	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !isMember && !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	functionIDOrName := c.Query("function_id")
+	sinceStr := c.Query("since")
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+	}
+	var since *time.Time
+	if sinceStr != "" {
+		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = &t
+		}
+	}
+	if since == nil {
+		t := time.Now().Add(-24 * time.Hour)
+		since = &t
+	}
+
+	type logRow struct {
+		functions.LogEntry
+		FunctionName string `json:"function_name,omitempty"`
+	}
+
+	var all []logRow
+	if functionIDOrName != "" {
+		var fn *models.Function
+		fn, err = h.functionService.GetFunctionByName(projectID, functionIDOrName)
+		if err != nil {
+			fn, err = h.functionService.GetFunctionByID(functionIDOrName)
+			if err != nil || fn == nil || fn.ProjectID != projectID {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Function not found"})
+				return
+			}
+		}
+		entries, err := h.functionService.GetLogs(fn.FunctionServiceID, since, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, e := range entries {
+			all = append(all, logRow{LogEntry: e, FunctionName: fn.Name})
+		}
+	} else {
+		fns, err := h.functionService.ListFunctionsByProject(projectID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		nameByID := make(map[string]string)
+		for _, fn := range fns {
+			nameByID[fn.FunctionServiceID] = fn.Name
+		}
+		for _, fn := range fns {
+			entries, err := h.functionService.GetLogs(fn.FunctionServiceID, since, limit*2)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				all = append(all, logRow{LogEntry: e, FunctionName: nameByID[e.FunctionID]})
+			}
+		}
+		sort.Slice(all, func(i, j int) bool {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		})
+		if len(all) > limit {
+			all = all[:limit]
+		}
+	}
+
+	c.JSON(http.StatusOK, all)
 }

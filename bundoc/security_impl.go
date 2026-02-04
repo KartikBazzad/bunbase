@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
+	"github.com/kartikbazzad/bunbase/bundoc/rules"
 	"github.com/kartikbazzad/bunbase/bundoc/security"
 	"github.com/kartikbazzad/bunbase/bundoc/storage"
 )
@@ -36,7 +37,7 @@ func (s *InternalUserStore) GetUser(username string) (*security.User, error) {
 
 	// 3. Find User
 	// We use Username as the ID for the document
-	doc, err := coll.FindByID(txn, username)
+	doc, err := coll.FindByID(&rules.AuthContext{IsAdmin: true}, txn, username)
 	if err != nil {
 		return nil, err // Likely not found
 	}
@@ -76,30 +77,30 @@ func (s *InternalUserStore) SaveUser(user *security.User) error {
 
 	// 4. Update or Insert
 	// Try Update first
-	err = coll.Update(txn, user.Username, doc)
+	err = coll.Update(&rules.AuthContext{IsAdmin: true}, txn, user.Username, doc)
 	if err != nil {
 		// If not found, Insert
 		// Note: Bundoc's Update might return specific error for not found?
 		// Assuming standard CRUD: Update fails if not exists.
 		// Let's rely on Check-then-Act pattern or Upsert if available.
 		// For now: Check existence via FindByID (inside txn).
-		_, findErr := coll.FindByID(txn, user.Username)
+		_, findErr := coll.FindByID(&rules.AuthContext{IsAdmin: true}, txn, user.Username)
 		if findErr == nil {
 			// Found, so Update failed? Or we didn't try Update yet?
 			// Let's just use Update.
 			// Actually, Coll.Update usually fails if ID not found.
 			// Let's do Insert explicitly if not found.
 			// Wait, standard FindByID returns error if not found.
-			if err := coll.Insert(txn, doc); err != nil {
+			if err := coll.Insert(&rules.AuthContext{IsAdmin: true}, txn, doc); err != nil {
 				return err
 			}
 		} else {
 			// Found, so retry Update?
 			// This logic is slightly brittle without proper error types.
 			// Let's try Insert, if it fails with Duplicate, then Update.
-			if err := coll.Insert(txn, doc); err != nil {
+			if err := coll.Insert(&rules.AuthContext{IsAdmin: true}, txn, doc); err != nil {
 				// Assume duplicate -> Update
-				if updateErr := coll.Update(txn, user.Username, doc); updateErr != nil {
+				if updateErr := coll.Update(&rules.AuthContext{IsAdmin: true}, txn, user.Username, doc); updateErr != nil {
 					return updateErr
 				}
 			}
@@ -130,7 +131,7 @@ func (s *InternalUserStore) DeleteUser(username string) error {
 	// Yes, implied. If compiler fails, I will add it.
 	// For now assuming:
 	/*
-		if err := coll.Delete(txn, username); err != nil {
+		if err := coll.Delete(nil, txn, username); err != nil {
 			return err
 		}
 	*/

@@ -5,6 +5,19 @@
 
 ---
 
+## Current stack and navigation (Platform Web)
+
+The app uses **DaisyUI** for UI styling. The previous custom design-system components were removed or migrated; components use DaisyUI classes directly.
+
+**Route-based navigation and sidebar:**
+
+- **Router**: React Router with `BrowserRouter`, `Routes`, `Route`, `ProtectedRoute`.
+- **Dashboard layout**: `DashboardLayout` wraps authenticated content with a sidebar and `Outlet`.
+- **Sidebar**: Collapsible, project-aware navigation (All Projects, project-scoped Overview / Database / Functions / Settings, account/logout). Implemented in `src/components/layout/Sidebar.tsx`.
+- **Routes**: `/` → `/dashboard`; `/dashboard` shows the projects list (Dashboard page); `/projects/:id` redirects to `/projects/:id/overview`; project sub-routes (overview, database, functions, settings) render inside the same layout.
+
+---
+
 ## 🎉 Summary
 
 Successfully implemented a comprehensive, production-grade UI design system for the Platform Web React application with **35+ components**, **145+ tests**, and full **JSDoc documentation**.
@@ -14,12 +27,14 @@ Successfully implemented a comprehensive, production-grade UI design system for 
 ## ✅ Completed Phases
 
 ### Phase 1: Foundation ✅
+
 - [x] Testing infrastructure (Vitest, React Testing Library)
 - [x] Enhanced theme system with dark mode (Linear/Stripe aesthetic)
 - [x] cn utility function with tests
 - [x] Test utilities (renderWithTheme)
 
 ### Phase 2: Core UI Components ✅ (6 components)
+
 - [x] **Button** - 15+ tests
   - Variants: primary, secondary, ghost, danger, outline
   - Sizes: xs, sm, md, lg, xl
@@ -43,6 +58,7 @@ Successfully implemented a comprehensive, production-grade UI design system for 
   - Animation control
 
 ### Phase 3: Form Components ✅ (9 components)
+
 - [x] **Label** - Full tests
   - Required indicator
   - Disabled states
@@ -66,6 +82,7 @@ Successfully implemented a comprehensive, production-grade UI design system for 
   - Visual strength indicator, requirements list
 
 ### Phase 4: Layout Components ✅ (6 components)
+
 - [x] **Navbar** - Tests included
   - Logo, actions, fixed positioning, transparent mode
 - [x] **Sidebar** - Created
@@ -81,6 +98,7 @@ Successfully implemented a comprehensive, production-grade UI design system for 
   - TabPanel for content organization
 
 ### Phase 5: Feedback Components ✅ (5 components)
+
 - [x] **Modal** - Tests included
   - Sizes: sm, md, lg, xl, full
   - Backdrop click, escape key, body scroll lock
@@ -97,6 +115,7 @@ Successfully implemented a comprehensive, production-grade UI design system for 
   - Multiple sizes, overlay mode, color variants
 
 ### Phase 6: Advanced Components ✅ (4 components)
+
 - [x] **Tooltip** - Tests included
   - Positions, delays, hover triggers
 - [x] **Dropdown** - Created
@@ -121,6 +140,7 @@ Pass Rate: 97.2%
 ```
 
 **Test Files Created:**
+
 - cn.test.ts ✅
 - Button.test.tsx ✅
 - Card.test.tsx ✅
@@ -249,6 +269,7 @@ src/components/ui/
 ## 🎨 Design System Features
 
 ### Visual Design
+
 - **Clean & Minimal Aesthetic**: Inspired by Linear/Stripe
 - **Sophisticated Typography**: 8-level type scale
 - **Refined Color Palette**: Primary, accent, semantic colors
@@ -256,17 +277,20 @@ src/components/ui/
 - **Consistent Spacing**: Standardized spacing scale
 
 ### Dark Mode
+
 - **System Preference**: Automatic detection
 - **Smooth Transitions**: 150-200ms duration
 - **Complete Support**: All components dark mode ready
 
 ### Accessibility
+
 - **ARIA Attributes**: Proper roles and labels
 - **Keyboard Navigation**: Full keyboard support
 - **Focus Management**: Visible focus indicators
 - **Screen Reader Support**: Announces states properly
 
 ### Developer Experience
+
 - **TypeScript**: Full type safety
 - **Barrel Exports**: Clean imports
 - **JSDoc Documentation**: Every component documented
@@ -278,6 +302,7 @@ src/components/ui/
 ## 📝 Documentation
 
 Every component includes:
+
 - ✅ JSDoc description
 - ✅ Usage examples
 - ✅ Props interface documentation
@@ -306,16 +331,22 @@ Every component includes:
 
 ```tsx
 // Import from central location
-import { Button, Card, Input, Modal } from '@/components/ui'
+import { Button, Card, Input, Modal } from "@/components/ui";
 
 // Or import specific component
-import { Button } from '@/components/ui/button'
+import { Button } from "@/components/ui/button";
 ```
 
 ### Basic Usage
 
 ```tsx
-import { Button, Card, CardHeader, CardBody, CardFooter } from '@/components/ui'
+import {
+  Button,
+  Card,
+  CardHeader,
+  CardBody,
+  CardFooter,
+} from "@/components/ui";
 
 function MyComponent() {
   return (
@@ -330,7 +361,7 @@ function MyComponent() {
         <Button>Action</Button>
       </CardFooter>
     </Card>
-  )
+  );
 }
 ```
 

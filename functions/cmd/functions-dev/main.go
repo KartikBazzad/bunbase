@@ -211,6 +211,7 @@ func createDevPool(meta *metadata.Store, rtr *router.Router, cfg *config.Config,
 			version.BundlePath,
 			&poolCfg,
 			runtimeWorkerScript,
+			"",
 			map[string]string{},
 			logr,
 		)

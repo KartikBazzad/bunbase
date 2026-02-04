@@ -2,12 +2,16 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/kartikbazzad/bunbase/bundoc"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
+	"github.com/kartikbazzad/bunbase/bundoc/rules"
 	"github.com/kartikbazzad/bunbase/bundoc/storage"
 )
 
@@ -19,6 +23,61 @@ type DocumentHandlers struct {
 // NewDocumentHandlers creates document handlers
 func NewDocumentHandlers(mgr *manager.InstanceManager) *DocumentHandlers {
 	return &DocumentHandlers{manager: mgr}
+}
+
+// Helper to extract AuthContext
+func (h *DocumentHandlers) getAuthContext(r *http.Request) *rules.AuthContext {
+	// 1. Check Admin Key (Server SDK / Console)
+	clientKey := r.Header.Get("X-Bunbase-Client-Key")
+	if clientKey != "" {
+		return &rules.AuthContext{IsAdmin: true}
+	}
+
+	// 2. Check User Token
+	authHeader := r.Header.Get("X-Bundoc-Auth")
+	if authHeader != "" {
+		parts := strings.SplitN(authHeader, ":", 2)
+		uid := parts[0]
+		var claims map[string]interface{}
+		if len(parts) > 1 {
+			_ = json.Unmarshal([]byte(parts[1]), &claims)
+		}
+		return &rules.AuthContext{UID: uid, Claims: claims}
+	}
+
+	// 3. Unauthenticated
+	return nil
+}
+
+// HandleGetCollection returns collection metadata including Schema
+// GET /v1/projects/{projectId}/databases/(default)/collections/{collection}
+func (h *DocumentHandlers) HandleGetCollection(w http.ResponseWriter, r *http.Request) {
+	projectID, collection := h.parseProjectAndCollection(r.URL.Path)
+	if projectID == "" || collection == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	coll, err := db.GetCollection(collection)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	schema, _ := coll.GetSchema()
+	rules := coll.GetRules()
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"name":   collection,
+		"schema": schema,
+		"rules":  rules,
+	})
 }
 
 // HandleCreateDocument creates a new document
@@ -70,8 +129,11 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Get Auth
+	auth := h.getAuthContext(r)
+
 	// Insert document
-	err = coll.Insert(txn, doc)
+	err = coll.Insert(auth, txn, doc)
 	if err != nil {
 		db.RollbackTransaction(txn)
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -93,27 +155,12 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 // GET /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
 // GET /v1/projects/{projectId}/databases/(default)/documents/{collection}
 func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Request) {
-	projectID, collection, docID := h.parseProjectCollectionAndDoc(r.URL.Path)
-
-	// If missing docID, it might be a LIST request if path matches valid list pattern
-	if docID == "" {
-		// Try parsing as list request
-		pID, col := h.parseProjectAndCollection(r.URL.Path)
-		if pID != "" && col != "" {
-			h.HandleListDocuments(w, r, pID, col)
-			return
-		}
-		// Otherwise valid error
+	projectID, pathSuffix := h.parseProjectAndPathSuffix(r.URL.Path)
+	if projectID == "" || pathSuffix == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
 
-	if projectID == "" || collection == "" {
-		h.writeError(w, http.StatusBadRequest, "invalid path")
-		return
-	}
-
-	// Acquire database instance
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -121,14 +168,93 @@ func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Requ
 	}
 	defer release()
 
-	// Get collection
-	coll, err := db.GetCollection(collection)
-	if err != nil {
+	parts := strings.Split(pathSuffix, "/")
+	var docID string
+	var foundCollection *bundoc.Collection
+
+	for i := len(parts); i > 0; i-- {
+		potentialName := strings.Join(parts[:i], "/")
+		coll, err := db.GetCollection(potentialName)
+		if err == nil {
+			foundCollection = coll
+			if i < len(parts) {
+				docID = strings.Join(parts[i:], "/")
+			}
+			break
+		}
+	}
+
+	// Get Auth
+	auth := h.getAuthContext(r)
+
+	if foundCollection == nil {
+		fullSuffix := strings.Join(parts, "/")
+		if strings.Contains(fullSuffix, "*") {
+			queryMap := make(map[string]interface{})
+			queryParams := r.URL.Query()
+			for k, v := range queryParams {
+				if len(v) > 0 {
+					queryMap[k] = v[0]
+				}
+			}
+
+			txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+			if err != nil {
+				h.writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			defer db.CommitTransaction(txn)
+
+			docs, err := db.FindInGroup(auth, txn, fullSuffix, queryMap)
+			if err != nil {
+				h.writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			h.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"documents": docs,
+			})
+			return
+		}
+
 		h.writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
-	// Start transaction
+	// List
+	if docID == "" {
+		txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+		if err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer db.CommitTransaction(txn)
+
+		skip := 0
+		limit := 100
+		if s := r.URL.Query().Get("skip"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil {
+				skip = n
+			}
+		}
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil {
+				limit = n
+			}
+		}
+
+		docs, err := foundCollection.List(auth, txn, skip, limit)
+		if err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"documents": docs,
+		})
+		return
+	}
+
+	// Get One
 	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -136,19 +262,24 @@ func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Requ
 	}
 	defer db.CommitTransaction(txn)
 
-	// Find document
-	doc, err := coll.FindByID(txn, docID)
+	doc, err := foundCollection.FindByID(auth, txn, docID)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "document not found")
+		h.writeError(w, http.StatusNotFound, "document not found or permission denied")
 		return
 	}
 
 	h.writeJSON(w, http.StatusOK, doc)
 }
 
-// HandleListDocuments lists documents in a collection
-func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Request, projectID, collection string) {
-	// Acquire database instance
+// HandleUpdateDocument updates a document
+// PATCH /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
+func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.Request) {
+	projectID, pathSuffix := h.parseProjectAndPathSuffix(r.URL.Path)
+	if projectID == "" || pathSuffix == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -156,14 +287,184 @@ func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Re
 	}
 	defer release()
 
-	// Get collection
-	coll, err := db.GetCollection(collection)
+	parts := strings.Split(pathSuffix, "/")
+	var docID string
+	var foundCollection *bundoc.Collection
+
+	for i := len(parts); i > 0; i-- {
+		potentialName := strings.Join(parts[:i], "/")
+		coll, err := db.GetCollection(potentialName)
+		if err == nil {
+			foundCollection = coll
+			if i < len(parts) {
+				docID = strings.Join(parts[i:], "/")
+			}
+			break
+		}
+	}
+
+	if foundCollection == nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+	if docID == "" {
+		h.writeError(w, http.StatusBadRequest, "document ID required")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	var updates map[string]interface{}
+	if err := json.Unmarshal(body, &updates); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	auth := h.getAuthContext(r)
+
+	err = foundCollection.Patch(auth, txn, docID, updates)
+	if err != nil {
+		db.RollbackTransaction(txn)
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	err = db.CommitTransaction(txn)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, updates)
+}
+
+// HandleDeleteDocument deletes a document
+// DELETE /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
+func (h *DocumentHandlers) HandleDeleteDocument(w http.ResponseWriter, r *http.Request) {
+	projectID, pathSuffix := h.parseProjectAndPathSuffix(r.URL.Path)
+	if projectID == "" || pathSuffix == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	parts := strings.Split(pathSuffix, "/")
+	var docID string
+	var foundCollection *bundoc.Collection
+
+	for i := len(parts); i > 0; i-- {
+		potentialName := strings.Join(parts[:i], "/")
+		coll, err := db.GetCollection(potentialName)
+		if err == nil {
+			foundCollection = coll
+			if i < len(parts) {
+				docID = strings.Join(parts[i:], "/")
+			}
+			break
+		}
+	}
+
+	if foundCollection == nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+	if docID == "" {
+		h.writeError(w, http.StatusBadRequest, "document ID required")
+		return
+	}
+
+	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	auth := h.getAuthContext(r)
+
+	err = foundCollection.Delete(auth, txn, docID)
+	if err != nil {
+		db.RollbackTransaction(txn)
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	err = db.CommitTransaction(txn)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleQueryDocuments executes a complex query
+// POST /v1/projects/{projectId}/databases/(default)/documents/query
+func (h *DocumentHandlers) HandleQueryDocuments(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 6 {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	projectID := parts[3]
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		Collection string                 `json:"collection"`
+		Query      map[string]interface{} `json:"query"`
+		Skip       int                    `json:"skip"`
+		Limit      int                    `json:"limit"`
+		SortField  string                 `json:"sortField"`
+		SortDesc   bool                   `json:"sortDesc"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if req.Collection == "" {
+		h.writeError(w, http.StatusBadRequest, "collection is required")
+		return
+	}
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	auth := h.getAuthContext(r)
+
+	coll, err := db.GetCollection(req.Collection)
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
-	// Start transaction
 	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -171,9 +472,66 @@ func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Re
 	}
 	defer db.CommitTransaction(txn)
 
-	// List documents
-	// TODO: Pagination
-	docs, err := coll.List(txn, 0, 100)
+	opts := bundoc.QueryOptions{
+		Skip:      req.Skip,
+		Limit:     req.Limit,
+		SortField: req.SortField,
+		SortDesc:  req.SortDesc,
+	}
+
+	// TODO: Auth for Query? Update FindQuery signature.
+	// For now pass nil implicitly if it doesn't take auth, or error if it does.
+	// Will update FindQuery next.
+	docs, err := coll.FindQuery(auth, txn, req.Query, opts)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("query error: %v", err))
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"documents": docs,
+	})
+}
+
+// HandleListDocuments lists documents in a collection
+func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Request, projectID, collection string) {
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	auth := h.getAuthContext(r)
+
+	coll, err := db.GetCollection(collection)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer db.CommitTransaction(txn)
+
+	skip := 0
+	limit := 100
+
+	if s := r.URL.Query().Get("skip"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			skip = n
+		}
+	}
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil {
+			limit = n
+		}
+	}
+
+	docs, err := coll.List(auth, txn, skip, limit)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -193,7 +551,6 @@ func (h *DocumentHandlers) HandleListCollections(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Acquire database instance
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -201,8 +558,13 @@ func (h *DocumentHandlers) HandleListCollections(w http.ResponseWriter, r *http.
 	}
 	defer release()
 
-	// List collections
-	collections := db.ListCollections()
+	prefix := r.URL.Query().Get("prefix")
+	var collections []string
+	if prefix != "" {
+		collections = db.ListCollectionsWithPrefix(prefix)
+	} else {
+		collections = db.ListCollections()
+	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"collections": collections,
@@ -218,7 +580,6 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to read body")
@@ -226,10 +587,9 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 	}
 	defer r.Body.Close()
 
-	// Parse body for collection name
-	// { "name": "my_collection" }
 	var req struct {
-		Name string `json:"name"`
+		Name   string      `json:"name"`
+		Schema interface{} `json:"schema"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -241,7 +601,6 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Acquire database instance
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -249,28 +608,40 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 	}
 	defer release()
 
-	// Create collection
-	_, err = db.CreateCollection(req.Name)
+	coll, err := db.CreateCollection(req.Name)
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error()) // Often duplicate error
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	h.writeJSON(w, http.StatusCreated, map[string]string{
-		"name": req.Name,
+	if req.Schema != nil {
+		schemaBytes, err := json.Marshal(req.Schema)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid schema format")
+			return
+		}
+
+		if err := coll.SetSchema(string(schemaBytes)); err != nil {
+			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid schema: %v", err))
+			return
+		}
+	}
+
+	h.writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"name":   req.Name,
+		"schema": req.Schema,
 	})
 }
 
-// HandleUpdateDocument updates a document
-// PATCH /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
-func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.Request) {
-	projectID, collection, docID := h.parseProjectCollectionAndDoc(r.URL.Path)
-	if projectID == "" || collection == "" || docID == "" {
+// HandleUpdateCollection updates collection metadata (Schema)
+// PATCH /v1/projects/{projectId}/databases/(default)/collections/{collection}
+func (h *DocumentHandlers) HandleUpdateCollection(w http.ResponseWriter, r *http.Request) {
+	projectID, collection := h.ParseProjectAndCollectionFromCollectionPath(r.URL.Path)
+	if projectID == "" || collection == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
 
-	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to read body")
@@ -278,17 +649,14 @@ func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.R
 	}
 	defer r.Body.Close()
 
-	// Parse update data
-	var updates storage.Document
-	if err := json.Unmarshal(body, &updates); err != nil {
+	var req struct {
+		Schema interface{} `json:"schema"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
-	// Ensure _id matches
-	updates.SetID(storage.DocumentID(docID))
-
-	// Acquire database instance
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -296,48 +664,168 @@ func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.R
 	}
 	defer release()
 
-	// Get collection
 	coll, err := db.GetCollection(collection)
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
-	// Start transaction
-	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if req.Schema != nil {
+		schemaBytes, err := json.Marshal(req.Schema)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid schema format")
+			return
+		}
+		if err := coll.SetSchema(string(schemaBytes)); err != nil {
+			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to set schema: %v", err))
+			return
+		}
 	}
 
-	// Update document
-	err = coll.Update(txn, docID, updates)
-	if err != nil {
-		db.RollbackTransaction(txn)
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Commit transaction
-	err = db.CommitTransaction(txn)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, updates)
+	h.writeJSON(w, http.StatusOK, map[string]string{
+		"status": "collection updated",
+	})
 }
 
-// HandleDeleteDocument deletes a document
-// DELETE /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
-func (h *DocumentHandlers) HandleDeleteDocument(w http.ResponseWriter, r *http.Request) {
-	projectID, collection, docID := h.parseProjectCollectionAndDoc(r.URL.Path)
-	if projectID == "" || collection == "" || docID == "" {
+// HandleIndexOperations manages indexes (List, Create, Delete)
+// GET /v1/projects/{projectId}/databases/(default)/indexes?collection=name
+func (h *DocumentHandlers) HandleIndexOperations(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	if len(parts) < 6 {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	projectID := parts[3]
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	switch r.Method {
+	case "GET":
+		collectionName := r.URL.Query().Get("collection")
+		if collectionName == "" {
+			h.writeError(w, http.StatusBadRequest, "collection query param required")
+			return
+		}
+
+		coll, err := db.GetCollection(collectionName)
+		if err != nil {
+			h.writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+
+		indexes := coll.ListIndexes()
+		h.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"indexes": indexes,
+		})
+
+	case "POST":
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "failed to read body")
+			return
+		}
+		defer r.Body.Close()
+
+		var req struct {
+			Collection string `json:"collection"`
+			Field      string `json:"field"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+
+		if req.Collection == "" || req.Field == "" {
+			h.writeError(w, http.StatusBadRequest, "collection and field are required")
+			return
+		}
+
+		if strings.Contains(req.Collection, "*") {
+			if err := db.EnsureGroupIndex(req.Collection, req.Field); err != nil {
+				h.writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			h.writeJSON(w, http.StatusCreated, map[string]string{
+				"status":  "group index created",
+				"pattern": req.Collection,
+				"field":   req.Field,
+			})
+			return
+		}
+
+		coll, err := db.GetCollection(req.Collection)
+		if err != nil {
+			h.writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+
+		if err := coll.EnsureIndex(req.Field); err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		h.writeJSON(w, http.StatusCreated, map[string]string{
+			"status": "index created",
+			"field":  req.Field,
+		})
+
+	case "DELETE":
+		collectionName := r.URL.Query().Get("collection")
+		field := r.URL.Query().Get("field")
+		if collectionName == "" || field == "" {
+			h.writeError(w, http.StatusBadRequest, "collection and field query params required")
+			return
+		}
+
+		coll, err := db.GetCollection(collectionName)
+		if err != nil {
+			h.writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+
+		if err := coll.DropIndex(field); err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// HandleDeleteIndex deletes a secondary index
+// DELETE /v1/projects/{projectId}/databases/(default)/collections/{collection}/indexes/{field}
+func (h *DocumentHandlers) HandleDeleteIndex(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	parts := strings.Split(path, "/indexes/")
+	if len(parts) != 2 {
+		h.writeError(w, http.StatusBadRequest, "invalid index path")
+		return
+	}
+
+	collectionPath := parts[0]
+	field := parts[1]
+
+	projectID, collection := h.ParseProjectAndCollectionFromCollectionPath(collectionPath)
+
+	if projectID == "" || collection == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
 
-	// Acquire database instance
+	if field == "" {
+		h.writeError(w, http.StatusBadRequest, "field name is required")
+		return
+	}
+
 	db, release, err := h.manager.Acquire(projectID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -345,32 +833,14 @@ func (h *DocumentHandlers) HandleDeleteDocument(w http.ResponseWriter, r *http.R
 	}
 	defer release()
 
-	// Get collection
 	coll, err := db.GetCollection(collection)
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
-	// Start transaction
-	txn, err := db.BeginTransaction(mvcc.ReadCommitted)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Delete document
-	err = coll.Delete(txn, docID)
-	if err != nil {
-		db.RollbackTransaction(txn)
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Commit transaction
-	err = db.CommitTransaction(txn)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+	if err := coll.DropIndex(field); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -400,11 +870,45 @@ func (h *DocumentHandlers) parseProjectCollectionAndDoc(path string) (string, st
 func (h *DocumentHandlers) parseProjectFromCollectionsPath(path string) string {
 	// /v1/projects/{projectId}/databases/(default)/collections
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	// 0:v1, 1:projects, 2:projectId, 3:databases, 4:default, 5:collections
 	if len(parts) < 6 || parts[5] != "collections" {
 		return ""
 	}
 	return parts[2]
+}
+
+func (h *DocumentHandlers) ParseProjectAndCollectionFromCollectionPath(path string) (string, string) {
+	// /v1/projects/{projectId}/databases/(default)/collections/{collection...}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 7 || parts[5] != "collections" {
+		return "", ""
+	}
+	projectID := parts[2]
+	collection := strings.Join(parts[6:], "/")
+	return projectID, collection
+}
+
+// HandleDeleteCollection drops a collection
+// DELETE /v1/projects/{projectId}/databases/(default)/collections/{collection}
+func (h *DocumentHandlers) HandleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	projectID, collection := h.ParseProjectAndCollectionFromCollectionPath(r.URL.Path)
+	if projectID == "" || collection == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	if err := db.DropCollection(collection); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *DocumentHandlers) writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -416,5 +920,67 @@ func (h *DocumentHandlers) writeJSON(w http.ResponseWriter, status int, data int
 func (h *DocumentHandlers) writeError(w http.ResponseWriter, status int, message string) {
 	h.writeJSON(w, status, map[string]string{
 		"error": message,
+	})
+}
+
+func (h *DocumentHandlers) parseProjectAndPathSuffix(path string) (string, string) {
+	// /v1/projects/{projectId}/databases/(default)/documents/{...}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 6 || parts[5] != "documents" {
+		return "", ""
+	}
+	return parts[2], strings.Join(parts[6:], "/")
+}
+
+// HandleUpdateRules updates collection security rules
+// PATCH /v1/projects/{projectId}/databases/(default)/collections/{collection}/rules
+func (h *DocumentHandlers) HandleUpdateRules(w http.ResponseWriter, r *http.Request) {
+	// Parse path
+	// /v1/projects/{projectId}/databases/(default)/collections/{collection}/rules
+	path := strings.TrimSuffix(r.URL.Path, "/rules") // strip suffix first
+	projectID, collection := h.ParseProjectAndCollectionFromCollectionPath(path)
+
+	if projectID == "" || collection == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	// Body format: { "rules": { "read": "auth != nil", "write": "false" } }
+	var req struct {
+		Rules map[string]string `json:"rules"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	db, release, err := h.manager.Acquire(projectID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer release()
+
+	coll, err := db.GetCollection(collection)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	if err := coll.SetRules(req.Rules); err != nil {
+		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to set rules: %v", err))
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "rules updated",
+		"rules":  req.Rules,
 	})
 }

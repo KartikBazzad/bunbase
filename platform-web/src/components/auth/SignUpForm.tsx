@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
+import { User, Mail, Lock, AlertCircle } from 'lucide-react';
 
 export function SignUpForm() {
   const [name, setName] = useState('');
@@ -39,85 +40,100 @@ export function SignUpForm() {
   };
 
   return (
-    <div className="card max-w-md mx-auto">
-      <div className="card-header">
-        <h1 className="text-2xl font-bold">Create Account</h1>
-      </div>
+    <div className="card max-w-md mx-auto bg-base-100 shadow-xl">
       <div className="card-body">
+        <h1 className="text-2xl font-bold mb-4">Create Account</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="bg-error-50 border border-error-200 text-error-800 px-4 py-3 rounded-lg text-sm">
-              {error}
+            <div className="alert alert-error">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
-              Name
+          <div className="form-control">
+            <label className="label" htmlFor="name">
+              <span className="label-text">Name</span>
+              <span className="label-text-alt text-error">*</span>
             </label>
-            <input
-              id="name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="input"
-              placeholder="Your name"
-              required
-            />
+            <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+              <input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your name"
+                className="input input-bordered w-full pl-10"
+                required
+              />
+            </div>
           </div>
 
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-              Email
+          <div className="form-control">
+            <label className="label" htmlFor="email">
+              <span className="label-text">Email</span>
+              <span className="label-text-alt text-error">*</span>
             </label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="input"
-              placeholder="you@example.com"
-              required
-            />
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="input input-bordered w-full pl-10"
+                required
+              />
+            </div>
           </div>
 
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
-              Password
+          <div className="form-control">
+            <label className="label" htmlFor="password">
+              <span className="label-text">Password</span>
+              <span className="label-text-alt text-error">*</span>
             </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="input"
-              required
-              minLength={8}
-            />
-            <p className="text-xs text-gray-500 mt-1">At least 8 characters</p>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input input-bordered w-full pl-10"
+                required
+                minLength={8}
+              />
+            </div>
+            <p className="text-xs text-base-content/50 mt-1">At least 8 characters</p>
           </div>
 
-          <div>
-            <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">
-              Confirm Password
+          <div className="form-control">
+            <label className="label" htmlFor="confirmPassword">
+              <span className="label-text">Confirm Password</span>
+              <span className="label-text-alt text-error">*</span>
             </label>
-            <input
-              id="confirmPassword"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="input"
-              required
-            />
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+              <input
+                id="confirmPassword"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="input input-bordered w-full pl-10"
+                required
+              />
+            </div>
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="btn-primary w-full"
+            className={`btn btn-primary w-full ${loading ? 'btn-disabled' : ''}`}
           >
-            {loading ? <span className="spinner mr-2"></span> : null}
-            Create Account
+            {loading && <span className="loading loading-spinner"></span>}
+            {loading ? 'Creating account...' : 'Create Account'}
           </button>
         </form>
       </div>

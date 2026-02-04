@@ -77,14 +77,127 @@ func main() {
 			return
 		}
 
-		// Route based on method and path
+		// Middleware: Extract Project ID and Auth
+		// Simple validation for now
+		if !strings.HasPrefix(r.URL.Path, "/v1/projects/") {
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+
+		// Routing logic based on suffix
+		if strings.HasSuffix(r.URL.Path, "/collections") && r.Method == "POST" {
+			docHandlers.HandleCreateCollection(w, r)
+			return
+		}
+
+		// Index Operations /indexes
+		if strings.HasSuffix(r.URL.Path, "/indexes") {
+			docHandlers.HandleIndexOperations(w, r)
+			return
+		}
+
+		// Query Operations /documents/query
+		if strings.HasSuffix(r.URL.Path, "/documents/query") && r.Method == "POST" {
+			docHandlers.HandleQueryDocuments(w, r)
+			return
+		}
+
+		if strings.HasSuffix(r.URL.Path, "/documents") {
+			if r.Method == "GET" {
+				// We need collection name. Path structure: .../collections/{collection}/documents
+				// Helper needed to extract collection if valid
+				// Current HandleListDocuments extracts it.
+
+				// Wait, default handler routing via strings.HasSuffix is brittle for nested paths.
+				// Better to check specific segments or Regex.
+				// For MVP, if it ends in /documents, it's list or create.
+				// .../documents/{id} is handled below?
+			}
+		}
+
+		// Rules Operations /collections/{name}/rules
+		if strings.HasSuffix(r.URL.Path, "/rules") && r.Method == "PATCH" {
+			docHandlers.HandleUpdateRules(w, r)
+			return
+		}
+
+		// Fallback to specific resource handlers
+		if strings.HasSuffix(r.URL.Path, "/collections") {
+			if r.Method == "GET" {
+				docHandlers.HandleListCollections(w, r)
+				return
+			} else if r.Method == "POST" {
+				docHandlers.HandleCreateCollection(w, r)
+				return
+			}
+		} else if strings.Contains(r.URL.Path, "/collections/") {
+			// Document or Collection operations
+			// /connections/{name} PATCH -> Update Schema
+			// /collections/{name}/documents -> List/Create
+			// /collections/{name}/documents/{id} -> Get/Update/Delete
+
+			// We need a better router. But sticking to this switch for now.
+
+			if strings.HasSuffix(r.URL.Path, "/documents") {
+				if r.Method == "GET" {
+					// Extract collection from path: .../databases/default/collections/{collection}/documents
+					path := strings.TrimSuffix(r.URL.Path, "/documents")
+					_, collection := docHandlers.ParseProjectAndCollectionFromCollectionPath(path)
+
+					// HandleListDocuments args: (w, r, projectID, collection)
+					// We need to parse projectID here.
+					parts := strings.Split(r.URL.Path, "/")
+					if len(parts) >= 4 {
+						docHandlers.HandleListDocuments(w, r, parts[3], collection)
+						return
+					}
+				} else if r.Method == "POST" {
+					docHandlers.HandleCreateDocument(w, r)
+					return
+				}
+			} else {
+				// Check for Document ID or Collection ID
+				// If path ends with collection name?
+				// PATCH /collections/{name}
+
+				// Document ID check:
+				// .../documents/{id}
+				if strings.Contains(r.URL.Path, "/documents/") {
+					if r.Method == "GET" {
+						docHandlers.HandleGetDocument(w, r)
+					} else if r.Method == "PATCH" {
+						docHandlers.HandleUpdateDocument(w, r)
+					} else if r.Method == "DELETE" {
+						docHandlers.HandleDeleteDocument(w, r)
+					}
+					return
+				}
+
+				// Collection operations
+				// PATCH /collections/{name}
+				if r.Method == "PATCH" {
+					docHandlers.HandleUpdateCollection(w, r)
+					return
+				}
+				// GET /collections/{name}
+				if r.Method == "GET" {
+					docHandlers.HandleGetCollection(w, r)
+					return
+				}
+				// DELETE /collections/{name}
+				if r.Method == "DELETE" {
+					docHandlers.HandleDeleteCollection(w, r)
+					return
+				}
+			}
+		}
+
+		// Fallback to original switch for now for other methods or unhandled paths
 		switch r.Method {
 		case "POST":
-			if strings.HasSuffix(r.URL.Path, "/collections") {
-				docHandlers.HandleCreateCollection(w, r)
-			} else {
-				docHandlers.HandleCreateDocument(w, r)
-			}
+			// This case is largely handled above for /collections and /documents
+			// If it reaches here, it might be an unhandled POST or a specific document POST
+			docHandlers.HandleCreateDocument(w, r) // Default to creating a document if not caught by specific paths
 		case "GET":
 			if strings.HasSuffix(r.URL.Path, "/collections") {
 				docHandlers.HandleListCollections(w, r)
@@ -94,7 +207,17 @@ func main() {
 		case "PATCH":
 			docHandlers.HandleUpdateDocument(w, r)
 		case "DELETE":
-			docHandlers.HandleDeleteDocument(w, r)
+			if strings.Contains(r.URL.Path, "/indexes/") {
+				docHandlers.HandleDeleteIndex(w, r)
+			} else if strings.HasSuffix(r.URL.Path, "/collections") || strings.Contains(r.URL.Path, "/collections/") && !strings.Contains(r.URL.Path, "/documents/") {
+				if strings.Contains(r.URL.Path, "/collections") && !strings.Contains(r.URL.Path, "/documents") {
+					docHandlers.HandleDeleteCollection(w, r)
+				} else {
+					docHandlers.HandleDeleteDocument(w, r)
+				}
+			} else {
+				docHandlers.HandleDeleteDocument(w, r)
+			}
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

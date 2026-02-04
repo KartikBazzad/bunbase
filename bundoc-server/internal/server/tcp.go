@@ -306,7 +306,7 @@ func (s *TCPServer) handleInsert(w io.Writer, req wire.InsertRequest, sess *Sess
 
 	// Execute Insert
 	txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	if err := col.Insert(txn, req.Document); err != nil {
+	if err := col.Insert(nil, txn, req.Document); err != nil {
 		db.RollbackTransaction(txn)
 		s.sendError(w, err.Error())
 		return
@@ -364,7 +364,7 @@ func (s *TCPServer) handleFind(w io.Writer, req wire.FindRequest, sess *Session)
 	}
 
 	// Call FindQuery
-	docs, err := col.FindQuery(txn, req.Query, qOpts)
+	docs, err := col.FindQuery(nil, txn, req.Query, qOpts)
 	if err != nil {
 		s.sendError(w, err.Error())
 		return

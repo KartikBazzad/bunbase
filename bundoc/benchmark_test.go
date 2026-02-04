@@ -26,7 +26,7 @@ func BenchmarkInsert(b *testing.B) {
 			"value": i,
 			"data":  "benchmark data",
 		}
-		col.Insert(txn, doc)
+		col.Insert(nil, txn, doc)
 		db.txnMgr.Commit(txn)
 	}
 	b.StopTimer()
@@ -49,7 +49,7 @@ func BenchmarkFindByID(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		col.Insert(txn, doc)
+		col.Insert(nil, txn, doc)
 		db.txnMgr.Commit(txn)
 	}
 
@@ -57,7 +57,7 @@ func BenchmarkFindByID(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 		docID := fmt.Sprintf("doc-%d", i%seedCount)
-		col.FindByID(txn, docID)
+		col.FindByID(nil, txn, docID)
 		db.txnMgr.Commit(txn)
 	}
 	b.StopTimer()
@@ -80,7 +80,7 @@ func BenchmarkUpdate(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		col.Insert(txn, doc)
+		col.Insert(nil, txn, doc)
 		db.txnMgr.Commit(txn)
 	}
 
@@ -93,7 +93,7 @@ func BenchmarkUpdate(b *testing.B) {
 			"value":   i,
 			"updated": true,
 		}
-		col.Update(txn, docID, update)
+		col.Update(nil, txn, docID, update)
 		db.txnMgr.Commit(txn)
 	}
 	b.StopTimer()
@@ -128,7 +128,7 @@ func BenchmarkConcurrentWrites(b *testing.B) {
 							"worker": workerID,
 							"value":  i,
 						}
-						col.Insert(txn, doc)
+						col.Insert(nil, txn, doc)
 						db.txnMgr.Commit(txn)
 					}
 				}(w)
@@ -161,7 +161,7 @@ func BenchmarkConcurrentReads(b *testing.B) {
 					"_id":   fmt.Sprintf("doc-%d", i),
 					"value": i,
 				}
-				col.Insert(txn, doc)
+				col.Insert(nil, txn, doc)
 				db.txnMgr.Commit(txn)
 			}
 
@@ -177,7 +177,7 @@ func BenchmarkConcurrentReads(b *testing.B) {
 					for i := 0; i < opsPerWorker; i++ {
 						txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 						docID := fmt.Sprintf("doc-%d", (workerID*opsPerWorker+i)%seedCount)
-						col.FindByID(txn, docID)
+						col.FindByID(nil, txn, docID)
 						db.txnMgr.Commit(txn)
 					}
 				}(w)
@@ -219,7 +219,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 					"_id":   fmt.Sprintf("doc-%d", i),
 					"value": i,
 				}
-				col.Insert(txn, doc)
+				col.Insert(nil, txn, doc)
 				db.txnMgr.Commit(txn)
 			}
 
@@ -243,7 +243,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 						if roll < ratio.readPct {
 							// Read
 							docID := fmt.Sprintf("doc-%d", i%seedCount)
-							col.FindByID(txn, docID)
+							col.FindByID(nil, txn, docID)
 						} else if roll < ratio.readPct+ratio.writePct {
 							// Write
 							newID := docCounter.Add(1)
@@ -252,7 +252,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 								"worker": workerID,
 								"value":  newID,
 							}
-							col.Insert(txn, doc)
+							col.Insert(nil, txn, doc)
 						} else {
 							// Update
 							docID := fmt.Sprintf("doc-%d", i%seedCount)
@@ -261,7 +261,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 								"updated": true,
 								"value":   i,
 							}
-							col.Update(txn, docID, update)
+							col.Update(nil, txn, docID, update)
 						}
 						db.txnMgr.Commit(txn)
 					}

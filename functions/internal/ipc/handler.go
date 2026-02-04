@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/functions/internal/capabilities"
 	"github.com/kartikbazzad/bunbase/functions/internal/config"
+	"github.com/kartikbazzad/bunbase/functions/internal/logstore"
 	"github.com/kartikbazzad/bunbase/functions/internal/logger"
 	"github.com/kartikbazzad/bunbase/functions/internal/metadata"
 	"github.com/kartikbazzad/bunbase/functions/internal/pool"
@@ -26,6 +27,7 @@ type Handler struct {
 	cfg          *config.Config
 	workerScript string
 	initScript   string
+	logStore     logstore.Store
 }
 
 // NewHandler creates a new IPC handler
@@ -43,6 +45,18 @@ func (h *Handler) SetDependencies(meta *metadata.Store, cfg *config.Config, work
 	h.cfg = cfg
 	h.workerScript = workerScript
 	h.initScript = initScript
+	lokiURL := ""
+	if cfg != nil && cfg.Logs.LokiURL != "" {
+		lokiURL = cfg.Logs.LokiURL
+	}
+	if lokiURL == "" {
+		lokiURL = os.Getenv("LOKI_URL")
+	}
+	if lokiURL != "" {
+		h.logStore = logstore.NewLokiStore(lokiURL)
+	} else {
+		h.logStore = &logstore.NoopStore{}
+	}
 }
 
 // Handle handles an IPC request
@@ -158,9 +172,48 @@ func (h *Handler) handleInvoke(frame *RequestFrame) *ResponseFrame {
 func (h *Handler) handleGetLogs(frame *RequestFrame) *ResponseFrame {
 	response := &ResponseFrame{
 		RequestID: frame.RequestID,
-		Status:    StatusError,
-		Payload:   []byte(`{"error":"not implemented"}`),
+		Status:    StatusOK,
 	}
+	var req struct {
+		FunctionID string `json:"function_id"`
+		Since      string `json:"since"`
+		Limit      int    `json:"limit"`
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		response.Status = StatusError
+		response.Payload = []byte(fmt.Sprintf(`{"error":"invalid request: %v"}`, err))
+		return response
+	}
+	if req.FunctionID == "" {
+		response.Status = StatusError
+		response.Payload = []byte(`{"error":"function_id required"}`)
+		return response
+	}
+	if h.logStore == nil {
+		response.Payload = []byte(`{"logs":[]}`)
+		return response
+	}
+	since := time.Now().Add(-24 * time.Hour)
+	if req.Since != "" {
+		if t, err := time.Parse(time.RFC3339, req.Since); err == nil {
+			since = t
+		}
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	entries, err := h.logStore.GetLogs(req.FunctionID, since, limit)
+	if err != nil {
+		response.Status = StatusError
+		response.Payload = []byte(fmt.Sprintf(`{"error":"%v"}`, err))
+		return response
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"logs": entries})
+	response.Payload = payload
 	return response
 }
 
@@ -470,6 +523,9 @@ func (h *Handler) createPoolForFunction(fn *metadata.Function, version *metadata
 		map[string]string{}, // TODO: Load env vars from database
 		h.logger,
 	)
+	if h.logStore != nil {
+		p.SetLogStore(h.logStore)
+	}
 
 	// Register pool
 	h.router.RegisterPool(fn.ID, p)

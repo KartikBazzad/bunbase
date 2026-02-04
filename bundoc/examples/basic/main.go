@@ -39,7 +39,7 @@ func main() {
 		"email": "alice@example.com",
 		"age":   30,
 	}
-	users.Insert(txn1, alice)
+	users.Insert(nil, txn1, alice)
 	db.CommitTransaction(txn1)
 	fmt.Println("  - Inserted Alice")
 
@@ -51,7 +51,7 @@ func main() {
 		"email": "bob@example.com",
 		"age":   25,
 	}
-	users.Insert(txn2, bob)
+	users.Insert(nil, txn2, bob)
 	db.CommitTransaction(txn2)
 	fmt.Println("  - Inserted Bob")
 
@@ -59,12 +59,12 @@ func main() {
 	fmt.Println("\n📖 Reading documents...")
 
 	txn3, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	foundAlice, err := users.FindByID(txn3, "user1")
+	foundAlice, err := users.FindByID(nil, txn3, "user1")
 	if err == nil {
 		fmt.Printf("  - Found: %v\n", foundAlice)
 	}
 
-	foundBob, err := users.FindByID(txn3, "user2")
+	foundBob, err := users.FindByID(nil, txn3, "user2")
 	if err == nil {
 		fmt.Printf("  - Found: %v\n", foundBob)
 	}
@@ -80,13 +80,13 @@ func main() {
 		"email": "alice@example.com",
 		"age":   31, // Birthday!
 	}
-	users.Update(txn4, "user1", updatedAlice)
+	users.Update(nil, txn4, "user1", updatedAlice)
 	db.CommitTransaction(txn4)
 	fmt.Println("  - Updated Alice's age to 31")
 
 	// Read updated document
 	txn5, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	updated, _ := users.FindByID(txn5, "user1")
+	updated, _ := users.FindByID(nil, txn5, "user1")
 	fmt.Printf("  - Alice after update: %v\n", updated)
 	db.CommitTransaction(txn5)
 
@@ -100,13 +100,13 @@ func main() {
 	// Delete document
 	fmt.Println("\n🗑️  Deleting Bob...")
 	txn6, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	users.Delete(txn6, "user2")
+	users.Delete(nil, txn6, "user2")
 	db.CommitTransaction(txn6)
 	fmt.Println("  - Bob deleted")
 
 	// Try to read deleted document
 	txn7, _ := db.BeginTransaction(mvcc.ReadCommitted)
-	_, err = users.FindByID(txn7, "user2")
+	_, err = users.FindByID(nil, txn7, "user2")
 	if err != nil {
 		fmt.Println("  - Confirmed: Bob no longer exists")
 	}

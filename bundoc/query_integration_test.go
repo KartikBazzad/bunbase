@@ -37,7 +37,7 @@ func TestFindQueryIntegration(t *testing.T) {
 		{"_id": "4", "name": "Dave", "age": 40, "role": "admin", "active": true},
 	}
 	for _, u := range users {
-		col.Insert(txn, u)
+		col.Insert(nil, txn, u)
 	}
 	db.CommitTransaction(txn)
 
@@ -49,7 +49,7 @@ func TestFindQueryIntegration(t *testing.T) {
 	q1 := map[string]interface{}{
 		"age": map[string]interface{}{"$gt": 28},
 	}
-	results, err := col.FindQuery(txnRead, q1)
+	results, err := col.FindQuery(nil, txnRead, q1)
 	if err != nil {
 		t.Fatalf("FindQuery failed: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestFindQueryIntegration(t *testing.T) {
 		"role": "admin",
 		"age":  map[string]interface{}{"$lt": 35},
 	}
-	results2, err := col.FindQuery(txnRead, q2)
+	results2, err := col.FindQuery(nil, txnRead, q2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestFindQueryIntegration(t *testing.T) {
 			map[string]interface{}{"age": 40},
 		},
 	}
-	results3, err := col.FindQuery(txnRead, q3)
+	results3, err := col.FindQuery(nil, txnRead, q3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestFindQueryIntegration(t *testing.T) {
 	}
 	// Query all
 	qAll := map[string]interface{}{}
-	results4, err := col.FindQuery(txnRead, qAll, optSort)
+	results4, err := col.FindQuery(nil, txnRead, qAll, optSort)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestFindQueryIntegration(t *testing.T) {
 		Skip:      1,
 		Limit:     2,
 	}
-	results5, err := col.FindQuery(txnRead, qAll, optPage)
+	results5, err := col.FindQuery(nil, txnRead, qAll, optPage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestFindQueryIntegration(t *testing.T) {
 	// Functional check: logic should remain correct.
 	fmt.Println("--- Testing Index Scan ---")
 	optIndex := QueryOptions{}
-	results6, err := col.FindQuery(txnRead, q1, optIndex) // q1 is age > 28
+	results6, err := col.FindQuery(nil, txnRead, q1, optIndex) // q1 is age > 28
 	if err != nil {
 		t.Fatal(err)
 	}

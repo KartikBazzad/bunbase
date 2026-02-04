@@ -7,14 +7,17 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/functions/internal/capabilities"
 	"github.com/kartikbazzad/bunbase/functions/internal/config"
+	"github.com/kartikbazzad/bunbase/functions/internal/logstore"
 	"github.com/kartikbazzad/bunbase/functions/internal/logger"
 	"github.com/kartikbazzad/bunbase/functions/internal/metadata"
 	"github.com/kartikbazzad/bunbase/functions/internal/pool"
+	"github.com/kartikbazzad/bunbase/functions/internal/prometrics"
 	"github.com/kartikbazzad/bunbase/functions/internal/router"
 	"github.com/kartikbazzad/bunbase/functions/internal/scheduler"
 )
@@ -29,6 +32,7 @@ type Gateway struct {
 	workerScript string
 	initScript   string
 	server       *http.Server
+	logStore     logstore.Store
 }
 
 // NewGateway creates a new HTTP gateway
@@ -42,12 +46,25 @@ func NewGateway(r *router.Router, s *scheduler.Scheduler, meta *metadata.Store, 
 		initScript:   initScript,
 		logger:       log,
 	}
+	lokiURL := ""
+	if cfg != nil && cfg.Logs.LokiURL != "" {
+		lokiURL = cfg.Logs.LokiURL
+	}
+	if lokiURL == "" {
+		lokiURL = os.Getenv("LOKI_URL")
+	}
+	if lokiURL != "" {
+		g.logStore = logstore.NewLokiStore(lokiURL)
+	} else {
+		g.logStore = &logstore.NoopStore{}
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/functions/", g.handleInvoke)
+	mux.HandleFunc("/functions/", g.handleFunctions)
 	mux.HandleFunc("/v1/functions/register", g.handleRegister)
 	mux.HandleFunc("/v1/functions/deploy", g.handleDeploy)
 	mux.HandleFunc("/health", g.handleHealth)
+	mux.Handle("/metrics", prometrics.Handler())
 
 	g.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Gateway.HTTPPort),
@@ -98,6 +115,67 @@ func (g *Gateway) Stop() error {
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+// handleLogs handles GET /functions/:id/logs
+func (g *Gateway) handleLogs(w http.ResponseWriter, r *http.Request, functionNameOrID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	fn, _, err := g.router.Route(functionNameOrID)
+	if err != nil {
+		if err == router.ErrFunctionNotFound {
+			http.Error(w, "Function not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Routing error: %v", err), http.StatusInternalServerError)
+		return
+	}
+	since := time.Now().Add(-24 * time.Hour)
+	if s := r.URL.Query().Get("since"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			since = t
+		}
+	}
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := fmt.Sscanf(l, "%d", &limit); n == 1 && err == nil && limit > 0 {
+			if limit > 1000 {
+				limit = 1000
+			}
+		}
+	}
+	entries, err := g.logStore.GetLogs(fn.ID, since, limit)
+	if err != nil {
+		g.logger.Error("GetLogs failed for %s: %v", fn.ID, err)
+		http.Error(w, fmt.Sprintf("Failed to get logs: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+// handleFunctions routes /functions/... to either logs or invoke
+func (g *Gateway) handleFunctions(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if len(path) < 11 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	suffix := path[11:]
+	if strings.HasSuffix(suffix, "/logs") {
+		// GET /functions/:id/logs
+		funcPart := strings.TrimSuffix(suffix, "/logs")
+		funcPart = strings.TrimSuffix(funcPart, "/")
+		if funcPart == "" {
+			http.Error(w, "Function name required", http.StatusBadRequest)
+			return
+		}
+		g.handleLogs(w, r, funcPart)
+		return
+	}
+	g.handleInvoke(w, r)
 }
 
 // handleInvoke handles function invocation requests
@@ -529,6 +607,9 @@ func (g *Gateway) createPoolForFunction(fn *metadata.Function, version *metadata
 		map[string]string{}, // TODO: Load env vars from database
 		g.logger,
 	)
+	if g.logStore != nil {
+		p.SetLogStore(g.logStore)
+	}
 
 	// Register pool
 	g.router.RegisterPool(fn.ID, p)

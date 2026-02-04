@@ -33,7 +33,7 @@ func TestCRUDLatencyProfileDebug(t *testing.T) {
 
 		start := time.Now()
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-		col.Insert(txn, doc)
+		col.Insert(nil, txn, doc)
 		db.CommitTransaction(txn)
 		insertDurations[i] = time.Since(start)
 	}
@@ -53,7 +53,7 @@ func TestCRUDLatencyProfileDebug(t *testing.T) {
 		id := fmt.Sprintf("user%d", idx)
 		start := time.Now()
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-		col.FindByID(txn, id)
+		col.FindByID(nil, txn, id)
 		db.CommitTransaction(txn)
 		readDurations[i] = time.Since(start)
 	}
@@ -69,7 +69,7 @@ func TestCRUDLatencyProfileDebug(t *testing.T) {
 
 		start := time.Now()
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-		col.Update(txn, id, doc)
+		col.Update(nil, txn, id, doc)
 		db.CommitTransaction(txn)
 		updateDurations[i] = time.Since(start)
 	}
@@ -82,7 +82,7 @@ func TestCRUDLatencyProfileDebug(t *testing.T) {
 
 		start := time.Now()
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-		col.Delete(txn, id)
+		col.Delete(nil, txn, id)
 		db.CommitTransaction(txn)
 		deleteDurations[i] = time.Since(start)
 	}

@@ -41,6 +41,7 @@ type LogsConfig struct {
 	DBPath    string
 	JSONLPath string
 	Retention time.Duration
+	LokiURL   string // Loki HTTP API base URL (e.g. http://loki:3100). If set, logstore uses Loki.
 }
 
 func DefaultConfig() *Config {
@@ -70,6 +71,7 @@ func DefaultConfig() *Config {
 			DBPath:    "./data/logs.db",
 			JSONLPath: "./data/logs",
 			Retention: 30 * 24 * time.Hour, // 30 days
+			LokiURL:   "http://localhost:3100",
 		},
 	}
 }

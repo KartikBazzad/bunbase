@@ -2,6 +2,7 @@ package bundoc
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 
@@ -10,13 +11,23 @@ import (
 
 // SystemMetadata holds the persistent schema of the database
 type SystemMetadata struct {
-	Collections map[string]CollectionMeta `json:"collections"`
+	Collections  map[string]CollectionMeta `json:"collections"`
+	GroupIndexes map[string]GroupIndexMeta `json:"group_indexes"` // Key is "pattern:field" or just unique ID? Let's use "pattern" + "field"
 }
 
 // CollectionMeta holds metadata for a single collection
 type CollectionMeta struct {
 	Name    string            `json:"name"`
 	Indexes map[string]uint64 `json:"indexes"` // Field -> RootPageID
+	Schema  string            `json:"schema,omitempty"`
+	Rules   map[string]string `json:"rules,omitempty"` // Operation -> Expression (e.g. "read": "true")
+}
+
+// GroupIndexMeta holds metadata for a collection group index
+type GroupIndexMeta struct {
+	Pattern string `json:"pattern"` // e.g., "users/*/posts"
+	Field   string `json:"field"`   // e.g., "created_at"
+	RootID  uint64 `json:"root_id"` // RootPageID of the B+Tree
 }
 
 // MetadataManager handles the persistence of the database schema (System Catalog).
@@ -35,7 +46,8 @@ func NewMetadataManager(path string) (*MetadataManager, error) {
 	mm := &MetadataManager{
 		path: path,
 		metadata: SystemMetadata{
-			Collections: make(map[string]CollectionMeta),
+			Collections:  make(map[string]CollectionMeta),
+			GroupIndexes: make(map[string]GroupIndexMeta),
 		},
 	}
 
@@ -45,6 +57,14 @@ func NewMetadataManager(path string) (*MetadataManager, error) {
 			return mm, nil
 		}
 		return nil, err
+	}
+
+	// Ensure maps are initialized if loaded nil
+	if mm.metadata.Collections == nil {
+		mm.metadata.Collections = make(map[string]CollectionMeta)
+	}
+	if mm.metadata.GroupIndexes == nil {
+		mm.metadata.GroupIndexes = make(map[string]GroupIndexMeta)
 	}
 
 	return mm, nil
@@ -74,7 +94,7 @@ func (mm *MetadataManager) saveLocked() error {
 	return os.WriteFile(mm.path, data, 0644)
 }
 
-// UpdateCollection updates metadata for a collection
+// UpdateCollection updates metadata for a collection (indexes only, preserves schema)
 func (mm *MetadataManager) UpdateCollection(name string, indexes map[string]storage.PageID) error {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
@@ -84,10 +104,31 @@ func (mm *MetadataManager) UpdateCollection(name string, indexes map[string]stor
 		idxMap[k] = uint64(v)
 	}
 
-	mm.metadata.Collections[name] = CollectionMeta{
-		Name:    name,
-		Indexes: idxMap,
+	// Get existing to preserve other fields like Schema
+	meta, exists := mm.metadata.Collections[name]
+	if !exists {
+		// New collection
+		meta = CollectionMeta{Name: name}
 	}
+
+	meta.Indexes = idxMap
+	mm.metadata.Collections[name] = meta
+
+	return mm.saveLocked()
+}
+
+// UpdateCollectionSchema updates schema for a collection
+func (mm *MetadataManager) UpdateCollectionSchema(name string, schema string) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	meta, exists := mm.metadata.Collections[name]
+	if !exists {
+		return fmt.Errorf("collection %s does not exist", name)
+	}
+
+	meta.Schema = schema
+	mm.metadata.Collections[name] = meta
 
 	return mm.saveLocked()
 }
@@ -117,4 +158,85 @@ func (mm *MetadataManager) ListCollections() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ListCollectionsWithPrefix returns collection names matching the prefix
+func (mm *MetadataManager) ListCollectionsWithPrefix(prefix string) []string {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+
+	names := make([]string, 0)
+	for name := range mm.metadata.Collections {
+		// If prefix is empty, return all
+		if prefix == "" {
+			names = append(names, name)
+			continue
+		}
+
+		// Check prefix
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// UpdateGroupIndex updates metadata for a group index
+func (mm *MetadataManager) UpdateGroupIndex(pattern, field string, rootID storage.PageID) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	key := pattern + "::" + field
+	mm.metadata.GroupIndexes[key] = GroupIndexMeta{
+		Pattern: pattern,
+		Field:   field,
+		RootID:  uint64(rootID),
+	}
+
+	return mm.saveLocked()
+}
+
+// GetGroupIndex returns metadata for a group index
+func (mm *MetadataManager) GetGroupIndex(pattern, field string) (GroupIndexMeta, bool) {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+	key := pattern + "::" + field
+	meta, ok := mm.metadata.GroupIndexes[key]
+	return meta, ok
+}
+
+// ListGroupIndexes returns all group indexes
+func (mm *MetadataManager) ListGroupIndexes() []GroupIndexMeta {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+	indexes := make([]GroupIndexMeta, 0, len(mm.metadata.GroupIndexes))
+	for _, meta := range mm.metadata.GroupIndexes {
+		indexes = append(indexes, meta)
+	}
+	return indexes
+}
+
+// DeleteGroupIndex removes a group index from metadata
+func (mm *MetadataManager) DeleteGroupIndex(pattern, field string) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	key := pattern + "::" + field
+	delete(mm.metadata.GroupIndexes, key)
+	return mm.saveLocked()
+}
+
+// UpdateCollectionRules updates the rules for a collection
+func (mm *MetadataManager) UpdateCollectionRules(name string, rules map[string]string) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	meta, ok := mm.metadata.Collections[name]
+	if !ok {
+		return fmt.Errorf("collection not found: %s", name)
+	}
+
+	meta.Rules = rules
+	mm.metadata.Collections[name] = meta
+
+	return mm.saveLocked()
 }

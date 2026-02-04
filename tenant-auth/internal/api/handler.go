@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -45,19 +46,50 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.URL.Path {
-	case "/register":
+	switch {
+	case r.URL.Path == "/register" && r.Method == http.MethodPost:
 		h.handleRegister(w, r)
-	case "/login":
+	case r.URL.Path == "/login" && r.Method == http.MethodPost:
 		h.handleLogin(w, r)
-	case "/verify":
+	case r.URL.Path == "/verify" && r.Method == http.MethodPost:
 		h.handleVerify(w, r)
-	case "/health":
+	case r.URL.Path == "/health":
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
+
+	// "Admin" routes for Platform Console
+	// /projects/{projectID}/users
+	case matchProjectRoute(r.URL.Path, "users"):
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleListUsers(w, r)
+
+	// /projects/{projectID}/config
+	case matchProjectRoute(r.URL.Path, "config"):
+		if r.Method == http.MethodGet {
+			h.handleGetConfig(w, r)
+		} else if r.Method == http.MethodPut {
+			h.handleUpdateConfig(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// matchProjectRoute helper checks if path matches /projects/{id}/suffix
+func matchProjectRoute(path, suffix string) bool {
+	// pattern: /projects/{id}/suffix
+	// len parts: 0:"", 1:"projects", 2:"{id}", 3:"suffix"
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 4 {
+		return false
+	}
+	return parts[1] == "projects" && parts[3] == suffix
 }
 
 type registerRequest struct {
@@ -199,6 +231,76 @@ func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) {
 		"valid":  true,
 		"claims": claims,
 	})
+}
+
+func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	projectID, err := h.extractProjectID(r.URL.Path)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	users, err := h.db.ListUsers(r.Context(), projectID)
+	if err != nil {
+		h.log.Error("Failed to list users", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"users": users,
+	})
+}
+
+func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	projectID, err := h.extractProjectID(r.URL.Path)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	config, err := h.db.GetAuthConfig(r.Context(), projectID)
+	if err != nil {
+		h.log.Error("Failed to get config", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
+}
+
+func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	projectID, err := h.extractProjectID(r.URL.Path)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	var config db.AuthConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UpdateAuthConfig(r.Context(), projectID, &config); err != nil {
+		h.log.Error("Failed to update config", "error", err)
+		http.Error(w, "Failed to update config", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"updated"}`))
+}
+
+func (h *Handler) extractProjectID(path string) (uuid.UUID, error) {
+	// Assumes path matches /projects/{id}/...
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 3 || parts[1] != "projects" {
+		return uuid.Parse("invalid-path-structure")
+	}
+	return uuid.Parse(parts[2])
 }
 
 func (h *Handler) generateToken(user *db.TenantUser) (string, error) {

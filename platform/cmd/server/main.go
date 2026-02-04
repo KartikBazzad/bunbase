@@ -39,8 +39,24 @@ func main() {
 	corsOrigin := flag.String("cors-origin", "http://localhost:5173", "Allowed CORS origin")
 	authURL := flag.String("auth-url", "http://localhost:8081", "BunAuth Service URL")
 	functionsURL := flag.String("functions-url", "http://localhost:8080", "Functions Service URL")
+	// Use relative path for internal builder script by default (works if running from platform root)
+	builderScript := flag.String("builder-script", "./internal/builder/builder.ts", "Path to builder script")
 
 	flag.Parse()
+
+	// Docker Support: Override flags from ENV if present
+	if val := os.Getenv("PLATFORM_AUTH_URL"); val != "" {
+		*authURL = val
+	}
+	if val := os.Getenv("PLATFORM_FUNCTIONS_URL"); val != "" {
+		*functionsURL = val
+	}
+	if val := os.Getenv("PLATFORM_BUNDLE_PATH"); val != "" {
+		*bundleBasePath = val
+	}
+	if val := os.Getenv("PLATFORM_BUILDER_SCRIPT"); val != "" {
+		*builderScript = val
+	}
 
 	// Load Config
 	var cfg AppConfig
@@ -89,13 +105,14 @@ func main() {
 
 	// Initialize services
 	// Use localhost for local dev, or env for docker.
-	// tenantAuthURL := "http://localhost:8083"
-	// if url := os.Getenv("TENANT_AUTH_URL"); url != "" {
-	// 	tenantAuthURL = url
-	// }
+	// Use localhost for local dev, or env for docker.
+	tenantAuthURL := "http://localhost:8083"
+	if url := os.Getenv("TENANT_AUTH_URL"); url != "" {
+		tenantAuthURL = url
+	}
 
 	authClient := bunauth.NewClient(*authURL)
-	// tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
+	tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
 	bundocClient := bundoc.NewClient(cfg.Bundoc.URL)
 
 	authService := auth.NewAuth(authClient)
@@ -107,7 +124,12 @@ func main() {
 		log.Fatalf("Failed to resolve bundle path: %v", err)
 	}
 
-	functionService, err := services.NewFunctionService(db.Pool, *functionsURL, absBundlePath, *buncastSocket)
+	absBuilderScript, err := filepath.Abs(*builderScript)
+	if err != nil {
+		log.Fatalf("Failed to resolve builder script path: %v", err)
+	}
+
+	functionService, err := services.NewFunctionService(db.Pool, *functionsURL, absBundlePath, *buncastSocket, absBuilderScript)
 	if err != nil {
 		log.Fatalf("Failed to initialize function service: %v", err)
 	}
@@ -118,7 +140,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
-	// tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
+	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
 	projectHandler := handlers.NewProjectHandler(projectService)
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
 	functionHandler := handlers.NewFunctionHandler(functionService, projectService, *functionsURL)
@@ -154,6 +176,8 @@ func main() {
 	v1DB.GET("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
 	v1DB.PUT("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
 	v1DB.DELETE("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
+	v1DB.POST("/:dbName/collections/:collection/indexes", databaseHandler.ProxyHandler)
+	v1DB.DELETE("/:dbName/collections/:collection/indexes/:field", databaseHandler.ProxyHandler)
 
 	v1Functions := v1.Group("/functions")
 	v1Functions.POST("/:name/invoke", functionHandler.InvokeFunction)
@@ -194,6 +218,7 @@ func main() {
 
 	// Function routes (v1)
 	v1Projects.GET("/:id/functions", functionHandler.ListFunctions)
+	v1Projects.GET("/:id/functions/logs", functionHandler.GetProjectFunctionLogs)
 	v1Projects.POST("/:id/functions", functionHandler.DeployFunction)
 	v1Projects.DELETE("/:id/functions/:functionId", functionHandler.DeleteFunction)
 
@@ -202,6 +227,8 @@ func main() {
 	v1ProjectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.POST("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDB.DELETE("/collections/:collection/indexes/:field", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
@@ -222,22 +249,41 @@ func main() {
 
 	// Function routes (protected)
 	projectsAPI.GET("/:id/functions", functionHandler.ListFunctions)
+	projectsAPI.GET("/:id/functions/logs", functionHandler.GetProjectFunctionLogs)
 	projectsAPI.POST("/:id/functions", functionHandler.DeployFunction)
 	projectsAPI.DELETE("/:id/functions/:functionId", functionHandler.DeleteFunction)
+	projectsAPI.POST("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+	projectsAPI.GET("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
 
 	// Database routes (protected - developer access)
 	projectDB := projectsAPI.Group("/:id/database")
 	// /api/projects/:id/database/collections
 	projectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
 	projectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	projectDB.PATCH("/collections/:collection", databaseHandler.DeveloperProxyHandler) // Schema Update
 	projectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+
+	// Indexes
+	projectDB.GET("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	projectDB.POST("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	projectDB.DELETE("/collections/:collection/indexes/:field", databaseHandler.DeveloperProxyHandler)
+
+	// Documents
 	// /api/projects/:id/database/collections/:collection/documents
 	projectDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
 	projectDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	projectDB.POST("/collections/:collection/documents/query", databaseHandler.DeveloperProxyHandler) // Query with filters
+
 	// /api/projects/:id/database/collections/:collection/documents/:docID
 	projectDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
 	projectDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
 	projectDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+
+	// Auth Configuration routes (protected)
+	projectAuth := projectsAPI.Group("/:id/auth")
+	projectAuth.GET("/users", tenantAuthHandler.ListProjectUsers)
+	projectAuth.GET("/config", tenantAuthHandler.GetProjectAuthConfig)
+	projectAuth.PUT("/config", tenantAuthHandler.UpdateProjectAuthConfig)
 
 	// Token management routes (cookie-authenticated)
 	tokenAPI := api.Group("/auth/tokens")

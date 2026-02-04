@@ -38,14 +38,28 @@ COPY cmd/bundoc-bench ./cmd/bundoc-bench
 WORKDIR /app/platform
 RUN go build -o /bin/platform-server ./cmd/server
 
-FROM alpine:3.18
+
+FROM oven/bun:1.0-alpine as bun-base
+# We use a multi-stage build to get bun binary or just use oven/bun as base?
+# The platform binary is Go.
+# We can use debian-slim and install bun?
+# Or use oven/bun:debian as base and copy the go binary?
+# Let's use `oven/bun:1.1-debian` (or just oven/bun) as the runtime image base.
+# It has `bun` installed.
+
+FROM oven/bun:1.1-slim as runtime
 WORKDIR /app
 COPY --from=builder /bin/platform-server /bin/platform-server
 
-# Add curl for healthcheck and migrations
-RUN apk add --no-cache curl postgresql-client
+# Add curl for healthcheck and migrations (and postgresql-client)
+RUN apt-get update && apt-get install -y curl postgresql-client && rm -rf /var/lib/apt/lists/*
 
 # Create migrations directory
 COPY platform/migrations /app/migrations
+
+# Enable server-side builder
+COPY platform/internal/builder /app/internal/builder
+
+ENV PLATFORM_BUILDER_SCRIPT=/app/internal/builder/builder.ts
 
 CMD ["/bin/platform-server", "-port", "3001"]

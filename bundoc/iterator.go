@@ -84,7 +84,7 @@ func (it *TableScanIterator) Value() (storage.Document, error) {
 		return nil, fmt.Errorf("iterator out of bounds")
 	}
 	// Fetch document using standard FindByID to ensure MVCC visibility rules
-	return it.collection.FindByID(it.txn, it.docIDs[it.currentIndex])
+	return it.collection.FindByID(nil, it.txn, it.docIDs[it.currentIndex])
 }
 
 func (it *TableScanIterator) Close() error {
@@ -152,7 +152,7 @@ func (it *IndexScanIterator) Value() (storage.Document, error) {
 		return nil, fmt.Errorf("iterator out of bounds")
 	}
 	// Retrieve Doc by ID (Visibility check via FindByID)
-	return it.collection.FindByID(it.txn, it.docIDs[it.currentIndex])
+	return it.collection.FindByID(nil, it.txn, it.docIDs[it.currentIndex])
 }
 
 func (it *IndexScanIterator) Close() error {

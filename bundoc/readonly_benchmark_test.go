@@ -24,7 +24,7 @@ func BenchmarkReadOnlyTransaction(b *testing.B) {
 			"_id":   fmt.Sprintf("doc-%d", i),
 			"value": i,
 		}
-		col.Insert(txn, doc)
+		col.Insert(nil, txn, doc)
 		db.txnMgr.Commit(txn)
 	}
 
@@ -32,7 +32,7 @@ func BenchmarkReadOnlyTransaction(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 		docID := fmt.Sprintf("doc-%d", i%seedCount)
-		col.FindByID(txn, docID)
+		col.FindByID(nil, txn, docID)
 		db.txnMgr.Commit(txn) // Should be FAST - no WAL!
 	}
 	b.StopTimer()
@@ -60,7 +60,7 @@ func BenchmarkReadOnlyConcurrent(b *testing.B) {
 					"_id":   fmt.Sprintf("doc-%d", i),
 					"value": i,
 				}
-				col.Insert(txn, doc)
+				col.Insert(nil, txn, doc)
 				db.txnMgr.Commit(txn)
 			}
 			b.StartTimer() // Restart timer for actual test
@@ -77,7 +77,7 @@ func BenchmarkReadOnlyConcurrent(b *testing.B) {
 					for i := 0; i < opsPerWorker; i++ {
 						txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 						docID := fmt.Sprintf("doc-%d", (workerID*opsPerWorker+i)%seedCount)
-						col.FindByID(txn, docID)
+						col.FindByID(nil, txn, docID)
 						db.txnMgr.Commit(txn) // Read-only fast path!
 					}
 				}(w)
@@ -103,14 +103,14 @@ func BenchmarkCompareReadWrite(b *testing.B) {
 		for i := 0; i < 100; i++ {
 			txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 			doc := storage.Document{"_id": fmt.Sprintf("doc-%d", i), "value": i}
-			col.Insert(txn, doc)
+			col.Insert(nil, txn, doc)
 			db.txnMgr.Commit(txn)
 		}
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
-			col.FindByID(txn, "doc-0")
+			col.FindByID(nil, txn, "doc-0")
 			db.txnMgr.Commit(txn) // Read-only!
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
@@ -129,7 +129,7 @@ func BenchmarkCompareReadWrite(b *testing.B) {
 				"_id":   fmt.Sprintf("doc-%d", i),
 				"value": i,
 			}
-			col.Insert(txn, doc)
+			col.Insert(nil, txn, doc)
 			db.txnMgr.Commit(txn) // Write transaction - full WAL
 		}
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")

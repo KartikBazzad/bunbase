@@ -80,7 +80,7 @@ func BenchmarkSingleInsertsInTxn(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				txn, _ := db.BeginTransaction(mvcc.ReadCommitted)
 				for _, doc := range docs {
-					err := col.Insert(txn, doc)
+					err := col.Insert(nil, txn, doc)
 					if err != nil {
 						b.Fatal(err)
 					}

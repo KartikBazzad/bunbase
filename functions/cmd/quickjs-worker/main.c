@@ -16,6 +16,7 @@
 // QuickJS-NG headers
 #include "quickjs.h"
 #include "quickjs-libc.h"
+#include "cutils.h"
 
 // libuv headers
 #include "uv.h"
@@ -29,6 +30,8 @@ static JSRuntime *rt = NULL;
 static JSValue handler_func = JS_UNDEFINED;
 static char *bundle_path = NULL;
 static char worker_id[64] = {0};
+/* Current invocation ID; set at start of execute_handler, cleared at end. Used by console override. */
+static char current_invoke_id[64] = {0};
 
 // Capabilities structure
 typedef struct {
@@ -53,6 +56,7 @@ static int execute_handler(const char *invoke_id, const char *method, const char
 static void setup_capabilities(void);
 static void enforce_resource_limits(void);
 static void add_web_apis(JSContext *ctx);
+static void add_console_override(JSContext *ctx);
 
 // Send NDJSON message to stdout
 static void send_message(const char *type, const char *id, const char *payload) {
@@ -109,12 +113,39 @@ static void send_response(const char *id, int status, const char *headers_json, 
     send_message("response", id, payload);
 }
 
+/* Escape string for JSON and truncate to fit in out_buf (includes null). Returns out_buf. */
+static char *escape_json_str(const char *in, char *out_buf, size_t out_size) {
+    if (!out_size) return out_buf;
+    size_t j = 0;
+    for (const char *p = in; p && *p && j < out_size - 1; p++) {
+        if (*p == '"' || *p == '\\') {
+            if (j + 2 >= out_size) break;
+            out_buf[j++] = '\\';
+            out_buf[j++] = *p;
+        } else if (*p == '\n') {
+            if (j + 2 >= out_size) break;
+            out_buf[j++] = '\\';
+            out_buf[j++] = 'n';
+        } else if (*p == '\r') {
+            if (j + 2 >= out_size) break;
+            out_buf[j++] = '\\';
+            out_buf[j++] = 'r';
+        } else {
+            out_buf[j++] = *p;
+        }
+    }
+    out_buf[j] = '\0';
+    return out_buf;
+}
+
 static void send_log(const char *id, const char *level, const char *message) {
+    char msg_escaped[768];
+    escape_json_str(message ? message : "", msg_escaped, sizeof(msg_escaped));
     char payload[1024];
     snprintf(payload, sizeof(payload),
              "{\"level\":\"%s\",\"message\":\"%s\"}",
              level ? level : "info",
-             message ? message : "");
+             msg_escaped);
     send_message("log", id, payload);
 }
 
@@ -140,6 +171,57 @@ static void setup_capabilities(void) {
     const char *max_fds = getenv("MAX_FDS");
     if (max_fds) {
         caps.max_fds = atoi(max_fds);
+    }
+}
+
+// Missing cutils symbol override
+
+
+// Add atob/btoa polyfills
+static void add_base64_polyfills(JSContext *ctx) {
+    const char *base64_polyfill = 
+        "(function() {"
+        "  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';"
+        "  globalThis.btoa = function(input) {"
+        "    let str = String(input);"
+        "    let output = '';"
+        "    for (let block = 0, charCode, i = 0, map = chars; "
+        "    str.charAt(i | 0) || (map = '=', i % 1); "
+        "    output += map.charAt(63 & block >> 8 - i % 1 * 8)) {"
+        "      charCode = str.charCodeAt(i += 3/4);"
+        "      if (charCode > 0xFF) {"
+        "        throw new Error(\"'btoa' failed: The string to be encoded contains characters outside of the Latin1 range.\");"
+        "      }"
+        "      block = block << 8 | charCode;"
+        "    }"
+        "    return output;"
+        "  };"
+        "  globalThis.atob = function(input) {"
+        "    let str = String(input).replace(/=+$/, '');"
+        "    let output = '';"
+        "    if (str.length % 4 == 1) {"
+        "      throw new Error(\"'atob' failed: The string to be decoded is not correctly encoded.\");"
+        "    }"
+        "    for (let bc = 0, bs = 0, buffer, i = 0; "
+        "      buffer = str.charAt(i++); "
+        "      ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, "
+        "        bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0"
+        "    ) {"
+        "      buffer = chars.indexOf(buffer);"
+        "    }"
+        "    return output;"
+        "  };"
+        "})();";
+
+    JSValue result = JS_Eval(ctx, base64_polyfill, strlen(base64_polyfill), "<base64-polyfill>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        fprintf(stderr, "[WARN] Failed to add Base64 polyfills: %s\n", error);
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    } else {
+        JS_FreeValue(ctx, result);
     }
 }
 
@@ -319,6 +401,66 @@ static void add_web_apis(JSContext *ctx) {
     } else {
         JS_FreeValue(ctx, result);
     }
+}
+
+// C callback for JS console: __bunbase_log(level, message). Sends log to host via send_log.
+static JSValue js_bunbase_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *level = "info";
+    const char *message = "";
+    const char *level_to_free = NULL;
+    const char *message_to_free = NULL;
+    if (argc >= 2) {
+        level_to_free = JS_ToCString(ctx, argv[0]);
+        message_to_free = JS_ToCString(ctx, argv[1]);
+        level = level_to_free ? level_to_free : "info";
+        message = message_to_free ? message_to_free : "";
+    } else if (argc >= 1) {
+        message_to_free = JS_ToCString(ctx, argv[0]);
+        message = message_to_free ? message_to_free : "";
+    }
+    send_log(current_invoke_id[0] ? current_invoke_id : "bundle", level, message);
+    if (level_to_free) JS_FreeCString(ctx, level_to_free);
+    if (message_to_free) JS_FreeCString(ctx, message_to_free);
+    return JS_UNDEFINED;
+}
+
+/* Helper: stringify multiple args for console.log("a", 1) -> "a 1" */
+static void add_console_override(JSContext *ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue log_fn = JS_NewCFunction(ctx, js_bunbase_log, "__bunbase_log", 2);
+    JS_SetPropertyStr(ctx, global, "__bunbase_log", log_fn);
+
+    const char *console_inject =
+        "(function(){"
+        "  function stringifyArgs(args){"
+        "    if (!args || args.length === 0) return '';"
+        "    try {"
+        "      return Array.from(args).map(function(x){"
+        "        if (x === null) return 'null';"
+        "        if (typeof x === 'object') return JSON.stringify(x);"
+        "        return String(x);"
+        "      }).join(' ');"
+        "    } catch(e) { return String(args[0]); }"
+        "  }"
+        "  globalThis.console = {"
+        "    log: function(){ __bunbase_log('info', stringifyArgs(arguments)); },"
+        "    info: function(){ __bunbase_log('info', stringifyArgs(arguments)); },"
+        "    warn: function(){ __bunbase_log('warn', stringifyArgs(arguments)); },"
+        "    error: function(){ __bunbase_log('error', stringifyArgs(arguments)); },"
+        "    debug: function(){ __bunbase_log('debug', stringifyArgs(arguments)); }"
+        "  };"
+        "})();";
+    JSValue result = JS_Eval(ctx, console_inject, strlen(console_inject), "<console-override>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        fprintf(stderr, "[WARN] Failed to add console override: %s\n", error);
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    } else {
+        JS_FreeValue(ctx, result);
+    }
+    JS_FreeValue(ctx, global);
 }
 
 // Enforce resource limits
@@ -527,7 +669,12 @@ static int execute_handler(const char *invoke_id, const char *method, const char
         send_error(invoke_id, "Handler not loaded", "HANDLER_NOT_LOADED");
         return -1;
     }
-    
+    current_invoke_id[0] = '\0';
+    if (invoke_id) {
+        strncpy(current_invoke_id, invoke_id, sizeof(current_invoke_id) - 1);
+        current_invoke_id[sizeof(current_invoke_id) - 1] = '\0';
+    }
+
     // Create Request object with proper URL
     char request_code[8192];
     // Build full URL with path (query params will be added via searchParams)
@@ -559,6 +706,7 @@ static int execute_handler(const char *invoke_id, const char *method, const char
         send_error(invoke_id, error, "REQUEST_CREATION_ERROR");
         JS_FreeCString(ctx, error);
         JS_FreeValue(ctx, exception);
+        current_invoke_id[0] = '\0';
         return -1;
     }
     
@@ -572,6 +720,7 @@ static int execute_handler(const char *invoke_id, const char *method, const char
         send_error(invoke_id, error, "HANDLER_ERROR");
         JS_FreeCString(ctx, error);
         JS_FreeValue(ctx, exception);
+        current_invoke_id[0] = '\0';
         return -1;
     }
     
@@ -583,6 +732,7 @@ static int execute_handler(const char *invoke_id, const char *method, const char
         send_error(invoke_id, error, "HANDLER_ERROR");
         JS_FreeCString(ctx, error);
         JS_FreeValue(ctx, exception);
+        current_invoke_id[0] = '\0';
         return -1;
     }
     
@@ -686,6 +836,7 @@ static int execute_handler(const char *invoke_id, const char *method, const char
     JS_FreeValue(ctx, body_val);
     JS_FreeValue(ctx, result);
     
+    current_invoke_id[0] = '\0';
     return 0;
 }
 
@@ -837,7 +988,9 @@ int main(int argc, char **argv) {
     js_std_add_helpers(ctx, argc, argv);
     
     // Add Web API polyfills (URL, Response, Request)
+    add_base64_polyfills(ctx);
     add_web_apis(ctx);
+    add_console_override(ctx);
     
     // Disable eval if not allowed
     if (!caps.allow_eval) {
