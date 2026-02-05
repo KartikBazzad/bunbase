@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/bundoc"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
@@ -17,12 +20,58 @@ import (
 
 // DocumentHandlers handles HTTP requests for document operations
 type DocumentHandlers struct {
-	manager *manager.InstanceManager
+	manager       *manager.InstanceManager
+	buncastClient *client.Client
 }
 
 // NewDocumentHandlers creates document handlers
-func NewDocumentHandlers(mgr *manager.InstanceManager) *DocumentHandlers {
-	return &DocumentHandlers{manager: mgr}
+func NewDocumentHandlers(mgr *manager.InstanceManager, buncastClient *client.Client) *DocumentHandlers {
+	return &DocumentHandlers{
+		manager:       mgr,
+		buncastClient: buncastClient,
+	}
+}
+
+// DocumentChangeEvent is published to Buncast for each document mutation.
+type DocumentChangeEvent struct {
+	ProjectID  string                 `json:"projectId"`
+	Collection string                 `json:"collection"`
+	DocID      string                 `json:"docId,omitempty"`
+	Op         string                 `json:"op"` // create | update | delete
+	Doc        map[string]interface{} `json:"doc,omitempty"`
+	Timestamp  time.Time              `json:"ts"`
+}
+
+func (h *DocumentHandlers) publishChange(projectID, collection, docID, op string, doc map[string]interface{}) {
+	if h.buncastClient == nil {
+		return
+	}
+
+	topic := fmt.Sprintf("db.%s.collection.%s", projectID, collection)
+	ev := DocumentChangeEvent{
+		ProjectID:  projectID,
+		Collection: collection,
+		DocID:      docID,
+		Op:         op,
+		Doc:        doc,
+		Timestamp:  time.Now().UTC(),
+	}
+
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		// Best-effort: log and continue
+		log.Printf("[Buncast] Marshal error for topic %s: %v", topic, err)
+		return
+	}
+
+	go func() {
+		log.Printf("[Buncast] Publishing %s event to topic %s (docId=%s)", op, topic, docID)
+		if err := h.buncastClient.Publish(topic, payload); err != nil {
+			log.Printf("[Buncast] Publish error for topic %s: %v", topic, err)
+		} else {
+			log.Printf("[Buncast] Successfully published %s event to topic %s", op, topic)
+		}
+	}()
 }
 
 // Helper to extract AuthContext
@@ -146,6 +195,19 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Publish change event (best-effort)
+	var docMap map[string]interface{}
+	if raw, err := json.Marshal(doc); err == nil {
+		_ = json.Unmarshal(raw, &docMap)
+	}
+	docID := ""
+	if docMap != nil {
+		if v, ok := docMap["_id"].(string); ok {
+			docID = v
+		}
+	}
+	h.publishChange(projectID, collection, docID, "create", docMap)
 
 	// Return created document
 	h.writeJSON(w, http.StatusCreated, doc)
@@ -346,6 +408,10 @@ func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Publish change event (best-effort). We don't have the full document here,
+	// so we emit only the updates and identifiers.
+	h.publishChange(projectID, foundCollection.Name(), docID, "update", updates)
+
 	h.writeJSON(w, http.StatusOK, updates)
 }
 
@@ -410,6 +476,9 @@ func (h *DocumentHandlers) HandleDeleteDocument(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Publish change event (best-effort). No document body on delete.
+	h.publishChange(projectID, foundCollection.Name(), docID, "delete", nil)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -850,40 +919,110 @@ func (h *DocumentHandlers) HandleDeleteIndex(w http.ResponseWriter, r *http.Requ
 // Helper functions
 
 func (h *DocumentHandlers) parseProjectAndCollection(path string) (string, string) {
-	// /v1/projects/{projectId}/databases/(default)/documents/{collection}
+	// Robust parsing: find "projects" and collection name.
+	// Paths:
+	// /v1/projects/{projectId}/databases/(default)/collections/{collection}/documents
+	// /v1/projects/{projectId}/databases/(default)/documents/{collection}  (tenant-auth, etc.)
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 7 {
-		return "", ""
+
+	// Find project ID (after "projects")
+	projectID := ""
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			projectID = parts[i+1]
+			break
+		}
 	}
-	return parts[2], parts[6]
+
+	// Find collection: after "collections" or after "documents"
+	collection := ""
+	for i, p := range parts {
+		if p == "collections" && i+1 < len(parts) {
+			collection = parts[i+1]
+			break
+		}
+	}
+	if collection == "" {
+		for i, p := range parts {
+			if p == "documents" && i+1 < len(parts) {
+				collection = parts[i+1]
+				break
+			}
+		}
+	}
+
+	return projectID, collection
 }
 
 func (h *DocumentHandlers) parseProjectCollectionAndDoc(path string) (string, string, string) {
 	// /v1/projects/{projectId}/databases/(default)/documents/{collection}/{docId}
+	// Or .../database/collections/{collection}/documents/{docId} <-- Not standard?
+	// Actually HandleGetDocument uses this.
+	// Check usage: HandleGetDocument maps .../documents/{collection}/{docId} ? No.
+	// Current standard for Docs: .../documents/{collection}/{docId} or .../collections/{collection}/documents/{docId}
+
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 8 {
-		return "", "", ""
+
+	projectID := ""
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			projectID = parts[i+1]
+			break
+		}
 	}
-	return parts[2], parts[6], parts[7]
+
+	// Strategy: Use "documents" or "collections" anchor?
+	// Handler routing:
+	// .../documents/{collection}/{docId} (Old style?)
+	// Let's assume strict structure relative to "documents" keyword?
+
+	// If path contains "documents", we assume parts after it.
+	// .../documents/{collection}/{docId}
+	collection := ""
+	docID := ""
+
+	for i, p := range parts {
+		if p == "documents" && i+2 < len(parts) {
+			collection = parts[i+1]
+			docID = parts[i+2]
+			break
+		}
+	}
+
+	// If ID not found? Maybe client uses different path?
+	return projectID, collection, docID
 }
 
 func (h *DocumentHandlers) parseProjectFromCollectionsPath(path string) string {
 	// /v1/projects/{projectId}/databases/(default)/collections
+	// /v1/projects/{projectId}/database/collections
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 6 || parts[5] != "collections" {
-		return ""
+
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			return parts[i+1]
+		}
 	}
-	return parts[2]
+	return ""
 }
 
 func (h *DocumentHandlers) ParseProjectAndCollectionFromCollectionPath(path string) (string, string) {
 	// /v1/projects/{projectId}/databases/(default)/collections/{collection...}
+	// /v1/projects/{projectId}/database/collections/{collection...}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 7 || parts[5] != "collections" {
-		return "", ""
+
+	projectID := ""
+	collection := ""
+
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			projectID = parts[i+1]
+		}
+		if p == "collections" && i+1 < len(parts) {
+			collection = strings.Join(parts[i+1:], "/")
+			break
+		}
 	}
-	projectID := parts[2]
-	collection := strings.Join(parts[6:], "/")
 	return projectID, collection
 }
 

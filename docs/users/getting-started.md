@@ -35,6 +35,14 @@ After logging in, you'll see the dashboard. Click **"Create Project"** and give 
 - Each project can contain multiple functions
 - Projects help organize your functions and manage access
 
+### API keys
+
+Each project has a **project API key** (e.g. `pk_...`) used to authenticate clients (SDK, apps, CLI) with that project's database and functions.
+
+- **Where to find it**: Open the project in the dashboard, go to **Settings**. The API key is shown in the **API key** section with a Copy button.
+- **How to use it**: Send the key in the `X-Bunbase-Client-Key` header, or pass it to the TypeScript SDK: `createClient(platformUrl, apiKey, projectId)`.
+- **Regenerating**: Use **Regenerate** in project Settings to create a new key. The old key stops working immediately; copy the new key once (it won't be shown again).
+
 ### 3. Deploy Your First Function
 
 #### Option A: Using the CLI (Recommended)

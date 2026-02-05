@@ -268,8 +268,8 @@ func (db *BundocDB) UpdateAuthConfig(ctx context.Context, projectID uuid.UUID, c
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Create it
-		urlCreate := fmt.Sprintf("%s/v1/projects/%s/databases/(default)/documents/settings", db.baseURL, projectID.String())
+		// Create it: Bundoc expects POST to .../collections/{collection}/documents (not .../documents/settings)
+		urlCreate := fmt.Sprintf("%s/v1/projects/%s/databases/(default)/collections/settings/documents", db.baseURL, projectID.String())
 		// Ensure body has _id
 		config.ID = "auth_config"
 		createBody, _ := json.Marshal(config)

@@ -19,8 +19,10 @@ services:
       PLATFORM_FUNCTIONS_URL: http://functions:8080
       PLATFORM_BUNDLE_PATH: /app/data/bundles
       TENANT_AUTH_URL: http://tenant-auth:8083
+      PLATFORM_BUNCAST_SOCKET: /tmp/buncast.sock
     volumes:
       - functions_data:/app/data
+      - buncast_socket:/tmp
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,6 +31,8 @@ services:
       tenant-auth:
         condition: service_started
       functions:
+        condition: service_started
+      buncast:
         condition: service_started
     networks:
       - bunbase-net
@@ -95,14 +99,43 @@ services:
       TENANTAUTH_PORT: 8083
       TENANTAUTH_JWT_SECRET: tenant-dev-secret-key
       TENANTAUTH_BUNDOC_URL: http://bundoc-auth:8080
+      TENANTAUTH_BUNKMS_URL: http://bunkms:8080
+      # TENANTAUTH_BUNKMS_TOKEN: ""  # set if bunkms has BUNKMS_JWT_SECRET
     depends_on:
-      - bundoc-auth
+      bundoc-auth:
+        condition: service_started
+      bunkms:
+        condition: service_healthy
     networks:
       - bunbase-net
     ports:
       - "8083:8083"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  bunkms:
+    build:
+      context: .
+      dockerfile: bun-kms/Dockerfile
+    container_name: bunbase-kms
+    restart: always
+    environment:
+      BUNKMS_ADDR: ":8080"
+      # 32-byte key (base64): "0123456789abcdef0123456789abcdef"
+      BUNKMS_MASTER_KEY: "base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+      BUNKMS_DATA_PATH: /data
+      BUNKMS_AUDIT_LOG: /data/audit.log
+    volumes:
+      - bunkms_data:/data
+    networks:
+      - bunbase-net
+    ports:
+      - "8087:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -115,12 +148,17 @@ services:
     restart: always
     environment:
       PORT: 8080
+      BUNDOC_BUNCAST_SOCKET: /tmp/buncast.sock
     volumes:
       - bundoc_data_data:/app/data
+      - buncast_socket:/tmp
     networks:
       - bunbase-net
     ports:
       - "8085:8080"
+    depends_on:
+      buncast:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 5s
@@ -218,6 +256,24 @@ services:
       timeout: 5s
       retries: 5
 
+  buncast:
+    build:
+      context: .
+      dockerfile: buncast/Dockerfile
+    container_name: bunbase-buncast
+    restart: always
+    volumes:
+      - buncast_socket:/tmp
+    networks:
+      - bunbase-net
+    ports:
+      - "8088:8081" # HTTP API for SSE subscriptions
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   bunder-sys:
     build:
       context: .
@@ -311,3 +367,5 @@ volumes:
   bundoc_data_data:
   bundoc_auth_data:
   functions_data:
+  bunkms_data:
+  buncast_socket:

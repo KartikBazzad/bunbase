@@ -188,9 +188,26 @@ func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		http.Error(w, "Invalid claims", http.StatusUnauthorized)
+		return
+	}
+
+	// Load user profile so platform can show email, name, created_at
+	user, err := h.db.GetUserByID(r.Context(), sub)
+	if err != nil {
+		// Token valid but user no longer in DB — invalidate session (force logout)
+		http.Error(w, "user not found", http.StatusUnauthorized)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"valid":   true,
-		"user_id": claims["sub"],
+		"valid":       true,
+		"user_id":     user.ID.String(),
+		"email":       user.Email,
+		"name":        user.Name,
+		"created_at":  user.CreatedAt.Format(time.RFC3339),
 	})
 }

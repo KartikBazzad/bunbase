@@ -170,7 +170,7 @@ func DecodePublishPayload(payload []byte) (topic string, body []byte, err error)
 	}
 	topicLen := binary.LittleEndian.Uint16(payload[0:])
 	offset := TopicLenSize
-	if int(offset+topicLen) > len(payload) {
+	if offset+int(topicLen) > len(payload) {
 		return "", nil, ErrInvalidFrame
 	}
 	topic = string(payload[offset : offset+int(topicLen)])

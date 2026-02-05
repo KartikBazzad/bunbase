@@ -38,7 +38,8 @@ func (h *TenantAuthHandler) ListProjectUsers(c *gin.Context) {
 
 	users, err := h.client.ListUsers(projectID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Return 200 with empty list so the console still loads; include error for UI to show
+		c.JSON(http.StatusOK, gin.H{"users": []interface{}{}, "error": err.Error()})
 		return
 	}
 
@@ -51,7 +52,12 @@ func (h *TenantAuthHandler) GetProjectAuthConfig(c *gin.Context) {
 	projectID := c.Param("id")
 	config, err := h.client.GetConfig(projectID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Return 200 with default config so the console still loads; include error for UI to show
+		c.JSON(http.StatusOK, gin.H{
+			"providers":  map[string]interface{}{},
+			"rate_limit": map[string]interface{}{},
+			"error":      err.Error(),
+		})
 		return
 	}
 	c.JSON(http.StatusOK, config)
@@ -73,5 +79,32 @@ func (h *TenantAuthHandler) UpdateProjectAuthConfig(c *gin.Context) {
 		return
 	}
 
-	c.Status(http.StatusOK)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// CreateProjectUser creates a new auth user for the project (admin/console).
+// POST /api/projects/:id/auth/users
+func (h *TenantAuthHandler) CreateProjectUser(c *gin.Context) {
+	projectID := c.Param("id")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID required"})
+		return
+	}
+
+	var body struct {
+		Email    string `json:"email" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email and password required"})
+		return
+	}
+
+	user, err := h.client.Register(projectID, body.Email, body.Password)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, user)
 }

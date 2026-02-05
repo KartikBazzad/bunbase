@@ -224,31 +224,31 @@ func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
 	c.Writer.Write(body)
 }
 
-// InvokeProjectFunction handles function invocation from the console (via Project ID)
+// InvokeProjectFunction handles function invocation (via Project ID; user or project API key).
 func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
-	user, ok := middleware.RequireAuth(c)
-	if !ok {
-		return
-	}
-
 	projectID := c.Param("id")
 	functionName := c.Param("name")
 
-	// Check if user has access to this project
-	// We allow Members to invoke functions for testing
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	// Allow if authorized by project API key
+	if middleware.GetProjectKeyProjectID(c) != projectID {
+		user, ok := middleware.RequireAuth(c)
+		if !ok {
+			return
+		}
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	if functionName == "" {

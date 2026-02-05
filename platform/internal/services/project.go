@@ -83,21 +83,22 @@ func (s *ProjectService) CreateProject(name, ownerID string) (*models.Project, e
 	return s.GetProjectByID(projectID)
 }
 
-// GetProjectByID retrieves a project by ID
+// GetProjectByID retrieves a project by ID (includes public_api_key for single-project fetch).
 func (s *ProjectService) GetProjectByID(id string) (*models.Project, error) {
 	var project models.Project
+	var apiKey *string
 
 	err := s.db.QueryRow(context.Background(),
-		"SELECT id, name, slug, owner_id, created_at, updated_at FROM projects WHERE id = $1",
+		"SELECT id, name, slug, owner_id, public_api_key, created_at, updated_at FROM projects WHERE id = $1",
 		id,
-	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &project.CreatedAt, &project.UpdatedAt)
+	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &apiKey, &project.CreatedAt, &project.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}
 		return nil, fmt.Errorf("failed to get project: %w", err)
 	}
-
+	project.PublicAPIKey = apiKey
 	return &project, nil
 }
 
@@ -220,4 +221,25 @@ func (s *ProjectService) GetProjectIDByPublicKey(key string) (string, error) {
 		return "", fmt.Errorf("failed to get project: %w", err)
 	}
 	return id, nil
+}
+
+// RegenerateProjectAPIKey generates a new public API key for the project and returns the project and the new key (shown once).
+// Caller must ensure the user is owner or admin.
+func (s *ProjectService) RegenerateProjectAPIKey(projectID string) (*models.Project, string, error) {
+	ctx := context.Background()
+	newKey := "pk_" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	_, err := s.db.Exec(ctx,
+		"UPDATE projects SET public_api_key = $1, updated_at = $2 WHERE id = $3",
+		newKey, time.Now(), projectID,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to regenerate api key: %w", err)
+	}
+	project, err := s.GetProjectByID(projectID)
+	if err != nil {
+		return nil, "", err
+	}
+	// Return the new key in plain form (only time it's returned)
+	project.PublicAPIKey = &newKey
+	return project, newKey, nil
 }

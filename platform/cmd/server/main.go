@@ -13,6 +13,7 @@ import (
 	"github.com/kartikbazzad/bunbase/pkg/bunauth"
 	"github.com/kartikbazzad/bunbase/pkg/config"
 
+	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/database"
@@ -56,6 +57,9 @@ func main() {
 	}
 	if val := os.Getenv("PLATFORM_BUILDER_SCRIPT"); val != "" {
 		*builderScript = val
+	}
+	if val := os.Getenv("PLATFORM_BUNCAST_SOCKET"); val != "" {
+		*buncastSocket = val
 	}
 
 	// Load Config
@@ -135,6 +139,20 @@ func main() {
 	}
 	defer functionService.Close()
 
+	// Initialize Buncast client for realtime subscriptions (optional)
+	var buncastClient *client.Client
+	if *buncastSocket != "" {
+		buncastClient = client.New(*buncastSocket)
+		log.Printf("Realtime: Buncast client enabled (socket=%s)", *buncastSocket)
+	} else {
+		log.Printf("Realtime: Buncast client disabled (no -buncast-socket)")
+	}
+
+	subscriptionManager := services.NewSubscriptionManager(buncastClient)
+	if buncastClient != nil && *buncastSocket != "" {
+		subscriptionManager.SetSocketPath(*buncastSocket)
+	}
+
 	tokenService := services.NewTokenService(db.Pool)
 	projectConfigService := services.NewProjectConfigService(*gatewayURL)
 
@@ -145,7 +163,7 @@ func main() {
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
 	functionHandler := handlers.NewFunctionHandler(functionService, projectService, *functionsURL)
 	tokenHandler := handlers.NewTokenHandler(tokenService)
-	databaseHandler := handlers.NewDatabaseHandler(bundocClient, projectService)
+	databaseHandler := handlers.NewDatabaseHandler(bundocClient, projectService, subscriptionManager)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -204,7 +222,33 @@ func main() {
 	v1AuthStandard.GET("/me", authHandler.Me)
 	v1AuthStandard.GET("/stream", authHandler.AuthStream)
 
-	// Also alias Project routes to /v1/projects for Web Console
+	// Also alias Project routes to /v1/projects for Web Console.
+	// Routes that accept project API key (database, function invoke) use ProjectKeyOrUserAuthMiddleware and are registered first.
+	v1ProjectsKeyOrUser := v1.Group("/projects")
+	v1ProjectsKeyOrUser.Use(middleware.ProjectKeyOrUserAuthMiddleware(authService, tokenService, projectService))
+	v1ProjectDBKeyOrUser := v1ProjectsKeyOrUser.Group("/:id/database")
+	v1ProjectDBKeyOrUser.GET("/collections", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.GET("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.PATCH("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.PATCH("/collections/:collection/rules", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.GET("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.POST("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.DELETE("/collections/:collection/indexes/:field", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.POST("/collections/:collection/documents/query", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.PATCH("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1ProjectDBKeyOrUser.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	// Realtime subscriptions (SSE) - also available via v1 API
+	v1ProjectDBKeyOrUser.GET("/collections/:collection/subscribe", databaseHandler.HandleCollectionSubscribe)
+	v1ProjectDBKeyOrUser.POST("/collections/:collection/documents/query/subscribe", databaseHandler.HandleQuerySubscribe)
+	v1ProjectsKeyOrUser.POST("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+	v1ProjectsKeyOrUser.GET("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+
 	v1Projects := v1.Group("/projects")
 	v1Projects.Use(middleware.AuthAnyMiddleware(authService, tokenService))
 	v1Projects.GET("", projectHandler.ListProjects)
@@ -215,25 +259,18 @@ func main() {
 	v1Projects.PUT("/:id", projectHandler.UpdateProject)
 	v1Projects.PATCH("/:id", projectHandler.UpdateProject)
 	v1Projects.DELETE("/:id", projectHandler.DeleteProject)
-
-	// Function routes (v1)
+	v1Projects.POST("/:id/regenerate-api-key", projectHandler.RegenerateProjectAPIKey)
 	v1Projects.GET("/:id/functions", functionHandler.ListFunctions)
 	v1Projects.GET("/:id/functions/logs", functionHandler.GetProjectFunctionLogs)
 	v1Projects.POST("/:id/functions", functionHandler.DeployFunction)
 	v1Projects.DELETE("/:id/functions/:functionId", functionHandler.DeleteFunction)
 
-	// Database routes (v1 - developer access)
-	v1ProjectDB := v1Projects.Group("/:id/database")
-	v1ProjectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.POST("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.DELETE("/collections/:collection/indexes/:field", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
-	v1ProjectDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	// Tenant auth routes (v1 - for Web Console)
+	v1ProjectAuth := v1Projects.Group("/:id/auth")
+	v1ProjectAuth.GET("/users", tenantAuthHandler.ListProjectUsers)
+	v1ProjectAuth.POST("/users", tenantAuthHandler.CreateProjectUser)
+	v1ProjectAuth.GET("/config", tenantAuthHandler.GetProjectAuthConfig)
+	v1ProjectAuth.PUT("/config", tenantAuthHandler.UpdateProjectAuthConfig)
 
 	// Project routes (protected; accept cookie or token auth)
 	projectsAPI := api.Group("/projects")
@@ -246,6 +283,7 @@ func main() {
 	projectsAPI.PUT("/:id", projectHandler.UpdateProject)
 	projectsAPI.PATCH("/:id", projectHandler.UpdateProject)
 	projectsAPI.DELETE("/:id", projectHandler.DeleteProject)
+	projectsAPI.POST("/:id/regenerate-api-key", projectHandler.RegenerateProjectAPIKey)
 
 	// Function routes (protected)
 	projectsAPI.GET("/:id/functions", functionHandler.ListFunctions)
@@ -260,7 +298,9 @@ func main() {
 	// /api/projects/:id/database/collections
 	projectDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
 	projectDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	projectDB.GET("/collections/:collection", databaseHandler.DeveloperProxyHandler)   // Get collection (schema, rules)
 	projectDB.PATCH("/collections/:collection", databaseHandler.DeveloperProxyHandler) // Schema Update
+	projectDB.PATCH("/collections/:collection/rules", databaseHandler.DeveloperProxyHandler)
 	projectDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
 
 	// Indexes
@@ -279,9 +319,14 @@ func main() {
 	projectDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
 	projectDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
 
+	// Realtime subscriptions (SSE)
+	projectDB.GET("/collections/:collection/subscribe", databaseHandler.HandleCollectionSubscribe)
+	projectDB.POST("/collections/:collection/documents/query/subscribe", databaseHandler.HandleQuerySubscribe)
+
 	// Auth Configuration routes (protected)
 	projectAuth := projectsAPI.Group("/:id/auth")
 	projectAuth.GET("/users", tenantAuthHandler.ListProjectUsers)
+	projectAuth.POST("/users", tenantAuthHandler.CreateProjectUser)
 	projectAuth.GET("/config", tenantAuthHandler.GetProjectAuthConfig)
 	projectAuth.PUT("/config", tenantAuthHandler.UpdateProjectAuthConfig)
 

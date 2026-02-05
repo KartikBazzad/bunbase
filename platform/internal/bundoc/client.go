@@ -24,10 +24,10 @@ func NewClient(baseURL string) *Client {
 }
 
 // ProxyRequest forwards a request to the Bundoc backend.
-// pathComponent: /databases/{db}/documents/{coll}
+// path must be the suffix only (e.g. BundocDBPath + "/collections/users/documents").
+// See paths.go and docs/api-paths.md for the canonical shape.
 func (c *Client) ProxyRequest(method, projectID, path string, body []byte) (int, []byte, error) {
-	// Construct backend URL: /v1/projects/{projectID}{path}
-	// e.g. /v1/projects/PROJ_ID/databases/default/documents/users
+	// URL = BaseURL + "/v1/projects/" + projectID + path
 
 	// Normalize path (ensure leading slash)
 	if !strings.HasPrefix(path, "/") {

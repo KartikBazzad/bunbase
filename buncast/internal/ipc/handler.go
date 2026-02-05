@@ -30,8 +30,9 @@ func NewHandler(b *broker.Broker, cfg *config.Config, log *logger.Logger) *Handl
 
 // SubscribeSession is returned for CmdSubscribe so the server can unregister on disconnect.
 type SubscribeSession struct {
-	Topic string
-	Sub   broker.Subscriber
+	Topic     string
+	Sub       broker.Subscriber
+	CloseChan chan struct{} // Closed when connection is closed (write error detected)
 }
 
 // Handle processes a request and returns a response and optional subscribe session.
@@ -109,6 +110,7 @@ func (h *Handler) handlePublish(req *RequestFrame, resp *ResponseFrame) (*Respon
 		return resp, nil
 	}
 	h.broker.CreateTopic(topic)
+	h.logger.Info("IPC publish topic=%s subscribers=%d payload_bytes=%d", topic, h.broker.SubscriberCount(topic), len(body))
 	msg := &broker.Message{Topic: topic, Payload: body}
 	h.broker.Publish(msg)
 	resp.Status = StatusOK
@@ -118,9 +120,10 @@ func (h *Handler) handlePublish(req *RequestFrame, resp *ResponseFrame) (*Respon
 
 // connSubscriber implements broker.Subscriber by writing message frames to a connection.
 type connSubscriber struct {
-	conn   net.Conn
-	mu     sync.Mutex
-	logger *logger.Logger
+	conn      net.Conn
+	mu        sync.Mutex
+	logger    *logger.Logger
+	closeChan chan struct{} // Closed when write fails (connection closed)
 }
 
 func (c *connSubscriber) Send(msg *broker.Message) {
@@ -138,7 +141,14 @@ func (c *connSubscriber) Send(msg *broker.Message) {
 	}
 	c.mu.Unlock()
 	if err != nil {
-		c.logger.Debug("subscriber write: %v", err)
+		// Connection closed or error - signal close
+		select {
+		case <-c.closeChan:
+			// Already closed
+		default:
+			close(c.closeChan)
+		}
+		c.logger.Debug("subscriber write error (client likely disconnected): %v", err)
 	}
 }
 
@@ -150,11 +160,13 @@ func (h *Handler) handleSubscribe(conn net.Conn, req *RequestFrame, resp *Respon
 		return resp, nil
 	}
 	h.broker.CreateTopic(topic)
-	sub := &connSubscriber{conn: conn, logger: h.logger}
+	closeChan := make(chan struct{})
+	sub := &connSubscriber{conn: conn, logger: h.logger, closeChan: closeChan}
 	h.broker.Subscribe(topic, sub)
+	h.logger.Info("IPC subscribe topic=%s subscribers=%d", topic, h.broker.SubscriberCount(topic))
 	resp.Status = StatusOK
 	resp.Payload = []byte("{}")
-	return resp, &SubscribeSession{Topic: topic, Sub: sub}
+	return resp, &SubscribeSession{Topic: topic, Sub: sub, CloseChan: closeChan}
 }
 
 // ErrorPayload returns a JSON error payload.

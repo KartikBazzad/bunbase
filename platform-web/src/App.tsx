@@ -18,6 +18,7 @@ import { Database } from "./pages/Database";
 import { Functions } from "./pages/Functions";
 import { FunctionLogs } from "./pages/FunctionLogs";
 import { Settings } from "./pages/Settings";
+import { Authentication } from "./pages/Authentication";
 import { NotFound } from "./pages/NotFound";
 import "./App.css";
 
@@ -94,6 +95,16 @@ function App() {
                 <ProtectedRoute>
                   <DashboardLayout>
                     <Settings />
+                  </DashboardLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:id/authentication"
+              element={
+                <ProtectedRoute>
+                  <DashboardLayout>
+                    <Authentication />
                   </DashboardLayout>
                 </ProtectedRoute>
               }

@@ -9,6 +9,7 @@ import {
   Database,
   Zap,
   Settings,
+  Key,
   LogOut,
 } from "lucide-react";
 
@@ -30,7 +31,7 @@ export function Sidebar() {
 
   const projectBase = location.pathname.startsWith("/projects/")
     ? location.pathname.replace(
-        /\/(overview|database|functions|settings).*$/,
+        /\/(overview|database|functions|settings|authentication).*$/,
         ""
       )
     : "";
@@ -117,6 +118,21 @@ export function Sidebar() {
                   <Zap className="w-5 h-5 shrink-0" />
                   <span className="text-sm font-medium is-drawer-close:hidden">
                     Functions
+                  </span>
+                </Link>
+              </PortalTooltip>
+              <PortalTooltip label="Authentication">
+                <Link
+                  to={`${projectBase}/authentication`}
+                  className={`${linkBase} ${
+                    location.pathname.includes("/authentication")
+                      ? "bg-primary text-primary-content"
+                      : "hover:bg-base-200 text-base-content/70"
+                  }`}
+                >
+                  <Key className="w-5 h-5 shrink-0" />
+                  <span className="text-sm font-medium is-drawer-close:hidden">
+                    Authentication
                   </span>
                 </Link>
               </PortalTooltip>

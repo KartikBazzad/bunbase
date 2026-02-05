@@ -5,16 +5,18 @@ WORKDIR /app
 # Copy shared pkg and module configurations
 COPY pkg/go.mod pkg/go.sum ./pkg/
 COPY bundoc/go.mod ./bundoc/
+COPY buncast/go.mod ./buncast/
 COPY bundoc-server/go.mod ./bundoc-server/
 
 # Initialize workspace
 WORKDIR /app
-RUN go work init ./bundoc-server ./bundoc ./pkg
+RUN go work init ./bundoc-server ./bundoc ./buncast ./pkg
 RUN go mod download
 
 # Copy source code
 COPY pkg ./pkg
 COPY bundoc ./bundoc
+COPY buncast ./buncast
 COPY bundoc-server ./bundoc-server
 
 WORKDIR /app/bundoc-server

@@ -125,3 +125,20 @@ func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 
 	return &user, nil
 }
+
+// GetUserByID retrieves a user by ID (for verify/session profile)
+func (db *DB) GetUserByID(ctx context.Context, id string) (*User, error) {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return nil, errors.NotFound("user not found")
+	}
+	var user User
+	err = db.pool.QueryRow(ctx, `
+		SELECT id, email, password_hash, name, created_at
+		FROM users WHERE id = $1
+	`, uid).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.Name, &user.CreatedAt)
+	if err != nil {
+		return nil, errors.NotFound("user not found")
+	}
+	return &user, nil
+}

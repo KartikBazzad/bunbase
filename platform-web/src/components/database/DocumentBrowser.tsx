@@ -20,8 +20,9 @@ const PAGE_SIZE = 20;
 const MAX_DATA_COLUMNS = 5;
 
 function getDataColumns(documents: any[]): string[] {
-  if (documents.length === 0) return [];
+  if (!Array.isArray(documents) || documents.length === 0) return [];
   const doc = documents[0];
+  if (doc == null || typeof doc !== "object") return [];
   const keys = Object.keys(doc).filter(
     (k) => k !== "_id" && k !== "id",
   ) as string[];
@@ -110,7 +111,7 @@ export function DocumentBrowser({
 
       if (searchQuery.trim()) {
         // Try to parse query as JSON
-        let queryObj = {};
+        let queryObj: Record<string, unknown> = {};
         try {
           queryObj = JSON.parse(searchQuery);
           // If valid JSON, use it
@@ -123,7 +124,7 @@ export function DocumentBrowser({
           // Fallback: don't query?
         }
 
-        if (Object.keys(queryObj).length > 0) {
+        if (queryObj && typeof queryObj === "object" && Object.keys(queryObj).length > 0) {
           const res: any = await api.queryDocuments(
             projectId,
             collection,
@@ -147,11 +148,15 @@ export function DocumentBrowser({
         list = Array.isArray(data) ? data : (data as any).documents || [];
       }
 
-      setDocuments(list);
-      onDocumentsLoaded?.(list.length); // Total count unknown without count API
+      // Ensure we only store valid document objects (avoid null/undefined causing Object.keys to throw)
+      const validList = Array.isArray(list)
+        ? list.filter((d) => d != null && typeof d === "object")
+        : [];
+      setDocuments(validList);
+      onDocumentsLoaded?.(validList.length); // Total count unknown without count API
 
       // Heuristic for hasMore
-      setHasMore(list.length === PAGE_SIZE);
+      setHasMore(validList.length === PAGE_SIZE);
     } catch (err) {
       setError("Failed to load documents");
       console.error(err);

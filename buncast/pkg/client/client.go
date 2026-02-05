@@ -290,33 +290,28 @@ func (c *Client) Subscribe(topic string, fn func(msg *Message) error) error {
 		return err
 	}
 
-	c.mu.Lock()
+	// IMPORTANT: Do NOT hold c.mu while calling sendRequest.
+	// sendRequest already takes c.mu, and re-locking here would deadlock.
+	//
+	// Also note: after this Subscribe request, the server streams message frames on this same connection.
+	// While Subscribe is running, this Client connection must be treated as exclusive-use (no concurrent
+	// Publish/ListTopics/etc). The platform code uses a dedicated client per subscription to guarantee that.
 	status, respPayload, err := c.sendRequest(cmdSubscribe, payload)
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	if status != statusOK {
-		c.mu.Unlock()
 		return decodeError(respPayload)
 	}
-	// After Subscribe response, server streams message frames; we don't release the lock for sendRequest
-	// but sendRequest already released. So we're still holding the lock. We need to read frames in a loop.
-	// Actually sendRequest does Lock/Unlock, so after sendRequest we're unlocked. Now we need to read
-	// length-prefixed message frames from the connection. We must not call sendRequest again on this
-	// connection while we're in Subscribe. So we need a dedicated connection for Subscribe or we need
-	// to document that Subscribe holds the connection and no other method should be called concurrently.
-	// Simplest: document that Subscribe blocks and uses the connection exclusively. So after sendRequest
-	// we loop reading frames (length + body), decode topic + payload, call fn. If fn returns error we close and return.
-	c.mu.Unlock()
 
+	// Now reading message frames from the server
 	for {
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(c.conn, lenBuf); err != nil {
 			if err == io.EOF {
 				return nil
 			}
-			return err
+			return fmt.Errorf("read frame length: %w", err)
 		}
 		length := binary.LittleEndian.Uint32(lenBuf)
 		if length > maxFrameSize {

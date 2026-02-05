@@ -270,6 +270,7 @@ bunbase deploy dist/handler.js --name "$FUNCTION_NAME" --runtime bun --handler d
 
 ## See Also
 
+- [Demo app](../../demo-app/README.md) – Full demo using the SDK and CLI (documents, auth, functions).
 - [Getting Started](getting-started.md)
 - [Writing Functions](writing-functions.md)
 - [Platform API](api-reference.md)

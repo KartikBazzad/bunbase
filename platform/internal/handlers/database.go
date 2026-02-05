@@ -12,14 +12,16 @@ import (
 )
 
 type DatabaseHandler struct {
-	bundoc         *bundoc.Client
-	projectService *services.ProjectService
+	bundoc             *bundoc.Client
+	projectService     *services.ProjectService
+	subscriptionManager *services.SubscriptionManager
 }
 
-func NewDatabaseHandler(bundoc *bundoc.Client, projectService *services.ProjectService) *DatabaseHandler {
+func NewDatabaseHandler(bundoc *bundoc.Client, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager) *DatabaseHandler {
 	return &DatabaseHandler{
-		bundoc:         bundoc,
-		projectService: projectService,
+		bundoc:             bundoc,
+		projectService:     projectService,
+		subscriptionManager: subscriptionManager,
 	}
 }
 
@@ -41,7 +43,8 @@ func (h *DatabaseHandler) getProjectID(c *gin.Context) (string, error) {
 	return h.projectService.GetProjectIDByPublicKey(key)
 }
 
-// ProxyHandler handles all database operations by forwarding them to Bundoc.
+// ProxyHandler handles database operations for project API key (SDK / external clients).
+// Uses /databases/{projectID}/documents/{collection}/{docID} — do not change; bundoc and API-key DB depend on this shape.
 func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 	projectID, err := h.getProjectID(c)
 	if err != nil || projectID == "" {
@@ -64,13 +67,11 @@ func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 	// c.FullPath() gives the registered path, typically /v1/databases/:dbName/...
 	// but we want the actual values.
 
-	// INFO: Enforce dbName to be the ProjectID associated with the API Key for isolation.
-	// The URL param :dbName is ignored/checked.
-	dbName := projectID
+	dbName := projectID // Enforce project isolation; :dbName param ignored
 	collection := c.Param("collection")
 	docID := c.Param("docID")
 
-	// Base path: /databases/{dbName}/documents/{collection}
+	// API-key path: /databases/{projectID}/documents/{collection}[/{docID}]. Do not use BundocDBPath here.
 	upstreamPath := "/databases/" + dbName + "/documents/" + collection
 	if docID != "" {
 		upstreamPath += "/" + docID
@@ -98,7 +99,8 @@ func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 	c.Data(status, "application/json", respBody)
 }
 
-// DeveloperProxyHandler handles database operations for authenticated developers via Console.
+// DeveloperProxyHandler handles database operations for the dashboard (projects/:id/database/...).
+// Uses bundoc.BundocDBPath; tenant-auth talks to bundoc directly and is unaffected.
 func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 	// 1. Get Project ID from URL
 	projectID := c.Param("id") // /projects/:id/database/...
@@ -107,76 +109,60 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. Get User ID from Context (set by auth middleware)
-	user, ok := middleware.RequireAuth(c)
-	if !ok {
-		return
+	// 2. Allow if authorized by project API key (key matched this project)
+	if middleware.GetProjectKeyProjectID(c) == projectID {
+		// Authorized by key; continue to proxy
+	} else {
+		// 3. Otherwise require user and membership
+		user, ok := middleware.RequireAuth(c)
+		if !ok {
+			return
+		}
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check project membership"})
+			return
+		}
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have access to this project"})
+			return
+		}
 	}
 
-	// 3. Check Membership
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check project membership"})
-		return
-	}
-	if !isMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have access to this project"})
-		return
-	}
-
-	// 4. Construct Upstream Path
-	// /api/projects/:id/database/collections/:collection/documents/:docID
-	// We want to forward to: /databases/{dbName}/documents/{collection}/{docID}
-	// Bundoc uses "dbName" = projectID usually.
-	dbName := projectID
-
-	// Extract path after /database
-	// c.FullPath() includes route pattern.
-	// c.Request.URL.Path includes full path.
-	// Let's assume the router group is /api/projects/:id/database
-	// and we strip the prefix manually?
-	// Or we use named params.
-
-	// Router setup:
-	// /collections -> List collections
-	// /collections/:collection/documents -> List docs
-	// /collections/:collection/documents/:docID -> Get doc
-
-	// We'll trust the params.
+	// 4. Construct Upstream Path (suffix only - ProxyRequest prepends /v1/projects/{projectID})
+	// Bundoc client: url = BaseURL + "/v1/projects/" + projectID + path
+	// So path must be e.g. /databases/default/collections/users/documents (no /v1/projects/...)
 	collection := c.Param("collection")
 	docID := c.Param("docID")
 	field := c.Param("field")
 
-	// Determine operation based on path params available
-	// Determine operation based on path params available
 	var upstreamPath string
 	fullPath := c.FullPath()
 
-	// Base path for Bundoc Server: /v1/projects/{projectId}/databases/default
-	basePath := "/v1/projects/" + dbName + "/databases/default"
+	// Path suffix only (client adds /v1/projects/{id}); see bundoc.BundocDBPath
+	pathSuffix := bundoc.BundocDBPath
 
 	if strings.Contains(fullPath, "/indexes") {
-		// Index Operations: Remap to /indexes?collection=...&field=...
-		upstreamPath = basePath + "/indexes?collection=" + collection
+		upstreamPath = pathSuffix + "/indexes?collection=" + collection
 		if field != "" {
 			upstreamPath += "&field=" + field
 		}
 	} else if strings.HasSuffix(fullPath, "/query") {
-		// Query Operation: Remap to /documents/query
-		upstreamPath = basePath + "/documents/query"
+		upstreamPath = pathSuffix + "/documents/query"
+	} else if strings.Contains(fullPath, "/rules") {
+		upstreamPath = pathSuffix + "/collections/" + collection + "/rules"
 	} else if collection == "" {
-		// /collections (List/Create Collections)
-		upstreamPath = basePath + "/collections"
+		upstreamPath = pathSuffix + "/collections"
 	} else if strings.Contains(fullPath, "/documents") {
-		// Document Operations
-		upstreamPath = basePath + "/documents/" + collection
 		if docID != "" {
-			upstreamPath += "/" + docID
+			// Get/Update/Delete: bundoc expects .../documents/{collection}/{docId} (parseProjectAndPathSuffix)
+			upstreamPath = pathSuffix + "/documents/" + collection + "/" + docID
+		} else {
+			// List/Create: bundoc routes on .../collections/{collection}/documents
+			upstreamPath = pathSuffix + "/collections/" + collection + "/documents"
 		}
 	} else {
-		// Collection Operations (Get/Update/Delete Collection)
-		// /collections/:collection
-		upstreamPath = basePath + "/collections/" + collection
+		upstreamPath = pathSuffix + "/collections/" + collection
 	}
 
 	// Handle Query String

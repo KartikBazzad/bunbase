@@ -145,9 +145,14 @@ func writeFrame(conn io.Writer, data []byte) error {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	var activeSession *SubscribeSession
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("connection handler panic: %v", r)
+		}
+		// Unsubscribe if there's an active subscription session
+		if activeSession != nil {
+			s.broker.Unsubscribe(activeSession.Topic, activeSession.Sub)
 		}
 		conn.Close()
 		s.connMu.Lock()
@@ -190,10 +195,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		// Subscribe: connection stays open; drain until client closes, then unregister
+		// Subscribe: connection stays open; broker writes messages via connSubscriber.Send()
+		// DO NOT read from connection here - it will consume messages meant for the client!
+		// The broker writes messages directly to conn, and the client reads them.
+		// We need to keep the handler running (don't return) but stop reading frames.
+		// We'll wait for connection close by monitoring write errors in connSubscriber.Send()
 		if session != nil {
-			_, _ = io.Copy(io.Discard, conn)
-			s.broker.Unsubscribe(session.Topic, session.Sub)
+			activeSession = session
+			// Don't return - keep the handler alive so the connection stays open
+			// Stop reading frames - the client reads messages, we just monitor for close
+			// Wait for close signal from connSubscriber when write fails
+			<-session.CloseChan
 			return
 		}
 	}

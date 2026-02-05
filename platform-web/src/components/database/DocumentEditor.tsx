@@ -114,7 +114,7 @@ export function DocumentEditor({
     setJsonError("");
   }, []);
 
-  const keys = Object.keys(value);
+  const keys = Object.keys(value ?? {});
 
   if (jsonMode) {
     return (

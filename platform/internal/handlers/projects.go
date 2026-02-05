@@ -168,3 +168,32 @@ func (h *ProjectHandler) DeleteProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "project deleted"})
 }
 
+// RegenerateProjectAPIKey generates a new project API key. Only owners can regenerate.
+// Returns the project with the new public_api_key (shown once).
+func (h *ProjectHandler) RegenerateProjectAPIKey(c *gin.Context) {
+	user, ok := middleware.RequireAuth(c)
+	if !ok {
+		return
+	}
+
+	projectID := c.Param("id")
+
+	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	project, newKey, err := h.projectService.RegenerateProjectAPIKey(projectID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Return project with new key; also return api_key for one-time display
+	c.JSON(http.StatusOK, gin.H{"project": project, "api_key": newKey})
+}
+

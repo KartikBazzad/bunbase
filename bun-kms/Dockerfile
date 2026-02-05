@@ -1,5 +1,5 @@
 # Build stage. Build context: repo root so bunder is available (replace => ../bunder).
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 WORKDIR /app
 COPY bunder/ ./bunder/
 COPY bun-kms/ ./bun-kms/

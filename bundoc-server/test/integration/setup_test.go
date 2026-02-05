@@ -30,7 +30,8 @@ func TestMain(m *testing.M) {
 	}
 	defer mgr.Close()
 
-	docHandlers := handlers.NewDocumentHandlers(mgr)
+	// Integration tests do not require Buncast; pass nil client for now.
+	docHandlers := handlers.NewDocumentHandlers(mgr, nil)
 	mux := http.NewServeMux()
 
 	// Health check

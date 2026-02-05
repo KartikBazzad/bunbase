@@ -12,9 +12,10 @@ import (
 )
 
 // AuthAnyMiddleware authenticates using either:
-// - Authorization: Bearer <api-token>  (for CLI / programmatic access), or
+// - Authorization: Bearer <api-token>  (for CLI / programmatic access),
+// - X-Bunbase-Client-Key header (user API token, for SDK / demo app), or
 // - session_token cookie (for browser sessions).
-// If neither mechanism yields a valid user, it aborts with 401.
+// If none yields a valid user, it aborts with 401.
 func AuthAnyMiddleware(authService *auth.Auth, tokenService *services.TokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1) Try API token from Authorization header
@@ -24,7 +25,16 @@ func AuthAnyMiddleware(authService *auth.Auth, tokenService *services.TokenServi
 			return
 		}
 
-		// 2) Fall back to cookie-based session auth
+		// 2) Try X-Bunbase-Client-Key as user API token (SDK / demo app)
+		if key := c.GetHeader("X-Bunbase-Client-Key"); key != "" {
+			if user, ok := resolveUserFromTokenValue(c, key, authService, tokenService, false); ok {
+				c.Set(userContextName, user)
+				c.Next()
+				return
+			}
+		}
+
+		// 3) Fall back to cookie-based session auth
 		token := GetSessionTokenFromContext(c)
 		if token == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -69,28 +79,104 @@ func authenticateWithAPIToken(
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		return nil, true
 	}
+	return resolveUserFromTokenValue(c, raw, authService, tokenService, true)
+}
 
+// resolveUserFromTokenValue validates a raw token string against api_tokens and returns (user, true) on success.
+// When abortOnInvalid is true (e.g. Bearer), invalid/expired token results in 401 and (nil, true).
+// When false (e.g. X-Bunbase-Client-Key), invalid token returns (nil, false) so other auth can run.
+func resolveUserFromTokenValue(
+	c *gin.Context,
+	raw string,
+	authService *auth.Auth,
+	tokenService *services.TokenService,
+	abortOnInvalid bool,
+) (*models.User, bool) {
 	token, err := tokenService.GetTokenByValue(raw)
 	if err != nil {
-		// Bearer token was present but invalid -> hard 401
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-		return nil, true
+		if abortOnInvalid {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return nil, true
+		}
+		return nil, false
 	}
-
-	// Check expiry if set
 	if token.ExpiresAt != nil && token.ExpiresAt.Before(time.Now()) {
 		_ = tokenService.RevokeToken(token.ID)
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
 		return nil, true
 	}
-
-	// Load associated user
 	user, err := authService.GetUserByID(token.UserID)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token user"})
 		return nil, true
 	}
-
 	_ = tokenService.MarkTokenUsed(token.ID)
 	return user, true
+}
+
+const projectKeyProjectIDContextKey = "project_key_project_id"
+
+// ProjectKeyOrUserAuthMiddleware authenticates using either user auth (Bearer, X-Bunbase-Client-Key as user token, cookie)
+// or project API key (X-Bunbase-Client-Key as project key when key's project matches route :id).
+// Use for /v1/projects/:id/... routes so SDK can use a single project API key.
+func ProjectKeyOrUserAuthMiddleware(
+	authService *auth.Auth,
+	tokenService *services.TokenService,
+	projectService *services.ProjectService,
+) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1) Try user auth (same as AuthAnyMiddleware)
+		if user, ok := authenticateWithAPIToken(c, authService, tokenService); ok {
+			c.Set(userContextName, user)
+			c.Next()
+			return
+		}
+		if key := c.GetHeader("X-Bunbase-Client-Key"); key != "" {
+			if user, ok := resolveUserFromTokenValue(c, key, authService, tokenService, false); ok {
+				c.Set(userContextName, user)
+				c.Next()
+				return
+			}
+		}
+		token := GetSessionTokenFromContext(c)
+		if token != "" {
+			if user, err := authService.ValidateSession(token); err == nil {
+				c.Set(userContextName, user)
+				c.Next()
+				return
+			}
+		}
+
+		// 2) No user: try X-Bunbase-Client-Key as project API key (header or query param for SSE)
+		key := c.GetHeader("X-Bunbase-Client-Key")
+		if key == "" {
+			key = c.Query("key")
+		}
+		if key == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		projectID, err := projectService.GetProjectIDByPublicKey(key)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+			return
+		}
+		routeProjectID := c.Param("id")
+		if routeProjectID == "" || projectID != routeProjectID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "api key does not match project"})
+			return
+		}
+		c.Set(projectKeyProjectIDContextKey, projectID)
+		c.Next()
+	}
+}
+
+// GetProjectKeyProjectID returns the project ID set when authorized via project API key, or "" if not set.
+func GetProjectKeyProjectID(c *gin.Context) string {
+	v, ok := c.Get(projectKeyProjectIDContextKey)
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
 }

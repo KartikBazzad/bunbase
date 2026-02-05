@@ -103,8 +103,63 @@ export class ApiClient {
     });
   }
 
+  async regenerateProjectApiKey(projectId: string) {
+    return this.request<{ project: { public_api_key?: string | null }; api_key: string }>(
+      `/projects/${projectId}/regenerate-api-key`,
+      { method: "POST" },
+    );
+  }
+
   async getProjectConfig(projectId: string) {
     return this.request<ProjectConfig>(`/projects/${projectId}/config`);
+  }
+
+  // Tenant auth (project application users and sign-in config)
+  async listProjectAuthUsers(projectId: string) {
+    return this.request<{
+      users: Array<{
+        id: string;
+        user_id?: string;
+        project_id: string;
+        email: string;
+        created_at?: string;
+      }>;
+      error?: string;
+    }>(`/projects/${projectId}/auth/users`);
+  }
+
+  async createProjectAuthUser(
+    projectId: string,
+    data: { email: string; password: string },
+  ) {
+    return this.request<{
+      id: string;
+      project_id: string;
+      email: string;
+      user_id?: string;
+      created_at?: string;
+    }>(`/projects/${projectId}/auth/users`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getProjectAuthConfig(projectId: string) {
+    return this.request<{
+      providers?: Record<string, unknown>;
+      rate_limit?: Record<string, unknown>;
+      error?: string;
+    }>(`/projects/${projectId}/auth/config`);
+  }
+
+  async updateProjectAuthConfig(
+    projectId: string,
+    config: { providers?: Record<string, unknown>; rate_limit?: Record<string, unknown> },
+  ) {
+    return this.request(`/projects/${projectId}/auth/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
   }
 
   // Function endpoints
@@ -176,7 +231,7 @@ export class ApiClient {
     >(`/projects/${projectId}/functions/logs${q ? `?${q}` : ""}`);
   }
 
-  // Database endpoints
+  // Database endpoints — path shape: /projects/:id/database/... (see docs/api-paths.md)
   async listCollections(projectId: string) {
     return this.request(`/projects/${projectId}/database/collections`);
   }

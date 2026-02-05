@@ -33,8 +33,11 @@ type AuthResponse struct {
 }
 
 type VerifyResponse struct {
-	Valid  bool   `json:"valid"`
-	UserID string `json:"user_id"`
+	Valid     bool   `json:"valid"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
 }
 
 // Login calls POST /login

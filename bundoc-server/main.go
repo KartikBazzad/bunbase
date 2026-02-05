@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"flag"
-	"strings"
-
+	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/handlers"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	serverPkg "github.com/kartikbazzad/bunbase/bundoc-server/internal/server"
@@ -39,7 +39,13 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate")
 	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
 	httpPort := flag.Int("http-port", 8080, "HTTP Server Port")
+	buncastSocket := flag.String("buncast-socket", "", "Optional Buncast IPC socket path for realtime events")
 	flag.Parse()
+
+	// Override from environment variable if set
+	if val := os.Getenv("BUNDOC_BUNCAST_SOCKET"); val != "" {
+		*buncastSocket = val
+	}
 
 	addr := fmt.Sprintf(":%d", *port)
 
@@ -51,8 +57,17 @@ func main() {
 	}
 	defer mgr.Close()
 
+	// Optional Buncast client for realtime events
+	var buncastClient *client.Client
+	if *buncastSocket != "" {
+		buncastClient = client.New(*buncastSocket)
+		log.Printf("Realtime: Buncast client enabled (socket=%s)", *buncastSocket)
+	} else {
+		log.Printf("Realtime: Buncast client disabled (no -buncast-socket)")
+	}
+
 	// Create handlers
-	docHandlers := handlers.NewDocumentHandlers(mgr)
+	docHandlers := handlers.NewDocumentHandlers(mgr, buncastClient)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -78,9 +93,9 @@ func main() {
 		}
 
 		// Middleware: Extract Project ID and Auth
-		// Simple validation for now
-		if !strings.HasPrefix(r.URL.Path, "/v1/projects/") {
-			http.Error(w, "invalid path", http.StatusBadRequest)
+		// Simple validation for now - allow /projects or /v1/projects
+		if !strings.Contains(r.URL.Path, "/projects/") {
+			http.Error(w, "invalid path: must contain /projects/", http.StatusBadRequest)
 			return
 		}
 
@@ -142,13 +157,11 @@ func main() {
 				if r.Method == "GET" {
 					// Extract collection from path: .../databases/default/collections/{collection}/documents
 					path := strings.TrimSuffix(r.URL.Path, "/documents")
-					_, collection := docHandlers.ParseProjectAndCollectionFromCollectionPath(path)
+					projectID, collection := docHandlers.ParseProjectAndCollectionFromCollectionPath(path)
 
 					// HandleListDocuments args: (w, r, projectID, collection)
-					// We need to parse projectID here.
-					parts := strings.Split(r.URL.Path, "/")
-					if len(parts) >= 4 {
-						docHandlers.HandleListDocuments(w, r, parts[3], collection)
+					if projectID != "" {
+						docHandlers.HandleListDocuments(w, r, projectID, collection)
 						return
 					}
 				} else if r.Method == "POST" {

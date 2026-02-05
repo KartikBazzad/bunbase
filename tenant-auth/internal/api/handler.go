@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,23 +13,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/pkg/logger"
 	"github.com/kartikbazzad/bunbase/tenant-auth/internal/db"
+	"github.com/kartikbazzad/bunbase/tenant-auth/internal/kms"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // Handler handles authentication requests
 type Handler struct {
-	db  db.DBClient
-	log *slog.Logger
-	// TODO: support per-project keys. For now, using a global secret for PoC phase.
+	db        db.DBClient
+	log       *slog.Logger
 	jwtSecret []byte
+	kmsClient *kms.Client // optional; when set, provider client_secret is stored in KMS and only ref in Bundoc
 }
 
-// NewHandler creates a new handler
-func NewHandler(database db.DBClient, jwtSecret string) *Handler {
+// NewHandler creates a new handler. kmsClient may be nil; then provider secrets are not persisted to KMS.
+func NewHandler(database db.DBClient, jwtSecret string, kmsClient *kms.Client) *Handler {
 	return &Handler{
 		db:        database,
 		log:       logger.Get(),
 		jwtSecret: []byte(jwtSecret),
+		kmsClient: kmsClient,
 	}
 }
 
@@ -38,11 +42,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/health" {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
-		return
-	}
-
-	if r.Method != http.MethodPost {
-		http.NotFound(w, r)
 		return
 	}
 
@@ -82,14 +81,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // matchProjectRoute helper checks if path matches /projects/{id}/suffix
+// Handles: /projects/{id}/suffix (4 parts), projects/{id}/suffix (3 parts), and trailing slash.
 func matchProjectRoute(path, suffix string) bool {
-	// pattern: /projects/{id}/suffix
-	// len parts: 0:"", 1:"projects", 2:"{id}", 3:"suffix"
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 4 {
-		return false
+	path = strings.TrimSuffix(strings.Trim(path, "/"), "/")
+	parts := strings.Split(path, "/")
+	// /projects/id/suffix -> ["", "projects", "id", "suffix"] (4). projects/id/suffix -> ["projects", "id", "suffix"] (3)
+	if len(parts) == 4 {
+		return parts[1] == "projects" && parts[3] == suffix
 	}
-	return parts[1] == "projects" && parts[3] == suffix
+	if len(parts) == 3 {
+		return parts[0] == "projects" && parts[2] == suffix
+	}
+	return false
 }
 
 type registerRequest struct {
@@ -233,6 +236,15 @@ func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// tenantUserPublic is the sanitized user shape returned by list users (no password_hash).
+type tenantUserPublic struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	ProjectID string    `json:"project_id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	projectID, err := h.extractProjectID(r.URL.Path)
 	if err != nil {
@@ -247,9 +259,20 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	out := make([]tenantUserPublic, 0, len(users))
+	for _, u := range users {
+		out = append(out, tenantUserPublic{
+			ID:        u.ID,
+			UserID:    u.UserID.String(),
+			ProjectID: u.ProjectID.String(),
+			Email:     u.Email,
+			CreatedAt: u.CreatedAt,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"users": users,
+		"users": out,
 	})
 }
 
@@ -267,8 +290,48 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Never return secret values to the client; strip client_secret from every provider (legacy or accidental)
+	sanitized := sanitizeConfigForResponse(config)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(config)
+	json.NewEncoder(w).Encode(sanitized)
+}
+
+// providerSecretKeys are keys that must be stored in KMS and replaced with a ref in Bundoc.
+var providerSecretKeys = []string{"client_secret"}
+
+// sanitizeConfigForResponse returns a copy of config with client_secret (and any secret key) removed from every provider so we never send secrets to the client.
+func sanitizeConfigForResponse(config *db.AuthConfig) *db.AuthConfig {
+	if config == nil || config.Providers == nil {
+		return config
+	}
+	out := &db.AuthConfig{
+		ID:        config.ID,
+		Providers: make(map[string]interface{}),
+		RateLimit: config.RateLimit,
+	}
+	for k, v := range config.Providers {
+		prov, ok := v.(map[string]interface{})
+		if !ok {
+			out.Providers[k] = v
+			continue
+		}
+		clone := make(map[string]interface{})
+		for kk, vv := range prov {
+			isSecret := false
+			for _, sk := range providerSecretKeys {
+				if kk == sk {
+					isSecret = true
+					break
+				}
+			}
+			if !isSecret {
+				clone[kk] = vv
+			}
+		}
+		out.Providers[k] = clone
+	}
+	return out
 }
 
 func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +347,39 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	projectIDStr := projectID.String()
+	// Process providers: store secrets in KMS, keep only refs in config
+	if config.Providers != nil {
+		for providerKey, v := range config.Providers {
+			prov, ok := v.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, secretKey := range providerSecretKeys {
+				raw, ok := prov[secretKey]
+				if !ok {
+					continue
+				}
+				plaintext, _ := raw.(string)
+				if plaintext == "" {
+					continue
+				}
+				// KMS name for client_secret: tenant_auth.projects.<id>.providers.<key>.client_secret
+				kmsName := kms.SecretNameForProvider(projectIDStr, providerKey)
+				if h.kmsClient != nil {
+					if err := h.kmsClient.PutSecret(kmsName, plaintext); err != nil {
+						h.log.Error("KMS put secret failed", "provider", providerKey, "error", err)
+						http.Error(w, "Failed to store provider secret", http.StatusInternalServerError)
+						return
+					}
+					prov["client_secret_ref"] = kmsName
+				}
+				delete(prov, secretKey)
+			}
+			config.Providers[providerKey] = prov
+		}
+	}
+
 	if err := h.db.UpdateAuthConfig(r.Context(), projectID, &config); err != nil {
 		h.log.Error("Failed to update config", "error", err)
 		http.Error(w, "Failed to update config", http.StatusInternalServerError)
@@ -294,13 +390,36 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"updated"}`))
 }
 
-func (h *Handler) extractProjectID(path string) (uuid.UUID, error) {
-	// Assumes path matches /projects/{id}/...
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 3 || parts[1] != "projects" {
-		return uuid.Parse("invalid-path-structure")
+// GetProviderClientSecret returns the plaintext client_secret for a provider, resolving from KMS when client_secret_ref is set.
+// Used at runtime (e.g. OAuth token exchange). Returns empty string and nil error if no secret is configured.
+func (h *Handler) GetProviderClientSecret(ctx context.Context, projectID uuid.UUID, providerKey string) (string, error) {
+	config, err := h.db.GetAuthConfig(ctx, projectID)
+	if err != nil || config == nil || config.Providers == nil {
+		return "", err
 	}
-	return uuid.Parse(parts[2])
+	prov, _ := config.Providers[providerKey].(map[string]interface{})
+	if prov == nil {
+		return "", nil
+	}
+	ref, _ := prov["client_secret_ref"].(string)
+	if ref == "" {
+		return "", nil
+	}
+	if h.kmsClient == nil {
+		return "", nil
+	}
+	return h.kmsClient.GetSecret(ref)
+}
+
+func (h *Handler) extractProjectID(path string) (uuid.UUID, error) {
+	// Path may be /projects/{id}/suffix (3 parts) or /v1/projects/{id}/suffix (4+ parts).
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			return uuid.Parse(parts[i+1])
+		}
+	}
+	return uuid.Nil, fmt.Errorf("path does not contain projects segment: %s", path)
 }
 
 func (h *Handler) generateToken(user *db.TenantUser) (string, error) {

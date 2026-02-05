@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kartikbazzad/bunbase/pkg/bunauth"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
@@ -50,7 +51,7 @@ func (a *Auth) LoginUser(email, password string) (*models.User, string, error) {
 	}, resp.AccessToken, nil
 }
 
-// ValidateSession verifies JWT token
+// ValidateSession verifies JWT token and returns user with profile (email, name, created_at)
 func (a *Auth) ValidateSession(token string) (*models.User, error) {
 	resp, err := a.client.Verify(token)
 	if err != nil {
@@ -61,9 +62,20 @@ func (a *Auth) ValidateSession(token string) (*models.User, error) {
 		return nil, fmt.Errorf("invalid token")
 	}
 
-	return &models.User{
-		ID: resp.UserID,
-	}, nil
+	user := &models.User{ID: resp.UserID}
+	if resp.Email != "" {
+		user.Email = resp.Email
+	}
+	if resp.Name != "" {
+		user.Name = resp.Name
+	}
+	if resp.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, resp.CreatedAt); err == nil {
+			user.CreatedAt = t
+			user.UpdatedAt = t
+		}
+	}
+	return user, nil
 }
 
 // LogoutUser is no-op for stateless JWT (client drops token)

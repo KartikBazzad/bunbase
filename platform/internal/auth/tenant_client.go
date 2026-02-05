@@ -22,8 +22,10 @@ func NewTenantClient(url string) *TenantClient {
 
 type User struct {
 	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
 	ProjectID string `json:"project_id"`
 	Email     string `json:"email"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 type LoginResponse struct {
