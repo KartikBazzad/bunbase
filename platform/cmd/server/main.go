@@ -14,6 +14,7 @@ import (
 	"github.com/kartikbazzad/bunbase/pkg/config"
 
 	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
+	fnclient "github.com/kartikbazzad/bunbase/functions/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/database"
@@ -117,7 +118,14 @@ func main() {
 
 	authClient := bunauth.NewClient(*authURL)
 	tenantAuthClient := auth.NewTenantClient(tenantAuthURL)
-	bundocClient := bundoc.NewClient(cfg.Bundoc.URL)
+	// Use RPC client for bundoc when configured (faster); otherwise HTTP client
+	var bundocProxy bundoc.Proxy
+	if bundocRPCAddr := os.Getenv("PLATFORM_BUNDOC_RPC_ADDR"); bundocRPCAddr != "" {
+		bundocProxy = bundoc.NewRPCClient(bundocRPCAddr)
+		log.Printf("Bundoc: using RPC client (addr=%s)", bundocRPCAddr)
+	} else {
+		bundocProxy = bundoc.NewClient(cfg.Bundoc.URL)
+	}
 
 	authService := auth.NewAuth(authClient)
 
@@ -161,9 +169,14 @@ func main() {
 	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
 	projectHandler := handlers.NewProjectHandler(projectService)
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
-	functionHandler := handlers.NewFunctionHandler(functionService, projectService, *functionsURL)
+	var functionsRPC *fnclient.Client
+	if rpcAddr := os.Getenv("PLATFORM_FUNCTIONS_RPC_ADDR"); rpcAddr != "" {
+		functionsRPC = fnclient.New("tcp://" + rpcAddr)
+		log.Printf("Functions: using RPC client (addr=%s)", rpcAddr)
+	}
+	functionHandler := handlers.NewFunctionHandler(functionService, projectService, projectConfigService, *functionsURL, functionsRPC)
 	tokenHandler := handlers.NewTokenHandler(tokenService)
-	databaseHandler := handlers.NewDatabaseHandler(bundocClient, projectService, subscriptionManager)
+	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -221,6 +234,37 @@ func main() {
 	v1AuthStandard.POST("/logout", authHandler.Logout)
 	v1AuthStandard.GET("/me", authHandler.Me)
 	v1AuthStandard.GET("/stream", authHandler.AuthStream)
+
+	// Key-scoped routes: API key only, no project ID in path. Project inferred from key. Register first.
+	v1Key := v1.Group("")
+	v1Key.Use(middleware.RequireProjectKeyMiddleware(projectService))
+	v1Key.GET("/project", projectConfigHandler.GetCurrentProject)
+	v1KeyDB := v1Key.Group("/database")
+	v1KeyDB.GET("/collections", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.POST("/collections", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.GET("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.PATCH("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.PATCH("/collections/:collection/rules", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.DELETE("/collections/:collection", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.GET("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.POST("/collections/:collection/indexes", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.DELETE("/collections/:collection/indexes/:field", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.GET("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.POST("/collections/:collection/documents", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.POST("/collections/:collection/documents/query", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.GET("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.PUT("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.PATCH("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.DELETE("/collections/:collection/documents/:docID", databaseHandler.DeveloperProxyHandler)
+	v1KeyDB.GET("/collections/:collection/subscribe", databaseHandler.HandleCollectionSubscribe)
+	v1KeyDB.POST("/collections/:collection/documents/query/subscribe", databaseHandler.HandleQuerySubscribe)
+	v1Key.POST("/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+	v1Key.GET("/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+	v1Key.GET("/functions", functionHandler.ListFunctions)
+	v1Key.GET("/auth/users", tenantAuthHandler.ListProjectUsers)
+	v1Key.POST("/auth/users", tenantAuthHandler.CreateProjectUser)
+	v1Key.GET("/auth/config", tenantAuthHandler.GetProjectAuthConfig)
+	v1Key.PUT("/auth/config", tenantAuthHandler.UpdateProjectAuthConfig)
 
 	// Also alias Project routes to /v1/projects for Web Console.
 	// Routes that accept project API key (database, function invoke) use ProjectKeyOrUserAuthMiddleware and are registered first.
@@ -336,6 +380,11 @@ func main() {
 	tokenAPI.GET("", tokenHandler.List)
 	tokenAPI.POST("", tokenHandler.Create)
 	tokenAPI.DELETE("/:id", tokenHandler.Delete)
+
+	// Catch-all route for custom function domains routed from Traefik.
+	// This must be registered last so that it only handles requests that
+	// weren't matched by the more specific API/web routes above.
+	router.Any("/*path", functionHandler.HandleCustomDomainInvoke)
 
 	// Start cleanup goroutine - Not needed for Stateless Auth (bun-auth handles it)
 	// But if we want local cache cleanup, we can add it later.

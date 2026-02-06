@@ -12,11 +12,20 @@ export class BunBaseClient<
   constructor(
     public url: string,
     public apiKey: string,
-    public projectId: string = "default", // Default for backward compat? Or make required?
+    /** @deprecated Project is inferred from API key. Optional for backward compatibility. */
+    public projectId?: string,
   ) {
     this.auth = new AuthClient(this);
     this.db = new DatabaseClient(this);
     this.functions = new FunctionsClient(this);
+  }
+
+  /** Fetch current project and config (project is inferred from API key). */
+  async getProject(): Promise<{
+    project: { id: string; name: string; slug: string; owner_id: string };
+    config: any;
+  }> {
+    return this.request("/v1/project");
   }
 
   async request(path: string, options: RequestInit = {}) {

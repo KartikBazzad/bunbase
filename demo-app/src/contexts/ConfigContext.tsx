@@ -9,12 +9,10 @@ import type { ClientConfig } from "@/lib/client";
 
 const STORAGE_KEY_URL = "demo_base_url";
 const STORAGE_KEY_API_KEY = "demo_api_key";
-const STORAGE_KEY_PROJECT_ID = "demo_project_id";
 
 interface ConfigContextValue {
   baseUrl: string;
   apiKey: string;
-  projectId: string;
   setConfig: (config: Partial<ClientConfig>) => void;
   isConfigured: boolean;
 }
@@ -31,9 +29,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [apiKey, setApiKeyState] = useState(() => {
     return localStorage.getItem(STORAGE_KEY_API_KEY) || "";
   });
-  const [projectId, setProjectIdState] = useState(() => {
-    return localStorage.getItem(STORAGE_KEY_PROJECT_ID) || "";
-  });
 
   const setConfig = useCallback((config: Partial<ClientConfig>) => {
     if (config.baseUrl != null) {
@@ -44,18 +39,13 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY_API_KEY, config.apiKey);
       setApiKeyState(config.apiKey);
     }
-    if (config.projectId != null) {
-      localStorage.setItem(STORAGE_KEY_PROJECT_ID, config.projectId);
-      setProjectIdState(config.projectId);
-    }
   }, []);
 
   const value: ConfigContextValue = {
     baseUrl,
     apiKey,
-    projectId,
     setConfig,
-    isConfigured: Boolean(apiKey && projectId),
+    isConfigured: Boolean(apiKey),
   };
 
   return (

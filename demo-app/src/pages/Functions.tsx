@@ -3,7 +3,7 @@ import { useConfig } from "@/contexts/ConfigContext";
 import { createClient } from "@/lib/client";
 
 export function Functions() {
-  const { baseUrl, apiKey, projectId, isConfigured } = useConfig();
+  const { baseUrl, apiKey, isConfigured } = useConfig();
   const [name, setName] = useState("hello-world");
   const [bodyStr, setBodyStr] = useState("");
   const [result, setResult] = useState<string | null>(null);
@@ -17,7 +17,7 @@ export function Functions() {
     setResult(null);
     setError(null);
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       let body: unknown = undefined;
       if (bodyStr.trim()) {
         try {
@@ -40,7 +40,7 @@ export function Functions() {
   if (!isConfigured) {
     return (
       <div className="rounded-lg border bg-amber-50 p-4 text-amber-800">
-        Set your Project API key and Project ID in Settings to invoke functions.
+        Set your API key in Settings to invoke functions.
       </div>
     );
   }

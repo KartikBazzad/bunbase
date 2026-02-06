@@ -16,6 +16,7 @@ import (
 	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/handlers"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
+	"github.com/kartikbazzad/bunbase/bundoc-server/internal/rpc"
 	serverPkg "github.com/kartikbazzad/bunbase/bundoc-server/internal/server"
 	"github.com/kartikbazzad/bunbase/bundoc/raft"
 )
@@ -39,12 +40,16 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "Path to TLS server certificate")
 	tlsKey := flag.String("tls-key", "", "Path to TLS server private key")
 	httpPort := flag.Int("http-port", 8080, "HTTP Server Port")
+	rpcAddr := flag.String("rpc-addr", "", "TCP address for internal RPC server (e.g. :8081). If empty, RPC server is disabled.")
 	buncastSocket := flag.String("buncast-socket", "", "Optional Buncast IPC socket path for realtime events")
 	flag.Parse()
 
 	// Override from environment variable if set
 	if val := os.Getenv("BUNDOC_BUNCAST_SOCKET"); val != "" {
 		*buncastSocket = val
+	}
+	if val := os.Getenv("BUNDOC_RPC_ADDR"); val != "" {
+		*rpcAddr = val
 	}
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -245,7 +250,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
 	// Start HTTP server in goroutine
 	go func() {
 		log.Printf("🚀 Bundoc HTTP Server starting on %s", server.Addr)
@@ -256,6 +260,16 @@ func main() {
 			log.Fatalf("HTTP Server failed: %v", err)
 		}
 	}()
+
+	// Optional: start internal RPC server for platform (document proxy over TCP)
+	var rpcServer *rpc.Server
+	if *rpcAddr != "" {
+		rpcServer = rpc.NewServer(*rpcAddr, mux)
+		if err := rpcServer.Start(); err != nil {
+			log.Fatalf("RPC server failed: %v", err)
+		}
+		defer rpcServer.Stop()
+	}
 
 	// Load TLS Config if enabled
 	var tlsConfig *tls.Config

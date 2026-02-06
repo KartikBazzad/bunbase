@@ -180,3 +180,35 @@ func GetProjectKeyProjectID(c *gin.Context) string {
 	s, _ := v.(string)
 	return s
 }
+
+// RequireProjectKeyMiddleware requires a valid project API key (X-Bunbase-Client-Key or query "key").
+// It resolves the key to a project ID and sets it in context. Does not accept Bearer or session.
+// Use for key-scoped flat routes (e.g. /v1/database/..., /v1/functions/...) where project is inferred from the key.
+func RequireProjectKeyMiddleware(projectService *services.ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := c.GetHeader("X-Bunbase-Client-Key")
+		if key == "" {
+			key = c.Query("key")
+		}
+		if key == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "api key required"})
+			return
+		}
+		projectID, err := projectService.GetProjectIDByPublicKey(key)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+			return
+		}
+		c.Set(projectKeyProjectIDContextKey, projectID)
+		c.Next()
+	}
+}
+
+// GetProjectID returns the project ID for the current request: from key-scoped context when set, otherwise from route param "id".
+// Use in handlers that serve both key-scoped routes (no :id) and user-scoped routes (/projects/:id/...).
+func GetProjectID(c *gin.Context) string {
+	if id := GetProjectKeyProjectID(c); id != "" {
+		return id
+	}
+	return c.Param("id")
+}

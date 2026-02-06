@@ -30,12 +30,15 @@ type ReadyPayload struct{}
 
 // InvokePayload is sent by Go to request function execution
 type InvokePayload struct {
-	Method     string            `json:"method"`
-	Path       string            `json:"path"`
-	Headers    map[string]string `json:"headers"`
-	Query      map[string]string `json:"query"`
-	Body       string            `json:"body"` // base64-encoded
-	DeadlineMS int64             `json:"deadline_ms"`
+	Method        string            `json:"method"`
+	Path          string            `json:"path"`
+	Headers       map[string]string `json:"headers"`
+	Query         map[string]string `json:"query"`
+	Body          string            `json:"body"`         // base64-encoded
+	DeadlineMS    int64             `json:"deadline_ms"`  // per-invocation deadline
+	ProjectID     string            `json:"project_id"`   // optional: project ID for admin context
+	ProjectAPIKey string            `json:"project_api_key"` // optional: project public API key
+	GatewayURL    string            `json:"gateway_url"`  // optional: gateway base URL
 }
 
 // ResponsePayload is sent by Bun worker after successful execution

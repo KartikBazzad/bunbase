@@ -227,18 +227,21 @@ export const DUMMY_LOG_ENTRIES: LogEntry[] = [
   },
 ];
 
-/** API function shape from listFunctions */
+/** API function shape from listFunctions (enriched with trigger, status, path_or_cron) */
 export interface ApiFunction {
   id: string;
   project_id: string;
   function_service_id: string;
   name: string;
   runtime: string;
+  trigger: TriggerType;
+  status: FunctionStatus;
+  path_or_cron: string;
   created_at: string;
   updated_at: string;
 }
 
-function formatLastDeployed(updated_at: string): string {
+export function formatLastDeployed(updated_at: string): string {
   const d = new Date(updated_at);
   const now = Date.now();
   const diffMs = now - d.getTime();
@@ -254,21 +257,22 @@ function formatLastDeployed(updated_at: string): string {
 
 /**
  * Merge API list with dummy extended fields. If apiList is empty, return full dummy list.
+ * @deprecated The API now returns enriched data. This function is kept for backward compatibility
+ * but should not be used for new code. Use apiList directly instead.
  */
 export function mergeFunctionsWithDummy(apiList: ApiFunction[]): FunctionRow[] {
   if (!apiList || apiList.length === 0) {
     return DUMMY_FUNCTION_ROWS.map((row) => ({ ...row }));
   }
-  const dummyByIndex = DUMMY_FUNCTION_ROWS;
-  return apiList.map((fn, i) => {
-    const template = dummyByIndex[i % dummyByIndex.length];
+  // API now returns enriched data, so we can map directly
+  return apiList.map((fn) => {
     return {
       id: fn.id,
       name: fn.name,
       runtime: fn.runtime,
-      trigger: template.trigger,
-      pathOrCron: template.pathOrCron,
-      status: template.status,
+      trigger: fn.trigger,
+      pathOrCron: fn.path_or_cron,
+      status: fn.status,
       lastDeployed: formatLastDeployed(fn.updated_at),
       project_id: fn.project_id,
       function_service_id: fn.function_service_id,

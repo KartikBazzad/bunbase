@@ -87,11 +87,12 @@ func (s *ProjectService) CreateProject(name, ownerID string) (*models.Project, e
 func (s *ProjectService) GetProjectByID(id string) (*models.Project, error) {
 	var project models.Project
 	var apiKey *string
+	var functionSubdomain *string
 
 	err := s.db.QueryRow(context.Background(),
-		"SELECT id, name, slug, owner_id, public_api_key, created_at, updated_at FROM projects WHERE id = $1",
+		"SELECT id, name, slug, owner_id, public_api_key, function_subdomain, created_at, updated_at FROM projects WHERE id = $1",
 		id,
-	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &apiKey, &project.CreatedAt, &project.UpdatedAt)
+	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &apiKey, &functionSubdomain, &project.CreatedAt, &project.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
@@ -99,24 +100,26 @@ func (s *ProjectService) GetProjectByID(id string) (*models.Project, error) {
 		return nil, fmt.Errorf("failed to get project: %w", err)
 	}
 	project.PublicAPIKey = apiKey
+	project.FunctionSubdomain = functionSubdomain
 	return &project, nil
 }
 
 // GetProjectBySlug retrieves a project by slug
 func (s *ProjectService) GetProjectBySlug(slug string) (*models.Project, error) {
 	var project models.Project
+	var functionSubdomain *string
 
 	err := s.db.QueryRow(context.Background(),
-		"SELECT id, name, slug, owner_id, created_at, updated_at FROM projects WHERE slug = $1",
+		"SELECT id, name, slug, owner_id, function_subdomain, created_at, updated_at FROM projects WHERE slug = $1",
 		slug,
-	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &project.CreatedAt, &project.UpdatedAt)
+	).Scan(&project.ID, &project.Name, &project.Slug, &project.OwnerID, &functionSubdomain, &project.CreatedAt, &project.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}
 		return nil, fmt.Errorf("failed to get project: %w", err)
 	}
-
+	project.FunctionSubdomain = functionSubdomain
 	return &project, nil
 }
 

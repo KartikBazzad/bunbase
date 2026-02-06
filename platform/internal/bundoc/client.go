@@ -9,10 +9,18 @@ import (
 	"time"
 )
 
+// Proxy is the interface for document proxy (HTTP or RPC). DatabaseHandler uses this so it can use either transport.
+type Proxy interface {
+	ProxyRequest(method, projectID, path string, body []byte) (int, []byte, error)
+}
+
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 }
+
+// Ensure Client implements Proxy.
+var _ Proxy = (*Client)(nil)
 
 func NewClient(baseURL string) *Client {
 	return &Client{

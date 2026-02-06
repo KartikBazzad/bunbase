@@ -14,6 +14,7 @@ import (
 	"github.com/kartikbazzad/bunbase/bun-kms/internal/core"
 	"github.com/kartikbazzad/bunbase/bun-kms/internal/health"
 	"github.com/kartikbazzad/bunbase/bun-kms/internal/metrics"
+	"github.com/kartikbazzad/bunbase/bun-kms/internal/rpc"
 	"github.com/kartikbazzad/bunbase/bun-kms/internal/storage"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -94,6 +95,26 @@ func main() {
 	if store != nil {
 		storeCheck = func() error { return nil }
 	}
+
+	// Optional TCP RPC server for secrets (GetSecret / PutSecret)
+	if rpcAddr := os.Getenv("BUNKMS_RPC_ADDR"); rpcAddr != "" {
+		rpcSrv := rpc.NewServer(rpcAddr, secrets)
+		if err := rpcSrv.Start(); err != nil {
+			if store != nil {
+				_ = store.Close()
+			}
+			if auditLog != nil {
+				_ = auditLog.Close()
+			}
+			logger.Fatalf("failed to start KMS RPC server: %v", err)
+		}
+		defer func() {
+			if err := rpcSrv.Stop(); err != nil {
+				logger.Printf("KMS RPC stop: %v", err)
+			}
+		}()
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

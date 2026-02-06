@@ -12,12 +12,12 @@ import (
 )
 
 type DatabaseHandler struct {
-	bundoc             *bundoc.Client
+	bundoc             bundoc.Proxy // HTTP client or RPC client when BUNDOC_RPC_ADDR is set
 	projectService     *services.ProjectService
 	subscriptionManager *services.SubscriptionManager
 }
 
-func NewDatabaseHandler(bundoc *bundoc.Client, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager) *DatabaseHandler {
+func NewDatabaseHandler(bundoc bundoc.Proxy, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager) *DatabaseHandler {
 	return &DatabaseHandler{
 		bundoc:             bundoc,
 		projectService:     projectService,
@@ -99,21 +99,20 @@ func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 	c.Data(status, "application/json", respBody)
 }
 
-// DeveloperProxyHandler handles database operations for the dashboard (projects/:id/database/...).
-// Uses bundoc.BundocDBPath; tenant-auth talks to bundoc directly and is unaffected.
+// DeveloperProxyHandler handles database operations (key-scoped /v1/database/... or user-scoped /projects/:id/database/...).
+// Uses bundoc.BundocDBPath. Project ID comes from context (key-scoped) or route param (user-scoped).
 func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
-	// 1. Get Project ID from URL
-	projectID := c.Param("id") // /projects/:id/database/...
+	projectID := middleware.GetProjectID(c)
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID is required"})
 		return
 	}
 
-	// 2. Allow if authorized by project API key (key matched this project)
-	if middleware.GetProjectKeyProjectID(c) == projectID {
+	// Allow if authorized by project API key (key-scoped routes set this in context)
+	if middleware.GetProjectKeyProjectID(c) != "" {
 		// Authorized by key; continue to proxy
 	} else {
-		// 3. Otherwise require user and membership
+		// Otherwise require user and membership (user-scoped routes)
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return

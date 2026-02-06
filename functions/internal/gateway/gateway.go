@@ -307,6 +307,11 @@ func (g *Gateway) parseRequest(r *http.Request) (*scheduler.InvokeRequest, error
 		}
 	}
 
+	// Extract optional project context headers (set by Platform)
+	projectID := r.Header.Get("X-Bunbase-Project-ID")
+	projectAPIKey := r.Header.Get("X-Bunbase-API-Key")
+	gatewayURL := r.Header.Get("X-Bunbase-Gateway-URL")
+
 	// Read body
 	var body []byte
 	if r.Body != nil {
@@ -319,12 +324,15 @@ func (g *Gateway) parseRequest(r *http.Request) (*scheduler.InvokeRequest, error
 	}
 
 	return &scheduler.InvokeRequest{
-		Method:     r.Method,
-		Path:       r.URL.Path,
-		Headers:    headers,
-		Query:      query,
-		Body:       body,
-		DeadlineMS: 0, // Will be set by gateway
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Headers:       headers,
+		Query:         query,
+		Body:          body,
+		DeadlineMS:    0, // Will be set by gateway
+		ProjectID:     projectID,
+		ProjectAPIKey: projectAPIKey,
+		GatewayURL:    gatewayURL,
 	}, nil
 }
 

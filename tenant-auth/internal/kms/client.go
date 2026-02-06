@@ -10,7 +10,13 @@ import (
 	"time"
 )
 
-// Client calls Bun-KMS to store and retrieve secrets.
+// ClientInterface is implemented by both HTTP and RPC KMS clients.
+type ClientInterface interface {
+	GetSecret(name string) (string, error)
+	PutSecret(name, value string) error
+}
+
+// Client calls Bun-KMS to store and retrieve secrets over HTTP.
 // If BaseURL is empty, all operations are no-ops (caller should skip KMS).
 type Client struct {
 	BaseURL    string

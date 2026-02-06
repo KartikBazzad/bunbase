@@ -12,9 +12,9 @@ import (
 )
 
 // HandleCollectionSubscribe provides SSE stream for collection-level document changes.
-// GET /api/projects/:id/database/collections/:collection/subscribe
+// GET /v1/database/collections/:collection/subscribe (key-scoped) or GET /api/projects/:id/database/collections/:collection/subscribe
 func (h *DatabaseHandler) HandleCollectionSubscribe(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	collection := c.Param("collection")
 
 	if projectID == "" || collection == "" {
@@ -22,21 +22,9 @@ func (h *DatabaseHandler) HandleCollectionSubscribe(c *gin.Context) {
 		return
 	}
 
-	// Verify access - support API key from query param (for EventSource) or header
-	key := c.GetHeader("X-Bunbase-Client-Key")
-	if key == "" {
-		key = c.Query("key")
-	}
-	if key != "" {
-		keyProjectID, err := h.projectService.GetProjectIDByPublicKey(key)
-		if err == nil && keyProjectID == projectID {
-			// Authorized via API key
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
-			return
-		}
+	if middleware.GetProjectKeyProjectID(c) != "" {
+		// Authorized by API key (key-scoped route)
 	} else {
-		// Try user auth
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -107,9 +95,9 @@ func (h *DatabaseHandler) HandleCollectionSubscribe(c *gin.Context) {
 }
 
 // HandleQuerySubscribe provides SSE stream for query-based document changes.
-// POST /api/projects/:id/database/collections/:collection/documents/query/subscribe
+// POST /v1/database/collections/:collection/documents/query/subscribe (key-scoped) or .../projects/:id/...
 func (h *DatabaseHandler) HandleQuerySubscribe(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	collection := c.Param("collection")
 
 	if projectID == "" || collection == "" {
@@ -117,19 +105,8 @@ func (h *DatabaseHandler) HandleQuerySubscribe(c *gin.Context) {
 		return
 	}
 
-	// Verify access - support API key from query param (for EventSource) or header
-	key := c.GetHeader("X-Bunbase-Client-Key")
-	if key == "" {
-		key = c.Query("key")
-	}
-	if key != "" {
-		keyProjectID, err := h.projectService.GetProjectIDByPublicKey(key)
-		if err == nil && keyProjectID == projectID {
-			// Authorized via API key
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
-			return
-		}
+	if middleware.GetProjectKeyProjectID(c) != "" {
+		// Authorized by API key (key-scoped route)
 	} else {
 		// Try user auth
 		user, ok := middleware.RequireAuth(c)

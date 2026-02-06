@@ -13,12 +13,15 @@ import (
 
 // InvokeRequest represents a function invocation request
 type InvokeRequest struct {
-	Method     string
-	Path       string
-	Headers    map[string]string
-	Query      map[string]string
-	Body       []byte
-	DeadlineMS int64
+	Method         string
+	Path           string
+	Headers        map[string]string
+	Query          map[string]string
+	Body           []byte
+	DeadlineMS     int64
+	ProjectID      string
+	ProjectAPIKey  string
+	GatewayURL     string
 }
 
 // InvokeResult represents the result of an invocation
@@ -91,12 +94,15 @@ func (s *Scheduler) Schedule(ctx context.Context, functionID string, req *Invoke
 
 	// Convert request to worker invoke payload
 	invokePayload := &worker.InvokePayload{
-		Method:     req.Method,
-		Path:       req.Path,
-		Headers:    req.Headers,
-		Query:      req.Query,
-		Body:       worker.EncodeBody(req.Body),
-		DeadlineMS: req.DeadlineMS,
+		Method:        req.Method,
+		Path:          req.Path,
+		Headers:       req.Headers,
+		Query:         req.Query,
+		Body:          worker.EncodeBody(req.Body),
+		DeadlineMS:    req.DeadlineMS,
+		ProjectID:     req.ProjectID,
+		ProjectAPIKey: req.ProjectAPIKey,
+		GatewayURL:    req.GatewayURL,
 	}
 
 	startTime := time.Now()

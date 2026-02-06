@@ -11,10 +11,10 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import {
-  mergeFunctionsWithDummy,
   DUMMY_METRICS,
   type FunctionRow,
   type ApiFunction,
+  formatLastDeployed,
 } from "../lib/dummyFunctions";
 
 const PAGE_SIZE = 4;
@@ -49,10 +49,25 @@ export function Functions() {
     }
   };
 
-  const rows = useMemo(
-    () => mergeFunctionsWithDummy(functions),
-    [functions]
-  );
+  // Transform API functions to FunctionRow format
+  const rows = useMemo(() => {
+    if (!functions || functions.length === 0) {
+      return [];
+    }
+    return functions.map((fn) => ({
+      id: fn.id,
+      name: fn.name,
+      runtime: fn.runtime,
+      trigger: fn.trigger,
+      pathOrCron: fn.path_or_cron,
+      status: fn.status,
+      lastDeployed: formatLastDeployed(fn.updated_at),
+      project_id: fn.project_id,
+      function_service_id: fn.function_service_id,
+      created_at: fn.created_at,
+      updated_at: fn.updated_at,
+    }));
+  }, [functions]);
 
   const totalCount = rows.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));

@@ -50,6 +50,10 @@ flowchart LR
   - Exposes Unix socket IPC for server-to-server publish/subscribe and HTTP + SSE for dashboard/CLI.
   - Platform API can publish to Buncast on deploy when `--buncast-socket` is set.
 
+### Inter-service RPC
+
+When running in Docker, Platform and Tenant-auth can use TCP RPC to Bundoc, Functions, and KMS for lower latency. See [Inter-service RPC](inter-service-rpc.md) for env vars and protocol summary.
+
 ### Service-Level Documentation
 
 For detailed documentation of each component, see:

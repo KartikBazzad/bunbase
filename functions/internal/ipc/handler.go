@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -127,14 +128,18 @@ func (h *Handler) handleInvoke(frame *RequestFrame) *ResponseFrame {
 		return response
 	}
 
-	// Create invoke request
+	// Decode body (base64)
+	body, _ := base64.StdEncoding.DecodeString(req.Body)
 	invokeReq := &scheduler.InvokeRequest{
-		Method:     req.Method,
-		Path:       req.Path,
-		Headers:    req.Headers,
-		Query:      req.Query,
-		Body:       []byte(req.Body), // TODO: decode base64
-		DeadlineMS: 30000,            // Default 30s
+		Method:        req.Method,
+		Path:          req.Path,
+		Headers:       req.Headers,
+		Query:         req.Query,
+		Body:          body,
+		DeadlineMS:    30000,
+		ProjectID:     req.Headers["X-Bunbase-Project-ID"],
+		ProjectAPIKey: req.Headers["X-Bunbase-API-Key"],
+		GatewayURL:    req.Headers["X-Bunbase-Gateway-URL"],
 	}
 
 	// Schedule invocation
@@ -158,7 +163,9 @@ func (h *Handler) handleInvoke(frame *RequestFrame) *ResponseFrame {
 	if result.Success {
 		respPayload.Status = result.Status
 		respPayload.Headers = result.Headers
-		respPayload.Body = string(result.Body) // TODO: encode base64
+		if len(result.Body) > 0 {
+			respPayload.Body = base64.StdEncoding.EncodeToString(result.Body)
+		}
 	} else {
 		respPayload.Error = result.Error
 	}

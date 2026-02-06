@@ -32,9 +32,11 @@ type BuncastConfig struct {
 	TopicPrefix string `json:"topic_prefix"`
 }
 
-// FunctionsConfig is the Functions invoke path.
+// FunctionsConfig holds function invocation paths and URLs.
 type FunctionsConfig struct {
-	InvokePath string `json:"invoke_path"`
+	InvokePath   string `json:"invoke_path"`
+	SubdomainURL string `json:"subdomain_url,omitempty"`
+	GeneratedURL string `json:"generated_url,omitempty"`
 }
 
 // ProjectConfigService builds project config from project + gateway URL.
@@ -53,6 +55,16 @@ func (s *ProjectConfigService) GetConfig(project *models.Project) *ProjectConfig
 	if len(base) > 0 && base[len(base)-1] == '/' {
 		base = base[:len(base)-1]
 	}
+
+	// Derived function URLs
+	subdomainURL := ""
+	if project.FunctionSubdomain != nil && *project.FunctionSubdomain != "" {
+		subdomainURL = fmt.Sprintf("https://%s.bunbase.com", *project.FunctionSubdomain)
+	}
+	// Generated URL format: {projectID}.functions.bunbase.com
+	generatedHost := fmt.Sprintf("%s.functions.bunbase.com", project.ID)
+	generatedURL := fmt.Sprintf("https://%s", generatedHost)
+
 	return &ProjectConfig{
 		GatewayURL:  base,
 		ProjectID:   project.ID,
@@ -67,7 +79,9 @@ func (s *ProjectConfigService) GetConfig(project *models.Project) *ProjectConfig
 			TopicPrefix: fmt.Sprintf("project.%s.", project.ID),
 		},
 		Functions: FunctionsConfig{
-			InvokePath: fmt.Sprintf("%s/invoke", base),
+			InvokePath:   fmt.Sprintf("%s/invoke", base),
+			SubdomainURL: subdomainURL,
+			GeneratedURL: generatedURL,
 		},
 	}
 }

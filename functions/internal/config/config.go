@@ -9,6 +9,7 @@ import (
 type Config struct {
 	DataDir    string
 	SocketPath string
+	TCPAddr    string // Optional TCP address for IPC (e.g. ":9090") so platform can connect without shared socket
 	Worker     WorkerConfig
 	Gateway    GatewayConfig
 	Metadata   MetadataConfig

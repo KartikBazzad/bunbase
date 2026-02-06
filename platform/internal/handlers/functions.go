@@ -1,15 +1,16 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"time"
 
-	"io"
-
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/functions/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
@@ -18,17 +19,21 @@ import (
 
 // FunctionHandler handles function endpoints
 type FunctionHandler struct {
-	functionService *services.FunctionService
-	projectService  *services.ProjectService
-	functionsURL    string
+	functionService      *services.FunctionService
+	projectService       *services.ProjectService
+	projectConfigService *services.ProjectConfigService
+	functionsURL         string
+	functionsRPC         *client.Client // optional: when set, invoke uses TCP RPC instead of HTTP
 }
 
-// NewFunctionHandler creates a new FunctionHandler
-func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, functionsURL string) *FunctionHandler {
+// NewFunctionHandler creates a new FunctionHandler. functionsRPC is optional; when set, invoke uses it instead of HTTP.
+func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, functionsURL string, functionsRPC *client.Client) *FunctionHandler {
 	return &FunctionHandler{
-		functionService: functionService,
-		projectService:  projectService,
-		functionsURL:    functionsURL,
+		functionService:      functionService,
+		projectService:       projectService,
+		projectConfigService: projectConfigService,
+		functionsURL:         functionsURL,
+		functionsRPC:         functionsRPC,
 	}
 }
 
@@ -41,29 +46,48 @@ type DeployFunctionRequest struct {
 	Bundle  string `json:"bundle"` // Base64 encoded bundle
 }
 
-// ListFunctions lists all functions for a project
+// FunctionResponse represents the enriched function response
+type FunctionResponse struct {
+	ID                string `json:"id"`
+	ProjectID         string `json:"project_id"`
+	FunctionServiceID string `json:"function_service_id"`
+	Name              string `json:"name"`
+	Runtime           string `json:"runtime"`
+	Trigger           string `json:"trigger"`    // "http" (default for all functions)
+	Status            string `json:"status"`      // "active" (default, can be enhanced later)
+	PathOrCron        string `json:"path_or_cron"` // Function name or invoke path
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
+// ListFunctions lists all functions for a project (key-scoped GET /v1/functions or user-scoped GET /projects/:id/functions).
 func (h *FunctionHandler) ListFunctions(c *gin.Context) {
-	user, ok := middleware.RequireAuth(c)
-	if !ok {
+	projectID := middleware.GetProjectID(c)
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID required"})
 		return
 	}
 
-	projectID := c.Param("id")
-
-	// Check if user has access to this project
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if middleware.GetProjectKeyProjectID(c) == "" {
+		// User-scoped: require auth and membership
+		user, ok := middleware.RequireAuth(c)
+		if !ok {
+			return
+		}
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	functions, err := h.functionService.ListFunctionsByProject(projectID)
@@ -72,7 +96,24 @@ func (h *FunctionHandler) ListFunctions(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, functions)
+	// Transform to enriched response
+	responses := make([]FunctionResponse, len(functions))
+	for i, fn := range functions {
+		responses[i] = FunctionResponse{
+			ID:                fn.ID,
+			ProjectID:         fn.ProjectID,
+			FunctionServiceID: fn.FunctionServiceID,
+			Name:              fn.Name,
+			Runtime:           fn.Runtime,
+			Trigger:           "http", // All functions are HTTP-triggered
+			Status:            "active", // Default status, can be enhanced later with functions service query
+			PathOrCron:        fn.Name, // Use function name as path (can be enhanced to actual invoke path)
+			CreatedAt:         fn.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:         fn.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	c.JSON(http.StatusOK, responses)
 }
 
 // DeployFunction deploys a function to a project
@@ -82,7 +123,7 @@ func (h *FunctionHandler) DeployFunction(c *gin.Context) {
 		return
 	}
 
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 
 	// Check if user has access to this project
 	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
@@ -135,7 +176,7 @@ func (h *FunctionHandler) DeleteFunction(c *gin.Context) {
 		return
 	}
 
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	functionID := c.Param("functionId")
 
 	// Check if user has access to this project
@@ -162,6 +203,7 @@ func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
 	// 1. Get Project ID (from Client Key)
 	key := c.GetHeader("X-Bunbase-Client-Key")
 	var projectID string
+	var project *models.Project
 
 	if key != "" {
 		id, err := h.projectService.GetProjectIDByPublicKey(key)
@@ -170,6 +212,12 @@ func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
 			return
 		}
 		projectID = id
+		// Load full project (includes public_api_key) for context injection
+		project, err = h.projectService.GetProjectByID(projectID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load project"})
+			return
+		}
 	} else {
 		// Fallback to User Auth if needed, but for now strict Key requirement for SDK
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "API Key required"})
@@ -189,48 +237,113 @@ func (h *FunctionHandler) InvokeFunction(c *gin.Context) {
 		return
 	}
 
-	// 3. Proxy to Functions Service (HTTP Gateway)
-	targetURL := fmt.Sprintf("%s/functions/%s", h.functionsURL, function.FunctionServiceID)
+	// 2b. Build project config (for gateway URL) and inject context headers for Functions service
+	if project != nil && h.projectConfigService != nil {
+		cfg := h.projectConfigService.GetConfig(project)
+		if cfg != nil {
+			if project.PublicAPIKey != nil {
+				c.Request.Header.Set("X-Bunbase-API-Key", *project.PublicAPIKey)
+			}
+			c.Request.Header.Set("X-Bunbase-Project-ID", projectID)
+			c.Request.Header.Set("X-Bunbase-Gateway-URL", cfg.GatewayURL)
+		}
+	}
 
-	proxyReq, err := http.NewRequest(c.Request.Method, targetURL, c.Request.Body)
+	h.doInvoke(c, function.FunctionServiceID)
+}
+
+// doInvoke performs the actual invoke via RPC (if configured) or HTTP proxy. Call after project context headers are set on c.Request.
+func (h *FunctionHandler) doInvoke(c *gin.Context, functionServiceID string) {
+	var body []byte
+	if c.Request.Body != nil {
+		body, _ = io.ReadAll(c.Request.Body)
+	}
+	path := c.Request.URL.Path
+	if c.Request.URL.RawQuery != "" {
+		path += "?" + c.Request.URL.RawQuery
+	}
+	headers := make(map[string]string)
+	for k, v := range c.Request.Header {
+		if len(v) > 0 && k != "Host" {
+			headers[k] = v[0]
+		}
+	}
+	query := make(map[string]string)
+	for k, v := range c.Request.URL.Query() {
+		if len(v) > 0 {
+			query[k] = v[0]
+		}
+	}
+
+	if h.functionsRPC != nil {
+		resp, err := h.functionsRPC.Invoke(&client.InvokeRequest{
+			FunctionID: functionServiceID,
+			Method:     c.Request.Method,
+			Path:       path,
+			Headers:    headers,
+			Query:      query,
+			Body:       body,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("Failed to invoke function: %v", err)})
+			return
+		}
+		if !resp.Success {
+			code := resp.Status
+			if code == 0 {
+				code = http.StatusInternalServerError
+			}
+			c.Data(code, "application/json", resp.Body)
+			return
+		}
+		for k, v := range resp.Headers {
+			c.Writer.Header().Set(k, v)
+		}
+		c.Data(resp.Status, "application/json", resp.Body)
+		return
+	}
+
+	// HTTP proxy
+	targetURL := fmt.Sprintf("%s/functions/%s", h.functionsURL, functionServiceID)
+	if c.Request.URL.RawQuery != "" {
+		targetURL += "?" + c.Request.URL.RawQuery
+	}
+	proxyReq, err := http.NewRequest(c.Request.Method, targetURL, io.NopCloser(bytes.NewReader(body)))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request"})
 		return
 	}
-
 	for k, v := range c.Request.Header {
-		proxyReq.Header[k] = v
+		if k != "Host" {
+			proxyReq.Header[k] = v
+		}
 	}
-
-	client := &http.Client{}
-	resp, err := client.Do(proxyReq)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(proxyReq)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("Failed to invoke function: %v", err)})
 		return
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
-		return
-	}
-
+	respBody, _ := io.ReadAll(resp.Body)
 	for k, v := range resp.Header {
 		c.Writer.Header()[k] = v
 	}
-
-	c.Writer.WriteHeader(resp.StatusCode)
-	c.Writer.Write(body)
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
 }
 
-// InvokeProjectFunction handles function invocation (via Project ID; user or project API key).
+// InvokeProjectFunction handles function invocation (key-scoped /v1/functions/:name/invoke or user-scoped /projects/:id/functions/:name/invoke).
 func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project ID required"})
+		return
+	}
 	functionName := c.Param("name")
+	var project *models.Project
 
-	// Allow if authorized by project API key
-	if middleware.GetProjectKeyProjectID(c) != projectID {
+	// Allow if authorized by project API key (key-scoped); else require user and membership
+	if middleware.GetProjectKeyProjectID(c) == "" {
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return
@@ -251,6 +364,16 @@ func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
 		}
 	}
 
+	// Load project for context injection (public API key, slug, etc.)
+	if h.projectService != nil {
+		var err error
+		project, err = h.projectService.GetProjectByID(projectID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load project"})
+			return
+		}
+	}
+
 	if functionName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Function name required"})
 		return
@@ -263,48 +386,19 @@ func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
 		return
 	}
 
-	// Proxy to Functions Service (HTTP Gateway)
-	targetURL := fmt.Sprintf("%s/functions/%s", h.functionsURL, function.FunctionServiceID)
-
-	proxyReq, err := http.NewRequest(c.Request.Method, targetURL, c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request"})
-		return
-	}
-
-	// Copy headers, but filter out sensitive ones if needed
-	// For console invocation, we might want to inject a special header indicating it's a test
-	for k, v := range c.Request.Header {
-		// Skip Host header, let Go set it
-		if k == "Host" {
-			continue
+	// Inject project context headers for Functions service
+	if project != nil && h.projectConfigService != nil {
+		cfg := h.projectConfigService.GetConfig(project)
+		if cfg != nil {
+			if project.PublicAPIKey != nil {
+				c.Request.Header.Set("X-Bunbase-API-Key", *project.PublicAPIKey)
+			}
+			c.Request.Header.Set("X-Bunbase-Project-ID", projectID)
+			c.Request.Header.Set("X-Bunbase-Gateway-URL", cfg.GatewayURL)
 		}
-		proxyReq.Header[k] = v
 	}
 
-	// Ensure we pass the Authorization header if the function needs it (though console usually uses cookies)
-	// If the user provided custom headers in the UI, they should be in c.Request.Header
-
-	client := &http.Client{}
-	resp, err := client.Do(proxyReq)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("Failed to invoke function: %v", err)})
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
-		return
-	}
-
-	for k, v := range resp.Header {
-		c.Writer.Header()[k] = v
-	}
-
-	c.Writer.WriteHeader(resp.StatusCode)
-	c.Writer.Write(body)
+	h.doInvoke(c, function.FunctionServiceID)
 }
 
 // GetProjectFunctionLogs returns logs for the project's functions (optionally filtered by function).
@@ -313,7 +407,7 @@ func (h *FunctionHandler) GetProjectFunctionLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

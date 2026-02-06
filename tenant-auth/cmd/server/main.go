@@ -41,7 +41,7 @@ func main() {
 		os.Setenv("TENANTAUTH_PORT", "8083")
 	}
 	if os.Getenv("TENANTAUTH_BUNDOC_URL") == "" {
-		os.Setenv("TENANTAUTH_BUNDOC_URL", "http://bundoc-server:8080")
+		os.Setenv("TENANTAUTH_BUNDOC_URL", "http://bundoc-auth:8080")
 	}
 	if os.Getenv("TENANTAUTH_JWT_SECRET") == "" {
 		os.Setenv("TENANTAUTH_JWT_SECRET", "tenant-dev-secret-key")
@@ -55,17 +55,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Connect to Database (Bundoc)
-	database := db.NewBundocDB(cfg.Bundoc.URL)
-	log.Info("Initialized Bundoc Client", "url", cfg.Bundoc.URL)
-	// No explicit Close() generic method in struct, but NewBundocDB returns *BundocDB which has Close().
-	defer database.Close()
+	// 3. Connect to Database (Bundoc) – use RPC when configured for lower latency
+	var database db.DBClient
+	if rpcAddr := os.Getenv("TENANTAUTH_BUNDOC_RPC_ADDR"); rpcAddr != "" {
+		rpcDB := db.NewBundocRPCDB(rpcAddr)
+		defer rpcDB.Close()
+		database = rpcDB
+		log.Info("Initialized Bundoc RPC client", "addr", rpcAddr)
+	} else {
+		httpDB := db.NewBundocDB(cfg.Bundoc.URL)
+		defer httpDB.Close()
+		database = httpDB
+		log.Info("Initialized Bundoc HTTP client", "url", cfg.Bundoc.URL)
+	}
 
-	// 4. Optional KMS client for provider secrets
-	var kmsClient *kms.Client
-	if cfg.Bunkms.URL != "" {
+	// 4. Optional KMS client for provider secrets (RPC preferred when set)
+	var kmsClient kms.ClientInterface
+	if rpcAddr := os.Getenv("TENANTAUTH_BUNKMS_RPC_ADDR"); rpcAddr != "" {
+		rpcCl := kms.NewRPCClient(rpcAddr)
+		defer rpcCl.Close()
+		kmsClient = rpcCl
+		log.Info("KMS RPC client enabled for provider secrets", "addr", rpcAddr)
+	} else if cfg.Bunkms.URL != "" {
 		kmsClient = kms.NewClient(cfg.Bunkms.URL, cfg.Bunkms.Token)
-		log.Info("KMS client enabled for provider secrets", "url", cfg.Bunkms.URL)
+		log.Info("KMS HTTP client enabled for provider secrets", "url", cfg.Bunkms.URL)
 	}
 
 	// 5. Initialize Handler

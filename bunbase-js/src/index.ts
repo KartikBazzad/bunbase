@@ -5,10 +5,6 @@ export * from "./database";
 export * from "./functions";
 export * from "./client";
 
-export function createClient(
-  url: string,
-  apiKey: string,
-  projectId: string = "default"
-) {
+export function createClient(url: string, apiKey: string, projectId?: string) {
   return new BunBaseClient(url, apiKey, projectId);
 }

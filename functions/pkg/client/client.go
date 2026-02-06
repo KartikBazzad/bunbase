@@ -18,19 +18,27 @@ var (
 	ErrInvalidResponse  = errors.New("invalid response from server")
 )
 
-// Client is a client for the functions service IPC
+// Client is a client for the functions service IPC (Unix socket or TCP).
 type Client struct {
-	socketPath string
-	conn       net.Conn
-	mu         sync.Mutex
-	requestID  uint64
+	network string // "unix" or "tcp"
+	address string // socket path or "host:port"
+	conn    net.Conn
+	mu      sync.Mutex
+	requestID uint64
 }
 
-// New creates a new IPC client
-func New(socketPath string) *Client {
+// New creates a new IPC client. addr is either a Unix socket path or "tcp://host:port" for TCP.
+func New(addr string) *Client {
+	network := "unix"
+	address := addr
+	if len(addr) >= 7 && (addr[:7] == "tcp://") {
+		network = "tcp"
+		address = addr[7:]
+	}
 	return &Client{
-		socketPath: socketPath,
-		requestID:  1,
+		network:   network,
+		address:   address,
+		requestID: 1,
 	}
 }
 
@@ -43,7 +51,7 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
-	conn, err := net.Dial("unix", c.socketPath)
+	conn, err := net.Dial(c.network, c.address)
 	if err != nil {
 		return ErrConnectionFailed
 	}

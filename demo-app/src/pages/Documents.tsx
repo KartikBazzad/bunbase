@@ -13,7 +13,7 @@ interface Task {
 }
 
 export function Documents() {
-  const { baseUrl, apiKey, projectId, isConfigured } = useConfig();
+  const { baseUrl, apiKey, isConfigured } = useConfig();
   const [items, setItems] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +28,7 @@ export function Documents() {
     setLoading(true);
     setError(null);
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       const result = await client.db.collection(COLLECTION).list();
       const docs = (result as { documents?: Task[] }).documents ?? [];
       setItems(Array.isArray(docs) ? docs : []);
@@ -37,7 +37,7 @@ export function Documents() {
     } finally {
       setLoading(false);
     }
-  }, [isConfigured, baseUrl, apiKey, projectId]);
+  }, [isConfigured, baseUrl, apiKey]);
 
   // Initial load and setup realtime subscription
   useEffect(() => {
@@ -48,7 +48,7 @@ export function Documents() {
 
     // Setup realtime subscription
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       const unsubscribe = client.db.collection<Task>(COLLECTION).watch((event: ChangeEvent<Task>) => {
         setItems((current) => {
           const id = event.docId || (event.document as any)?._id;
@@ -86,14 +86,14 @@ export function Documents() {
       }
       setIsLive(false);
     };
-  }, [isConfigured, baseUrl, apiKey, projectId, load]);
+  }, [isConfigured, baseUrl, apiKey, load]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!newTitle.trim() || !isConfigured) return;
     setError(null);
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       await client.db.collection<Task>(COLLECTION).create({
         title: newTitle.trim(),
         done: false,
@@ -109,7 +109,7 @@ export function Documents() {
     if (!isConfigured || !editTitle.trim()) return;
     setError(null);
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       await client.db.collection<Task>(COLLECTION).update(id, { title: editTitle.trim() });
       setEditingId(null);
       setEditTitle("");
@@ -123,7 +123,7 @@ export function Documents() {
     if (!isConfigured) return;
     setError(null);
     try {
-      const client = createClient({ baseUrl, apiKey, projectId });
+      const client = createClient({ baseUrl, apiKey });
       await client.db.collection(COLLECTION).delete(id);
       // No need to reload - realtime subscription will update UI
     } catch (e) {

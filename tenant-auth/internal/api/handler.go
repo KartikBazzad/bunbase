@@ -22,11 +22,11 @@ type Handler struct {
 	db        db.DBClient
 	log       *slog.Logger
 	jwtSecret []byte
-	kmsClient *kms.Client // optional; when set, provider client_secret is stored in KMS and only ref in Bundoc
+	kmsClient kms.ClientInterface // optional; when set, provider client_secret is stored in KMS and only ref in Bundoc
 }
 
 // NewHandler creates a new handler. kmsClient may be nil; then provider secrets are not persisted to KMS.
-func NewHandler(database db.DBClient, jwtSecret string, kmsClient *kms.Client) *Handler {
+func NewHandler(database db.DBClient, jwtSecret string, kmsClient kms.ClientInterface) *Handler {
 	return &Handler{
 		db:        database,
 		log:       logger.Get(),

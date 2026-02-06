@@ -12,19 +12,20 @@ import (
 	"github.com/kartikbazzad/bunbase/functions/internal/scheduler"
 )
 
-// Server provides Unix socket IPC for API server integration
+// Server provides Unix socket IPC (and optional TCP) for API server integration
 type Server struct {
-	cfg         *config.Config
-	logger      *logger.Logger
-	router      *router.Router
-	scheduler   *scheduler.Scheduler
-	handler     *Handler
-	listener    net.Listener
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	running     bool
-	connections map[net.Conn]bool
-	connMu      sync.Mutex
+	cfg          *config.Config
+	logger       *logger.Logger
+	router       *router.Router
+	scheduler    *scheduler.Scheduler
+	handler      *Handler
+	listener     net.Listener   // Unix socket
+	tcpListener  net.Listener   // Optional TCP (e.g. :9090)
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	running      bool
+	connections  map[net.Conn]bool
+	connMu       sync.Mutex
 }
 
 // NewServer creates a new IPC server
@@ -73,6 +74,20 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go s.acceptLoop()
 
+	// Optional TCP listener (same protocol) for cross-container callers (e.g. platform)
+	if s.cfg.TCPAddr != "" {
+		tcpLn, err := net.Listen("tcp", s.cfg.TCPAddr)
+		if err != nil {
+			s.listener.Close()
+			s.running = false
+			return err
+		}
+		s.tcpListener = tcpLn
+		s.logger.Info("IPC TCP server listening on %s", s.cfg.TCPAddr)
+		s.wg.Add(1)
+		go s.acceptLoopTCP()
+	}
+
 	return nil
 }
 
@@ -86,6 +101,9 @@ func (s *Server) Stop() error {
 
 	if s.listener != nil {
 		s.listener.Close()
+	}
+	if s.tcpListener != nil {
+		s.tcpListener.Close()
 	}
 
 	s.running = false
@@ -106,7 +124,6 @@ func (s *Server) Stop() error {
 
 func (s *Server) acceptLoop() {
 	defer s.wg.Done()
-
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -119,11 +136,31 @@ func (s *Server) acceptLoop() {
 			s.logger.Error("Accept error: %v", err)
 			continue
 		}
-
 		s.connMu.Lock()
 		s.connections[conn] = true
 		s.connMu.Unlock()
+		s.wg.Add(1)
+		go s.handleConnection(conn)
+	}
+}
 
+func (s *Server) acceptLoopTCP() {
+	defer s.wg.Done()
+	for {
+		conn, err := s.tcpListener.Accept()
+		if err != nil {
+			s.mu.Lock()
+			if !s.running {
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Unlock()
+			s.logger.Error("TCP accept error: %v", err)
+			continue
+		}
+		s.connMu.Lock()
+		s.connections[conn] = true
+		s.connMu.Unlock()
 		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}

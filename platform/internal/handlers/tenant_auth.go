@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
+	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
@@ -23,7 +24,7 @@ func NewTenantAuthHandler(client *auth.TenantClient, projectService *services.Pr
 // ListProjectUsers lists all users (identities) for a project's auth system
 // GET /api/projects/:id/auth/users
 func (h *TenantAuthHandler) ListProjectUsers(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID required"})
 		return
@@ -49,7 +50,7 @@ func (h *TenantAuthHandler) ListProjectUsers(c *gin.Context) {
 // GetProjectAuthConfig retrieves auth configuration for a project
 // GET /api/projects/:id/auth/config
 func (h *TenantAuthHandler) GetProjectAuthConfig(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	config, err := h.client.GetConfig(projectID)
 	if err != nil {
 		// Return 200 with default config so the console still loads; include error for UI to show
@@ -66,7 +67,7 @@ func (h *TenantAuthHandler) GetProjectAuthConfig(c *gin.Context) {
 // UpdateProjectAuthConfig updates auth configuration
 // PUT /api/projects/:id/auth/config
 func (h *TenantAuthHandler) UpdateProjectAuthConfig(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 
 	var config auth.AuthConfig
 	if err := c.ShouldBindJSON(&config); err != nil {
@@ -85,7 +86,7 @@ func (h *TenantAuthHandler) UpdateProjectAuthConfig(c *gin.Context) {
 // CreateProjectUser creates a new auth user for the project (admin/console).
 // POST /api/projects/:id/auth/users
 func (h *TenantAuthHandler) CreateProjectUser(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID := middleware.GetProjectID(c)
 	if projectID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID required"})
 		return

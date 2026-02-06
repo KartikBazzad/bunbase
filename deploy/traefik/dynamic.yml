@@ -6,6 +6,21 @@ http:
       entryPoints:
         - web
 
+    # Custom domain routing for functions:
+    # - {slug}.bunbase.com/function-name
+    # - {projectID}.functions.bunbase.com/function-name
+    function-subdomain:
+      rule: "HostRegexp(`{subdomain:.+}\\.bunbase\\.com`) && PathPrefix(`/`)"
+      service: platform
+      entryPoints:
+        - web
+
+    function-generated:
+      rule: "HostRegexp(`{project:.+}\\.functions\\.bunbase\\.com`) && PathPrefix(`/`)"
+      service: platform
+      entryPoints:
+        - web
+
     web:
       rule: "PathPrefix(`/`)"
       service: web

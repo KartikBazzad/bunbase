@@ -6,6 +6,7 @@
  */
 
 import type { BodyInit } from "bun";
+import { BunBaseAdmin } from "./admin-sdk";
 
 interface Message {
   id: string;
@@ -20,6 +21,9 @@ interface InvokePayload {
   query: Record<string, string>;
   body: string; // base64-encoded
   deadline_ms: number;
+  project_id?: string;
+  project_api_key?: string;
+  gateway_url?: string;
 }
 
 interface ResponsePayload {
@@ -110,6 +114,12 @@ console.debug = (...args: any[]) => interceptLog("debug", ...args);
 
 // Load function bundle
 let handler: ((req: Request) => Promise<Response>) | null = null;
+
+// Expose BunBase admin SDK globally for handlers
+// It reads project context from process.env set per invocation.
+(globalThis as any).BunBase = {
+  admin: () => new BunBaseAdmin(),
+};
 
 try {
   const bundle = await import(BUNDLE_PATH);
@@ -266,6 +276,17 @@ async function processMessage(msg: Message) {
   if (msg.type === "invoke") {
     const payload = msg.payload as InvokePayload;
     currentInvocationId = msg.id;
+
+    // Inject per-invocation project context into environment for admin SDK
+    if (payload.project_id) {
+      process.env.BUNBASE_PROJECT_ID = payload.project_id;
+    }
+    if (payload.project_api_key) {
+      process.env.BUNBASE_API_KEY = payload.project_api_key;
+    }
+    if (payload.gateway_url) {
+      process.env.BUNBASE_GATEWAY_URL = payload.gateway_url;
+    }
 
     // Check deadline
     if (payload.deadline_ms > 0) {

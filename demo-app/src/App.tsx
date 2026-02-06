@@ -10,9 +10,8 @@ import { Settings } from "./pages/Settings";
 import { Layout } from "./components/Layout";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const hasToken = localStorage.getItem("demo_api_key");
-  const hasProject = localStorage.getItem("demo_project_id");
-  if (!hasToken || !hasProject) {
+  const hasApiKey = localStorage.getItem("demo_api_key");
+  if (!hasApiKey) {
     return <Navigate to="/settings" replace />;
   }
   return <>{children}</>;

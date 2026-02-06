@@ -166,6 +166,9 @@ export default async function handler(req: Request): Promise<Response> {
 
 - `Request` object (Web API standard)
 - Environment variables (via `process.env`)
+  - `BUNBASE_PROJECT_ID` – Project ID for the current function invocation
+  - `BUNBASE_API_KEY` – Project public API key for admin calls
+  - `BUNBASE_GATEWAY_URL` – Gateway base URL (e.g. `https://api.bunbase.com`)
 - Invocation ID (via `X-Invocation-Id` header)
 
 ### Not Provided (v1)
@@ -174,6 +177,34 @@ export default async function handler(req: Request): Promise<Response> {
 - Network outside allowlist (v1: open)
 - File system outside temp directory
 - Strong isolation
+
+### Admin SDK (`BunBase.admin()`)
+
+Inside your function handler, you can access a minimal admin SDK:
+
+```typescript
+export default async function handler(req: Request): Promise<Response> {
+  const admin = (globalThis as any).BunBase.admin();
+
+  // Invoke another function in the same project
+  const resp = await admin.invokeFunction("hello-world", { name: "Nested" });
+
+  // Perform a raw DB request (Bundoc)
+  const dbResp = await admin.dbRequest(
+    "POST",
+    `/database/collections/tasks/documents`,
+    { title: "from-admin" },
+  );
+
+  return Response.json({
+    ok: true,
+    invokedStatus: resp.status,
+    dbStatus: dbResp.status,
+  });
+}
+```
+
+`BunBase.admin()` reads the project context from the environment variables above, which are injected by the Platform for each invocation.
 
 ## Invocation Sources
 
