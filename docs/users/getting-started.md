@@ -8,7 +8,7 @@ BunBase is a developer platform that lets you:
 
 - **Deploy JavaScript/TypeScript functions** with minimal configuration
 - **Manage projects** and organize your functions
-- **Store and query data** using DocDB, our embedded document database
+- **Store and query data** using Bundoc through platform database APIs
 - **Build serverless applications** with fast, warm execution
 
 ## Quick Start
@@ -58,8 +58,7 @@ Each project has a **project API key** (e.g. `pk_...`) used to authenticate clie
 2. **Login via CLI**:
 
    ```bash
-   ./bunbase auth login
-   # Enter your email and password
+   ./bunbase login --email you@example.com --password 'your-password'
    ```
 
 3. **Select your project**:
@@ -81,7 +80,7 @@ Each project has a **project API key** (e.g. `pk_...`) used to authenticate clie
 
 5. **Deploy the function**:
    ```bash
-   ./bunbase deploy hello.ts --name hello --runtime bun --handler default
+   ./bunbase functions deploy --file hello.ts --name hello --runtime bun --handler default
    ```
 
 #### Option B: Using the Web Dashboard
@@ -97,10 +96,11 @@ Each project has a **project API key** (e.g. `pk_...`) used to authenticate clie
 
 ### 4. Invoke Your Function
 
-Once deployed, you can invoke your function via HTTP:
+Once deployed, you can invoke your function via the project-scoped API:
 
 ```bash
-curl "http://localhost:8080/functions/hello?name=Alice"
+curl -X POST "http://localhost:3001/v1/functions/hello/invoke?name=Alice" \
+  -H "X-Bunbase-Client-Key: pk_your_project_key"
 ```
 
 Response:
@@ -117,7 +117,7 @@ Response:
 - **[Using the CLI](cli-guide.md)** - Complete CLI reference
 - **[Platform API](api-reference.md)** - REST API documentation
 - **[Managing Projects](projects.md)** - Project management guide
-- **[DocDB Guide](../docdb/docs/usage.md)** - Using the document database
+- **[API Paths](../api-paths.md)** - Data and function route conventions
 
 ## Common Questions
 

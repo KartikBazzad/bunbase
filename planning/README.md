@@ -56,3 +56,5 @@ When creating a new plan:
 - **Requirements:** `../requirements/` - Product requirements and user flows
 - **Architecture:** `../docs/architecture.md` - System architecture
 - **Implementation Status:** `../docs/implementation-status/` - Implementation tracking
+- **Service Implementation Baseline:** `service-implementation.md` - Current per-service implementation map
+- **Service Roadmap:** `service-roadmap.md` - Detailed roadmap by service

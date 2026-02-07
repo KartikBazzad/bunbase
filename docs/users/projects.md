@@ -88,12 +88,6 @@ Click on a project card to view and manage it.
 
 ### View Project
 
-**CLI:**
-
-```bash
-bunbase projects get <project-id>
-```
-
 **API:**
 
 ```bash
@@ -156,12 +150,6 @@ curl -X DELETE http://localhost:3001/api/projects/<project-id> \
 
 ### List Functions in Project
 
-**CLI:**
-
-```bash
-bunbase functions list [--project <project-id>]
-```
-
 **API:**
 
 ```bash
@@ -178,7 +166,7 @@ curl http://localhost:3001/api/projects/<project-id>/functions \
 bunbase projects use <project-id>
 
 # Deploy function
-bunbase deploy handler.ts --name api --runtime bun --handler default
+bunbase functions deploy --file handler.ts --name api --runtime bun --handler default
 ```
 
 **API:**

@@ -50,8 +50,8 @@ Registry of all active and completed implementation plans for the BunBase monore
 
 **Related Documents:**
 
-- [DocDB v0.1 Status](../docs/implementation-status/docdb/V0.1_CURRENT_STATUS.md)
-- [DocDB Implementation Summary](../docs/implementation-status/docdb/IMPLEMENTATION_SUMMARY.md)
+- [Bundoc Status](../docs/implementation-status/bundoc/STATUS.md)
+- [Bundoc Roadmap](../docs/implementation-status/bundoc/ROADMAP.md)
 
 ---
 

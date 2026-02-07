@@ -1,0 +1,13 @@
+<svg width="220" height="220" viewBox="0 0 220 220" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">BunBase logo mark</title>
+  <desc id="desc">A minimal two-color BunBase icon based on a lowercase b inside a rounded square.</desc>
+
+  <rect x="16" y="16" width="188" height="188" rx="46" fill="#F59E0B"/>
+
+  <rect x="72" y="50" width="30" height="120" rx="15" fill="#111827"/>
+  <circle cx="120" cy="88" r="34" fill="#111827"/>
+  <circle cx="120" cy="132" r="34" fill="#111827"/>
+
+  <circle cx="128" cy="88" r="18" fill="#F59E0B"/>
+  <circle cx="128" cy="132" r="18" fill="#F59E0B"/>
+</svg>

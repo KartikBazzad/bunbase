@@ -2,9 +2,17 @@
 
 Welcome to the BunBase documentation. This directory contains cross-cutting documentation for the entire platform.
 
-## Core Documentation
+![BunBase logo](assets/bunbase-logo.svg)
 
+## Product Documentation
+
+- **[Product Catalog](products/README.md)** - Feature and ownership map for every service/product
 - **[Architecture](architecture.md)** - High-level system architecture and component overview
+- **[Inter-service RPC](inter-service-rpc.md)** - RPC topology and environment configuration
+- **[API Paths](api-paths.md)** - Canonical API path conventions across layers
+
+## Engineering Workflow
+
 - **[Development Workflow](development-workflow.md)** - How to work with the BunBase monorepo
 - **[Sharing Code Between Services](sharing-code-between-services.md)** - Guide for sharing code across Go services
 
@@ -21,12 +29,12 @@ Complete guides for using BunBase:
 
 See [User Documentation Index](users/README.md) for the complete user guide.
 
-## Implementation Status
+## Historical Implementation Status
 
 Historical implementation status and progress reports are in [`implementation-status/`](implementation-status/):
 
 - **Platform**: `implementation-status/platform.md`
-- **DocDB**: `implementation-status/docdb/`
+- **Bundoc**: `implementation-status/bundoc/`
 - **Functions**: `implementation-status/functions/`
 - **Buncast**: `implementation-status/buncast/` - Pub/Sub service status
 
@@ -34,11 +42,15 @@ Historical implementation status and progress reports are in [`implementation-st
 
 Each service maintains its own documentation:
 
-- **DocDB**: `../docdb/docs/` - Architecture, usage, configuration, troubleshooting
-- **Functions**: `../functions/docs/` - API reference, deployment, function development
-- **Platform API**: `../platform/README.md` - API endpoints and setup
-- **Platform Web**: `../platform-web/README.md` - Frontend setup and design system
-- **Buncast**: `../buncast/README.md`, `../buncast/docs/` - Pub/Sub service, IPC and HTTP API
+- **Platform API**: `../platform/README.md`
+- **Functions**: `../functions/README.md`, `../functions/docs/`
+- **Bundoc (Engine)**: `../bundoc/README.md`, `../bundoc/docs/`
+- **Bundoc Server**: `../bundoc-server/README.md`
+- **Buncast**: `../buncast/README.md`, `../buncast/docs/`
+- **Bunder**: `../bunder/README.md`, `../bunder/docs/`
+- **Bunder Manager**: `../bunder-manager/README.md`
+- **BunKMS**: `../bun-kms/README.md`, `../bun-kms/docs/`
+- **Platform Web**: `../platform-web/README.md`
 
 ## Planning & Requirements
 
@@ -47,5 +59,6 @@ Each service maintains its own documentation:
 
 ## Quick Links
 
-- [Monorepo Structure](../planning/monorepo-structure.md) - Repository organization
-- [Shared Libraries Plan](../planning/shared-libraries.md) - Code sharing strategy
+- [Service Requirements](../requirements/services.md) - Unified per-service requirements
+- [Service Implementation](../planning/service-implementation.md) - Current implementation inventory and gaps
+- [Service Roadmap](../planning/service-roadmap.md) - Detailed roadmap by service

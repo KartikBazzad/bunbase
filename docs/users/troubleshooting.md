@@ -10,7 +10,7 @@ Common issues and solutions when using BunBase.
 
 **Solutions:**
 
-1. **CLI**: Run `bunbase auth login` to authenticate
+1. **CLI**: Run `bunbase login --email ... --password ...` to authenticate
 2. **API**: Ensure session cookies are included in requests
 3. **Dashboard**: Log out and log back in
 
@@ -21,8 +21,7 @@ Common issues and solutions when using BunBase.
 **Solution**: Re-authenticate:
 
 ```bash
-bunbase auth logout
-bunbase auth login
+bunbase login --email you@example.com --password 'your-password'
 ```
 
 ## Function Deployment Issues
@@ -40,7 +39,7 @@ bunbase auth login
      // ...
    }
    ```
-3. **Runtime supported**: Currently only `bun` runtime is supported
+3. **Runtime supported**: Use `bun` (and `quickjs-ng` only when your environment/runtime wiring supports it)
 4. **Bundle format**: If bundling manually, ensure correct format
 
 **Solution**: Review function logs in dashboard for detailed errors.
@@ -51,7 +50,7 @@ bunbase auth login
 
 **Check:**
 
-1. Function is registered: `bunbase functions list`
+1. Function is visible in dashboard function list or via `GET /api/projects/:id/functions`
 2. Function status is `deployed` (check dashboard)
 3. Bundle file exists at expected path
 4. Function name matches exactly (case-sensitive)
@@ -245,7 +244,7 @@ cd functions
 
 1. Function code efficiency
 2. External API calls (timeouts, retries)
-3. Database queries (if using DocDB)
+3. Database queries (if using Bundoc APIs)
 4. Cold start vs warm execution
 
 **Solutions:**
@@ -294,7 +293,7 @@ Enable debug logging:
 
 | Error                | Cause                 | Solution                            |
 | -------------------- | --------------------- | ----------------------------------- |
-| "Not authenticated"  | No valid session      | Run `bunbase auth login`            |
+| "Not authenticated"  | No valid session      | Run `bunbase login --email ... --password ...` |
 | "Project not found"  | Invalid project ID    | Verify with `bunbase projects list` |
 | "Function not found" | Function not deployed | Deploy function first               |
 | "Timeout"            | Function took >30s    | Optimize function code              |

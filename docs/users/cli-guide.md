@@ -1,276 +1,108 @@
 # BunBase CLI Guide
 
-The BunBase CLI (`bunbase`) is a command-line tool for managing your projects and deploying functions.
+The BunBase CLI binary is implemented in `platform/cmd/cli`.
 
-## Installation
-
-### Build from Source
+## Build
 
 ```bash
 cd platform
 go build -o bunbase ./cmd/cli
 ```
 
-Add to your PATH (optional):
+## Command Surface
 
-```bash
-sudo mv bunbase /usr/local/bin/
-```
+Top-level commands currently available:
+- `bunbase login`
+- `bunbase projects`
+- `bunbase functions`
+- `bunbase dev`
+- `bunbase whoami`
 
 ## Authentication
 
-### Login
+Login stores session and base URL in `~/.bunbase/cli_config.json`.
 
 ```bash
-bunbase auth login
+bunbase login --email you@example.com --password 'your-password'
 ```
 
-Prompts for:
+Optional flags:
+- `--base-url` (default: `http://localhost:3001/api`)
 
-- Email address
-- Password
-
-Stores session cookie for subsequent commands.
-
-### Logout
+Check current authenticated user:
 
 ```bash
-bunbase auth logout
+bunbase whoami
 ```
-
-Clears stored session.
-
-### Check Current User
-
-```bash
-bunbase auth me
-```
-
-Shows your current user information.
 
 ## Projects
 
-### List Projects
+List projects:
 
 ```bash
 bunbase projects list
 ```
 
-Output:
-
-```
-ID                                    Name        Slug
-------------------------------------  ----------  ----------
-550e8400-e29b-41d4-a716-446655440000  My Project  my-project
-```
-
-### Create Project
+Create a project (also sets it active):
 
 ```bash
-bunbase projects create <name>
+bunbase projects create "My Project"
 ```
 
-Example:
-
-```bash
-bunbase projects create "My Awesome App"
-# Creates project with slug: my-awesome-app
-```
-
-### Use Project
-
-Set the active project for subsequent commands:
+Use project for deploy commands:
 
 ```bash
 bunbase projects use <project-id>
 ```
 
-The project ID is shown in `projects list`. After setting, all `deploy` commands will use this project.
+## Functions
 
-### Get Project Info
+Initialize function template:
 
 ```bash
-bunbase projects get <project-id>
+bunbase functions init my-function --template ts
 ```
 
-Shows project details including:
+Supported templates:
+- `ts`
+- `js`
 
-- Name and slug
-- Created date
-- Function count
-
-## Function Deployment
-
-### Deploy a Function
+Deploy function bundle/file:
 
 ```bash
-bunbase deploy <file> --name <name> --runtime <runtime> --handler <handler> [--version <version>]
-```
-
-**Required flags:**
-
-- `--name`: Function name (e.g., `hello-world`)
-- `--runtime`: Runtime type (currently: `bun`)
-- `--handler`: Handler export name (usually `default`)
-
-**Optional flags:**
-
-- `--version`: Version tag (default: `v1`)
-- `--project`: Project ID (uses active project if not specified)
-
-**Example:**
-
-```bash
-bunbase deploy src/handler.ts \
-  --name api-handler \
+bunbase functions deploy \
+  --file dist/index.js \
+  --name my-function \
   --runtime bun \
   --handler default \
-  --version v2
+  --version v1
 ```
 
-### Function File Format
+Notes:
+- `--name` defaults to source filename (without extension) when omitted.
+- Active project from `bunbase projects use` is required.
 
-Your function file must export a default handler:
+## Local Dev Runner
 
-```typescript
-export default async function handler(req: Request): Promise<Response> {
-  // Your function logic
-  return Response.json({ message: "Hello!" });
-}
-```
-
-### Bundle Requirements
-
-Before deploying, ensure your function:
-
-- Exports a default async function
-- Accepts a `Request` object
-- Returns a `Response` object
-- Is bundled (if using dependencies)
-
-**Bundle with Bun:**
+Run local function dev workflow through `functions-dev` wrapper:
 
 ```bash
-bun build src/handler.ts --outfile bundle.js --target bun
+bunbase dev --entry src/index.ts --name my-function --runtime bun --port 8787
 ```
 
-Then deploy the bundle:
-
-```bash
-bunbase deploy bundle.js --name handler --runtime bun --handler default
-```
-
-## Function Management
-
-### List Functions
-
-```bash
-bunbase functions list [--project <project-id>]
-```
-
-Lists all functions in the active (or specified) project.
-
-### Delete Function
-
-```bash
-bunbase functions delete <function-id> [--project <project-id>]
-```
-
-Removes a function from the project and functions service.
-
-## Configuration
-
-### Environment Variables
-
-Set environment variables for functions via the dashboard or API. They're available in your function via `process.env`.
-
-### Project Context
-
-The CLI stores your active project in a local config file. To see current context:
-
-```bash
-bunbase projects current
-```
-
-## Examples
-
-### Complete Workflow
-
-```bash
-# 1. Login
-bunbase auth login
-
-# 2. Create project
-bunbase projects create "My API"
-
-# 3. Set as active
-bunbase projects use <project-id>
-
-# 4. Deploy function
-bunbase deploy api.ts --name api --runtime bun --handler default
-
-# 5. List functions
-bunbase functions list
-```
-
-### Deploying Multiple Versions
-
-```bash
-# Deploy v1
-bunbase deploy handler.ts --name api --runtime bun --handler default --version v1
-
-# Deploy v2
-bunbase deploy handler.ts --name api --runtime bun --handler default --version v2
-```
+Useful flags:
+- `--entry` (auto-detects `dist/index.js`, `src/index.ts`, `src/index.js` if omitted)
+- `--name` (defaults to current directory name)
+- `--runtime` (`bun` or `quickjs-ng`)
+- `--handler` (default: `default`)
+- `--port` (default: `8787`)
+- `--runner` (default binary: `functions-dev`)
 
 ## Troubleshooting
 
-### "Not authenticated"
-
-Run `bunbase auth login` to authenticate.
-
-### "No active project"
-
-Set an active project with `bunbase projects use <project-id>`.
-
-### "Function deployment failed"
-
-- Verify the function file exists and is readable
-- Check that the function exports a default handler
-- Ensure the runtime is supported (`bun`)
-- Review function logs in the dashboard
-
-### "Project not found"
-
-- List projects: `bunbase projects list`
-- Verify project ID is correct
-- Ensure you have access to the project
-
-## Advanced Usage
-
-### Using with Scripts
-
-```bash
-#!/bin/bash
-# deploy.sh
-
-PROJECT_ID=$(bunbase projects list | grep "My Project" | awk '{print $1}')
-bunbase projects use "$PROJECT_ID"
-bunbase deploy src/api.ts --name api --runtime bun --handler default
-```
-
-### CI/CD Integration
-
-```bash
-# In your CI pipeline
-bunbase auth login --email "$BUNBASE_EMAIL" --password "$BUNBASE_PASSWORD"
-bunbase projects use "$BUNBASE_PROJECT_ID"
-bunbase deploy dist/handler.js --name "$FUNCTION_NAME" --runtime bun --handler default
-```
-
-## See Also
-
-- [Demo app](../../demo-app/README.md) – Full demo using the SDK and CLI (documents, auth, functions).
-- [Getting Started](getting-started.md)
-- [Writing Functions](writing-functions.md)
-- [Platform API](api-reference.md)
+- `not logged in; run bunbase login first`
+  - Run `bunbase login --email ... --password ...`
+- `no active project`
+  - Run `bunbase projects list` then `bunbase projects use <project-id>`
+- `deploy failed`
+  - Verify API server is reachable and function file exists.

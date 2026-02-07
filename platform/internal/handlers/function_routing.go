@@ -12,9 +12,9 @@ import (
 // domains or generated function URLs. It expects Traefik to route all such
 // requests to the Platform service.
 //
-	// Supported host patterns:
-	//   - {slug}.bunbase.com -> resolve project by slug
-	//   - {projectID}.functions.bunbase.com -> resolve project by ID
+// Supported host patterns:
+//   - {slug}.bunbase.com -> resolve project by slug
+//   - {projectID}.functions.bunbase.com -> resolve project by ID
 //
 // Path format:
 //   - /{functionName}[/*extraPath] (we use the first segment as function name)
@@ -52,8 +52,8 @@ func (h *FunctionHandler) HandleCustomDomainInvoke(c *gin.Context) {
 		return
 	}
 
-	// Extract function name from path: /{name}[/*]
-	path := strings.TrimPrefix(c.Request.URL.Path, "/")
+	// Path is passed by Traefik as /_/invoke/{name}[/*]; param "path" = name[/rest]
+	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Function name required"})
 		return
@@ -113,4 +113,3 @@ func (h *FunctionHandler) invokeForProjectAndFunction(c *gin.Context, projectID,
 
 	h.doInvoke(c, function.FunctionServiceID)
 }
-

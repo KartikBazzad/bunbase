@@ -33,6 +33,8 @@ BunBase is a self-hostable, high-performance serverless platform built on top of
 3.  **CLI**: `go install ./cmd/bunbase`
 
 ## Documentation
--   [Architecture Overview](planning/architecture_integration.md)
--   [Roadmap](planning/roadmap_phases.md)
--   [SDK Requirements](planning/sdk_requirements.md)
+-   [Documentation Index](docs/README.md)
+-   [Product Catalog](docs/products/README.md)
+-   [Service Requirements](requirements/services.md)
+-   [Service Implementation](planning/service-implementation.md)
+-   [Service Roadmap](planning/service-roadmap.md)

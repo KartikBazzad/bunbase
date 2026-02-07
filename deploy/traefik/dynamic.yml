@@ -1,4 +1,11 @@
 http:
+  middlewares:
+    # Rewrite path so platform receives /_/invoke/<path> (avoids Gin conflict with /v1)
+    platform-invoke-prefix:
+      ReplacePathRegex:
+        regex: "^/(.*)"
+        replacement: "/_/invoke/$${1}"
+
   routers:
     platform:
       rule: "PathPrefix(`/api`) || Path(`/health`)"
@@ -12,12 +19,16 @@ http:
     function-subdomain:
       rule: "HostRegexp(`{subdomain:.+}\\.bunbase\\.com`) && PathPrefix(`/`)"
       service: platform
+      middlewares:
+        - platform-invoke-prefix
       entryPoints:
         - web
 
     function-generated:
       rule: "HostRegexp(`{project:.+}\\.functions\\.bunbase\\.com`) && PathPrefix(`/`)"
       service: platform
+      middlewares:
+        - platform-invoke-prefix
       entryPoints:
         - web
 

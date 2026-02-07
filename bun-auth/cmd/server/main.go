@@ -60,6 +60,14 @@ func main() {
 		log.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
+	// Safeguard: empty User can make drivers default to "postgres", which may not exist
+	if cfg.DB.User == "" {
+		if u := os.Getenv("BUNAUTH_DB_USER"); u != "" {
+			cfg.DB.User = u
+		} else {
+			cfg.DB.User = "bunadmin"
+		}
+	}
 
 	// 3. Connect to Database
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",

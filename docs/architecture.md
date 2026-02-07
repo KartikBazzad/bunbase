@@ -14,7 +14,7 @@ flowchart LR
   user[User] --> platformWeb[PlatformWeb]
   platformWeb --> platformAPI[PlatformAPI]
   platformAPI --> functionsService[FunctionsService]
-  functionsService --> docdbService[DocDB]
+  platformAPI --> bundocService[BundocServer]
   platformAPI --> buncast[Buncast]
 
   subgraph clientSide[Client]
@@ -24,7 +24,7 @@ flowchart LR
   subgraph serverSide[Backend]
     platformAPI
     functionsService
-    docdbService
+    bundocService
     buncast
   end
 ```
@@ -45,6 +45,11 @@ flowchart LR
   - Provides an IPC interface used by the Platform API.
   - Stores function bundles and metadata on disk and in SQLite.
 
+- **Bundoc Server (`bundoc-server/`)**
+  - Multi-tenant document API surface for per-project data operations.
+  - Proxies to project-isolated Bundoc instances.
+  - Supports HTTP endpoints and internal RPC access.
+
 - **Buncast (`buncast/`)**
   - In-memory Publish-Subscribe broker for events (e.g. function deployed).
   - Exposes Unix socket IPC for server-to-server publish/subscribe and HTTP + SSE for dashboard/CLI.
@@ -61,6 +66,8 @@ For detailed documentation of each component, see:
 - Functions: `functions/README.md`, `functions/docs/`
 - Platform API: `platform/README.md`
 - Platform Web: `platform-web/README.md`
+- Bundoc Server: `bundoc-server/README.md`
+- Bundoc Engine: `bundoc/README.md`, `bundoc/docs/`
 - Buncast: `buncast/README.md`, `buncast/docs/`
 
 ### Monorepo Layout

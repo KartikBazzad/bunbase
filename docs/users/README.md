@@ -16,7 +16,8 @@ Welcome to the BunBase user documentation! This section contains guides for usin
 
 ## Additional Resources
 
-- **[DocDB Usage](../docdb/docs/usage.md)** - Using the document database
+- **[API Paths](../api-paths.md)** - Canonical API path conventions
+- **[Platform Architecture](../architecture.md)** - Component interaction overview
 - **[Function Examples](../../functions/docs/examples.md)** - Example functions and patterns
 - **[Function Development](../../functions/docs/function-development.md)** - Advanced function development
 

@@ -96,6 +96,14 @@ func main() {
 	if err := config.Load("PLATFORM_", &cfg); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	// Safeguard: empty User can make drivers default to "postgres", which may not exist
+	if cfg.DB.User == "" {
+		if u := os.Getenv("PLATFORM_DB_USER"); u != "" {
+			cfg.DB.User = u
+		} else {
+			cfg.DB.User = "bunadmin"
+		}
+	}
 
 	log.Printf("Loaded DB Config: Host=%s Port=%d MigrationsPath=%s", cfg.DB.Host, cfg.DB.Port, cfg.DB.MigrationsPath)
 
@@ -200,18 +208,9 @@ func main() {
 	// v1Auth.POST("/register", tenantAuthHandler.Register)
 	// v1Auth.POST("/login", tenantAuthHandler.Login)
 
-	v1DB := v1.Group("/databases")
-	// /v1/databases/:dbName/collections/:collection/documents
-	v1DB.POST("/:dbName/collections/:collection/documents", databaseHandler.ProxyHandler)
-	v1DB.GET("/:dbName/collections/:collection/documents", databaseHandler.ProxyHandler)
-	v1DB.GET("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
-	v1DB.PUT("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
-	v1DB.DELETE("/:dbName/collections/:collection/documents/:docID", databaseHandler.ProxyHandler)
-	v1DB.POST("/:dbName/collections/:collection/indexes", databaseHandler.ProxyHandler)
-	v1DB.DELETE("/:dbName/collections/:collection/indexes/:field", databaseHandler.ProxyHandler)
+	// Legacy /v1/databases/:dbName/... (plural) removed; use key-scoped /v1/database/... (singular) only.
 
-	v1Functions := v1.Group("/functions")
-	v1Functions.POST("/:name/invoke", functionHandler.InvokeFunction)
+	// /v1/functions/:name/invoke is registered below under v1Key (key-scoped).
 
 	// Auth routes
 	authRoutes := api.Group("/auth")
@@ -381,10 +380,9 @@ func main() {
 	tokenAPI.POST("", tokenHandler.Create)
 	tokenAPI.DELETE("/:id", tokenHandler.Delete)
 
-	// Catch-all route for custom function domains routed from Traefik.
-	// This must be registered last so that it only handles requests that
-	// weren't matched by the more specific API/web routes above.
-	router.Any("/*path", functionHandler.HandleCustomDomainInvoke)
+	// Catch-all for custom function domains (Traefik rewrites to /_/invoke/...).
+	// Must not use root "/*path" because Gin forbids a catch-all sibling of /v1.
+	router.Any("/_/invoke/*path", functionHandler.HandleCustomDomainInvoke)
 
 	// Start cleanup goroutine - Not needed for Stateless Auth (bun-auth handles it)
 	// But if we want local cache cleanup, we can add it later.
