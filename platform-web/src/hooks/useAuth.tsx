@@ -13,6 +13,7 @@ export interface User {
   name: string;
   created_at: string;
   updated_at: string;
+  is_instance_admin?: boolean;
 }
 
 interface AuthContextType {

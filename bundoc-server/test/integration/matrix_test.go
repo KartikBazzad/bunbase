@@ -14,9 +14,7 @@ import (
 	"github.com/kartikbazzad/bunbase/bundoc/storage"
 )
 
-const (
-	serverURL = "http://localhost:8080"
-)
+// serverURL is set by TestMain in setup_test.go (dynamic port).
 
 // TestMatrix_ConcurrentProjects tests multiple projects with concurrent operations
 func TestMatrix_ConcurrentProjects(t *testing.T) {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -185,7 +186,7 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 	err = coll.Insert(auth, txn, doc)
 	if err != nil {
 		db.RollbackTransaction(txn)
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, h.statusFromBundocError(err), err.Error())
 		return
 	}
 
@@ -305,7 +306,12 @@ func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Requ
 			}
 		}
 
-		docs, err := foundCollection.List(auth, txn, skip, limit)
+		fields := parseFieldsParam(r.URL.Query().Get("fields"))
+		var listOpts []bundoc.QueryOptions
+		if len(fields) > 0 {
+			listOpts = []bundoc.QueryOptions{{Fields: fields}}
+		}
+		docs, err := foundCollection.List(auth, txn, skip, limit, listOpts...)
 		if err != nil {
 			h.writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -398,7 +404,7 @@ func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.R
 	err = foundCollection.Patch(auth, txn, docID, updates)
 	if err != nil {
 		db.RollbackTransaction(txn)
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, h.statusFromBundocError(err), err.Error())
 		return
 	}
 
@@ -467,7 +473,7 @@ func (h *DocumentHandlers) HandleDeleteDocument(w http.ResponseWriter, r *http.R
 	err = foundCollection.Delete(auth, txn, docID)
 	if err != nil {
 		db.RollbackTransaction(txn)
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, h.statusFromBundocError(err), err.Error())
 		return
 	}
 
@@ -508,6 +514,7 @@ func (h *DocumentHandlers) HandleQueryDocuments(w http.ResponseWriter, r *http.R
 		Limit      int                    `json:"limit"`
 		SortField  string                 `json:"sortField"`
 		SortDesc   bool                   `json:"sortDesc"`
+		Fields     []string               `json:"fields"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -546,11 +553,9 @@ func (h *DocumentHandlers) HandleQueryDocuments(w http.ResponseWriter, r *http.R
 		Limit:     req.Limit,
 		SortField: req.SortField,
 		SortDesc:  req.SortDesc,
+		Fields:    req.Fields,
 	}
 
-	// TODO: Auth for Query? Update FindQuery signature.
-	// For now pass nil implicitly if it doesn't take auth, or error if it does.
-	// Will update FindQuery next.
 	docs, err := coll.FindQuery(auth, txn, req.Query, opts)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("query error: %v", err))
@@ -600,7 +605,12 @@ func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	docs, err := coll.List(auth, txn, skip, limit)
+	fields := parseFieldsParam(r.URL.Query().Get("fields"))
+	var listOpts []bundoc.QueryOptions
+	if len(fields) > 0 {
+		listOpts = []bundoc.QueryOptions{{Fields: fields}}
+	}
+	docs, err := coll.List(auth, txn, skip, limit, listOpts...)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -609,6 +619,20 @@ func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Re
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"documents": docs,
 	})
+}
+
+// parseFieldsParam parses a comma-separated fields query param (e.g. "_id,name,email") into a trimmed slice; empty strings omitted.
+func parseFieldsParam(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // HandleListCollections lists all collections in a database
@@ -657,8 +681,10 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 	defer r.Body.Close()
 
 	var req struct {
-		Name   string      `json:"name"`
-		Schema interface{} `json:"schema"`
+		Name                  string      `json:"name"`
+		Schema                interface{} `json:"schema"`
+		UpdateIfExists        bool        `json:"update_if_exists"`
+		PreventSchemaOverride bool        `json:"prevent_schema_override"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -679,8 +705,38 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 
 	coll, err := db.CreateCollection(req.Name)
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		if strings.Contains(err.Error(), "already exists") && req.UpdateIfExists {
+			coll, err = db.GetCollection(req.Name)
+			if err != nil {
+				h.writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if req.Schema != nil {
+				schemaBytes, err := json.Marshal(req.Schema)
+				if err != nil {
+					h.writeError(w, http.StatusBadRequest, "invalid schema format")
+					return
+				}
+				if err := coll.SetSchema(string(schemaBytes)); err != nil {
+					h.writeError(w, h.statusFromBundocError(err), err.Error())
+					return
+				}
+			}
+			h.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"name":   req.Name,
+				"schema": req.Schema,
+			})
+			return
+		}
+		h.writeError(w, http.StatusConflict, "collection already exists")
 		return
+	}
+
+	if req.PreventSchemaOverride {
+		if err := db.SetCollectionPreventSchemaOverride(req.Name, true); err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	if req.Schema != nil {
@@ -691,7 +747,7 @@ func (h *DocumentHandlers) HandleCreateCollection(w http.ResponseWriter, r *http
 		}
 
 		if err := coll.SetSchema(string(schemaBytes)); err != nil {
-			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid schema: %v", err))
+			h.writeError(w, h.statusFromBundocError(err), err.Error())
 			return
 		}
 	}
@@ -719,7 +775,8 @@ func (h *DocumentHandlers) HandleUpdateCollection(w http.ResponseWriter, r *http
 	defer r.Body.Close()
 
 	var req struct {
-		Schema interface{} `json:"schema"`
+		Schema                interface{} `json:"schema"`
+		PreventSchemaOverride *bool       `json:"prevent_schema_override"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -732,6 +789,13 @@ func (h *DocumentHandlers) HandleUpdateCollection(w http.ResponseWriter, r *http
 		return
 	}
 	defer release()
+
+	if req.PreventSchemaOverride != nil {
+		if err := db.SetCollectionPreventSchemaOverride(collection, *req.PreventSchemaOverride); err != nil {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 
 	coll, err := db.GetCollection(collection)
 	if err != nil {
@@ -746,7 +810,7 @@ func (h *DocumentHandlers) HandleUpdateCollection(w http.ResponseWriter, r *http
 			return
 		}
 		if err := coll.SetSchema(string(schemaBytes)); err != nil {
-			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to set schema: %v", err))
+			h.writeError(w, h.statusFromBundocError(err), err.Error())
 			return
 		}
 	}
@@ -1060,6 +1124,26 @@ func (h *DocumentHandlers) writeError(w http.ResponseWriter, status int, message
 	h.writeJSON(w, status, map[string]string{
 		"error": message,
 	})
+}
+
+func (h *DocumentHandlers) statusFromBundocError(err error) int {
+	switch {
+	case errors.Is(err, bundoc.ErrInvalidReferenceSchema):
+		return http.StatusBadRequest
+	case errors.Is(err, bundoc.ErrReferenceTargetNotFound):
+		return http.StatusConflict
+	case errors.Is(err, bundoc.ErrReferenceRestrictViolation):
+		return http.StatusConflict
+	case errors.Is(err, bundoc.ErrSchemaOverrideBlocked):
+		return http.StatusConflict
+	}
+
+	errStr := err.Error()
+	if strings.Contains(errStr, "document invalid against schema") || strings.Contains(errStr, "schema validation error") {
+		return http.StatusBadRequest
+	}
+
+	return http.StatusInternalServerError
 }
 
 func (h *DocumentHandlers) parseProjectAndPathSuffix(path string) (string, string) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
@@ -162,11 +163,13 @@ func ProjectKeyOrUserAuthMiddleware(
 			return
 		}
 		routeProjectID := c.Param("id")
-		if routeProjectID == "" || projectID != routeProjectID {
+		pid1, err1 := uuid.Parse(projectID)
+		pid2, err2 := uuid.Parse(routeProjectID)
+		if routeProjectID == "" || err1 != nil || err2 != nil || pid1 != pid2 {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "api key does not match project"})
 			return
 		}
-		c.Set(projectKeyProjectIDContextKey, projectID)
+		c.Set(projectKeyProjectIDContextKey, pid1.String())
 		c.Next()
 	}
 }
@@ -205,7 +208,6 @@ func RequireProjectKeyMiddleware(projectService *services.ProjectService) gin.Ha
 }
 
 // GetProjectID returns the project ID for the current request: from key-scoped context when set, otherwise from route param "id".
-// Use in handlers that serve both key-scoped routes (no :id) and user-scoped routes (/projects/:id/...).
 func GetProjectID(c *gin.Context) string {
 	if id := GetProjectKeyProjectID(c); id != "" {
 		return id

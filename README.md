@@ -29,8 +29,11 @@ BunBase is a self-hostable, high-performance serverless platform built on top of
 
 ### Local Development
 1.  **Clone**: `git clone https://github.com/kartikbazzad/bunbase`
-2.  **Start Stack**: `docker-compose up -d`
+2.  **Start Stack**: `docker compose up -d` (or `./scripts/deploy-cloud.sh` for Cloud mode with health wait)
 3.  **CLI**: `go install ./cmd/bunbase`
+
+### Deploy as Cloud
+To run in **Cloud mode** (any user can sign up and create projects), start the stack as above—Cloud is the default. See [Deploy BunBase in Cloud mode](docs/deploy-cloud.md) for the full steps and dashboard URL.
 
 ## Documentation
 -   [Documentation Index](docs/README.md)

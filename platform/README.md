@@ -40,6 +40,7 @@ go build -o platform-server ./cmd/server
 
 - `PLATFORM_DB_PATH` - Database file path (default: `./data/platform.db`)
 - `PLATFORM_PORT` - API server port (default: `3001`)
+- `PLATFORM_DEPLOYMENT_MODE` - `cloud` (default) or `self_hosted`. When `self_hosted`, only instance admins can create projects and signup is disabled after one-time setup.
 - `PLATFORM_SECRET` - Session secret key (not used yet, for future JWT)
 - `FUNCTIONS_SOCKET` - Functions service socket path (default: `/tmp/functions.sock`)
 - `BUNDLE_BASE_PATH` - Base path for function bundles (default: `../functions/data/bundles`)
@@ -49,10 +50,15 @@ go build -o platform-server ./cmd/server
 
 ### Authentication
 
-- `POST /api/auth/register` - Register new user
+- `POST /api/auth/register` - Register new user (disabled when self-hosted and setup complete)
 - `POST /api/auth/login` - Login user
 - `POST /api/auth/logout` - Logout user
-- `GET /api/auth/me` - Get current user
+- `GET /api/auth/me` - Get current user (includes `is_instance_admin` when self-hosted)
+
+### Instance (self-hosted)
+
+- `POST /api/setup` - One-time bootstrap: create root admin (self-hosted only; body: `email`, `password`, `name`)
+- `GET /api/instance/status` - Returns `{ "deployment_mode", "setup_complete" }` for dashboard
 
 ### Projects
 

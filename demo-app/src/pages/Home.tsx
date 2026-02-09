@@ -17,6 +17,7 @@ export function Home() {
       ) : (
         <ul className="list-inside list-disc space-y-1 text-sm">
           <li><Link to="/documents" className="text-blue-600">Documents</Link> – CRUD on a <code className="rounded bg-gray-100 px-1">tasks</code> collection via the SDK</li>
+          <li><Link to="/references" className="text-blue-600">References</Link> – Cross-collection references demo: users and posts with <code className="rounded bg-gray-100 px-1">author_id</code>, 409 on invalid ref, and restrict / set_null / cascade on delete</li>
           <li><Link to="/functions" className="text-blue-600">Functions</Link> – Invoke a function by name with optional JSON body</li>
           <li><Link to="/settings" className="text-blue-600">Settings</Link> – Change API URL, token, or project</li>
         </ul>

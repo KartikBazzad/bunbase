@@ -48,6 +48,8 @@ type Database struct {
 	RulesEngine  *rules.RulesEngine              // CEL Rules Engine
 	collections  map[string]*Collection          // Registry of loaded collections
 	groupIndexes map[string]*storage.BPlusTree   // Registry of active Group Indexes (Key: pattern::field)
+	refOutbound  map[string][]ReferenceRule      // source collection -> rules
+	refInbound   map[string][]ReferenceRule      // target collection -> rules
 	mu           sync.RWMutex                    // Protects map access and closure state
 	closed       bool                            // Flag indicating if DB is closed
 }
@@ -155,6 +157,8 @@ func Open(opts *Options) (*Database, error) {
 		RulesEngine:  re,
 		collections:  make(map[string]*Collection),
 		groupIndexes: make(map[string]*storage.BPlusTree),
+		refOutbound:  make(map[string][]ReferenceRule),
+		refInbound:   make(map[string][]ReferenceRule),
 		closed:       false,
 	}
 
@@ -242,10 +246,17 @@ func Open(opts *Options) (*Database, error) {
 			} else {
 				coll.schemaLoader = schema
 			}
+			refRules, refErr := parseReferenceRules(name, meta.Schema)
+			if refErr != nil {
+				return nil, fmt.Errorf("failed to parse reference rules for collection %s: %w", name, refErr)
+			}
+			coll.referenceRules = refRules
 		}
 
 		db.collections[name] = coll
 	}
+
+	db.rebuildReferenceRegistriesLocked()
 
 	// Restore Group Indexes
 	for _, meta := range metadataMgr.ListGroupIndexes() {
@@ -402,8 +413,14 @@ func (db *Database) DropCollection(name string) error {
 		return fmt.Errorf("collection %s does not exist", name)
 	}
 
+	if err := db.metadataMgr.DeleteCollection(name); err != nil {
+		return fmt.Errorf("failed to delete collection metadata: %w", err)
+	}
+
 	// Remove from collections map
 	delete(db.collections, name)
+	delete(db.refOutbound, name)
+	db.rebuildReferenceRegistriesLocked()
 
 	return nil
 }
@@ -418,6 +435,14 @@ func (db *Database) ListCollections() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SetCollectionPreventSchemaOverride sets the prevent_schema_override flag for a collection (used by server/PATCH).
+func (db *Database) SetCollectionPreventSchemaOverride(name string, value bool) error {
+	if db.closed {
+		return fmt.Errorf("database is closed")
+	}
+	return db.metadataMgr.UpdateCollectionPreventSchemaOverride(name, value)
 }
 
 // ListCollectionsWithPrefix returns names of collections filtering by prefix
@@ -464,6 +489,94 @@ func (db *Database) RollbackTransaction(txn *transaction.Transaction) error {
 
 	return db.txnMgr.Rollback(txn)
 }
+
+func (db *Database) getCollection(name string) (*Collection, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	coll, ok := db.collections[name]
+	return coll, ok
+}
+
+func (db *Database) setCollectionReferenceRules(name string, rules []ReferenceRule) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.refOutbound[name] = append([]ReferenceRule(nil), rules...)
+	db.rebuildReferenceRegistriesLocked()
+}
+
+func (db *Database) rebuildReferenceRegistriesLocked() {
+	db.refInbound = make(map[string][]ReferenceRule)
+	if db.refOutbound == nil {
+		db.refOutbound = make(map[string][]ReferenceRule)
+	}
+
+	for collectionName, coll := range db.collections {
+		if coll != nil {
+			db.refOutbound[collectionName] = append([]ReferenceRule(nil), coll.referenceRules...)
+		}
+	}
+
+	for _, rules := range db.refOutbound {
+		for _, rule := range rules {
+			db.refInbound[rule.TargetCollection] = append(db.refInbound[rule.TargetCollection], rule)
+		}
+	}
+}
+
+func (db *Database) applyOnDeletePolicies(txn *transaction.Transaction, targetCollection, targetID string, ctx *deleteContext) error {
+	db.mu.RLock()
+	rules := append([]ReferenceRule(nil), db.refInbound[targetCollection]...)
+	db.mu.RUnlock()
+	if len(rules) == 0 {
+		return nil
+	}
+
+	adminAuth := &rules2AuthBypass
+	for _, rule := range rules {
+		sourceColl, ok := db.getCollection(rule.SourceCollection)
+		if !ok || sourceColl == nil {
+			continue
+		}
+
+		docs, err := sourceColl.Find(txn, rule.SourceField, targetID)
+		if err != nil {
+			return err
+		}
+		if len(docs) == 0 {
+			continue
+		}
+
+		switch rule.OnDelete {
+		case onDeleteRestrict:
+			return fmt.Errorf("%w: %s.%s -> %s/%s", ErrReferenceRestrictViolation, rule.SourceCollection, rule.SourceField, targetCollection, targetID)
+		case onDeleteSetNull:
+			for _, depDoc := range docs {
+				depID, ok := depDoc.GetID()
+				if !ok || depID == "" {
+					continue
+				}
+				if err := sourceColl.Patch(adminAuth, txn, string(depID), map[string]interface{}{rule.SourceField: nil}); err != nil {
+					return err
+				}
+			}
+		case onDeleteCascade:
+			for _, depDoc := range docs {
+				depID, ok := depDoc.GetID()
+				if !ok || depID == "" {
+					continue
+				}
+				if err := sourceColl.deleteWithContext(adminAuth, txn, string(depID), ctx); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("%w: unknown on_delete policy %s", ErrInvalidReferenceSchema, rule.OnDelete)
+		}
+	}
+	return nil
+}
+
+var rules2AuthBypass = rules.AuthContext{IsAdmin: true}
 
 // Close closes the database and releases resources
 func (db *Database) Close() error {

@@ -28,9 +28,14 @@ This is the consolidated product requirements document for all first-party BunBa
 
 ## `platform` (Control Plane API)
 
+### Deployment modes
+- **Cloud** (`PLATFORM_DEPLOYMENT_MODE=cloud` or unset): Any user can sign up and create projects. Authorization is enforced via Casbin (instance-level and project-level).
+- **Self-hosted** (`PLATFORM_DEPLOYMENT_MODE=self_hosted`): One-time setup creates a root admin; only that admin can create projects. Signup is disabled after setup. Same Casbin model; policies restrict create_project to instance admins. Future: team invites via email.
+
 ### Functional
 - `P0` User account lifecycle: register, login, logout, current-session introspection.
-- `P0` Project CRUD and membership/ownership authorization checks.
+- `P0` Project CRUD and membership/ownership authorization checks (Casbin).
+- `P0` Self-hosted: bootstrap endpoint `POST /api/setup`, instance status `GET /api/instance/status`, and signup/create-project gating by deployment mode.
 - `P0` Function deployment orchestration into `functions` service.
 - `P0` Project API key generation and regeneration.
 - `P1` Developer database proxy APIs (collection, document, query, index, rules).
@@ -93,6 +98,7 @@ This is the consolidated product requirements document for all first-party BunBa
 - `P0` ACID CRUD with MVCC transaction semantics.
 - `P0` Secondary indexes and query execution for common operators.
 - `P1` Schema/rules integration hooks for server-facing enforcement.
+- `P1` **Cross-collection references** (schema extension `x-bundoc-ref`, strict FK at write time, `on_delete`: restrict / set_null / cascade). Implemented.
 - `P1` Recovery and metadata durability across restarts.
 - `P2` Advanced query operators and partitioning primitives.
 

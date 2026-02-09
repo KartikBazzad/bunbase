@@ -1,21 +1,25 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
 // ProjectHandler handles project endpoints
 type ProjectHandler struct {
-	projectService *services.ProjectService
+	projectService  *services.ProjectService
+	instanceService *services.InstanceService
+	enforcer        *authz.Enforcer
 }
 
-// NewProjectHandler creates a new ProjectHandler
-func NewProjectHandler(projectService *services.ProjectService) *ProjectHandler {
-	return &ProjectHandler{projectService: projectService}
+// NewProjectHandler creates a new ProjectHandler.
+func NewProjectHandler(projectService *services.ProjectService, instanceService *services.InstanceService, enforcer *authz.Enforcer) *ProjectHandler {
+	return &ProjectHandler{projectService: projectService, instanceService: instanceService, enforcer: enforcer}
 }
 
 // CreateProjectRequest represents a project creation request
@@ -35,7 +39,7 @@ func (h *ProjectHandler) ListProjects(c *gin.Context) {
 		return
 	}
 
-	projects, err := h.projectService.ListProjectsByUser(user.ID)
+	projects, err := h.projectService.ListProjectsByUser(user.ID.String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -51,6 +55,19 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 		return
 	}
 
+	if h.enforcer != nil {
+		deploymentMode := h.instanceService.DeploymentMode()
+		allowed, err := h.enforcer.InstanceEnforce(user.ID.String(), "create_project", deploymentMode)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to create projects"})
+			return
+		}
+	}
+
 	var req CreateProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -62,7 +79,7 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 		return
 	}
 
-	project, err := h.projectService.CreateProject(req.Name, user.ID)
+	project, err := h.projectService.CreateProject(req.Name, user.ID.String())
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -86,15 +103,28 @@ func (h *ProjectHandler) GetProject(c *gin.Context) {
 		return
 	}
 
-	// Check if user has access to this project
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && project.OwnerID != user.ID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "project", "read")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			role, found, roleErr := h.projectService.GetRoleInProject(c.Request.Context(), projectID, user.ID.String())
+			log.Printf("[authz] GetProject 403: userID=%s projectID=%s GetRoleInProject role=%q found=%v err=%v", user.ID.String(), projectID, role, found, roleErr)
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && project.OwnerID != user.ID.String() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, project)
@@ -109,15 +139,26 @@ func (h *ProjectHandler) UpdateProject(c *gin.Context) {
 
 	projectID := c.Param("id")
 
-	// Check if user owns the project
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "project", "update")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	var req UpdateProjectRequest
@@ -149,15 +190,26 @@ func (h *ProjectHandler) DeleteProject(c *gin.Context) {
 
 	projectID := c.Param("id")
 
-	// Check if user owns the project
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "project", "delete")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	if err := h.projectService.DeleteProject(projectID); err != nil {
@@ -178,14 +230,26 @@ func (h *ProjectHandler) RegenerateProjectAPIKey(c *gin.Context) {
 
 	projectID := c.Param("id")
 
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "project", "regenerate_key")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	project, newKey, err := h.projectService.RegenerateProjectAPIKey(projectID)
@@ -196,4 +260,3 @@ func (h *ProjectHandler) RegenerateProjectAPIKey(c *gin.Context) {
 	// Return project with new key; also return api_key for one-time display
 	c.JSON(http.StatusOK, gin.H{"project": project, "api_key": newKey})
 }
-

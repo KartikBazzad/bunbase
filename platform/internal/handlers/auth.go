@@ -6,16 +6,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
+	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
-	auth *auth.Auth
+	auth            *auth.Auth
+	instanceService *services.InstanceService
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(authService *auth.Auth) *AuthHandler {
-	return &AuthHandler{auth: authService}
+// NewAuthHandler creates a new AuthHandler. instanceService may be nil (cloud-only); when set, Register is gated for self-hosted.
+func NewAuthHandler(authService *auth.Auth, instanceService *services.InstanceService) *AuthHandler {
+	return &AuthHandler{auth: authService, instanceService: instanceService}
 }
 
 // RegisterRequest represents a registration request
@@ -33,6 +35,18 @@ type LoginRequest struct {
 
 // Register handles user registration
 func (h *AuthHandler) Register(c *gin.Context) {
+	if h.instanceService != nil && h.instanceService.DeploymentMode() == "self_hosted" {
+		complete, err := h.instanceService.SetupComplete(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if complete {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Sign up is disabled on this instance. Contact your administrator."})
+			return
+		}
+	}
+
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -140,6 +154,11 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, user.ToResponse())
+	resp := user.ToResponse()
+	if h.instanceService != nil && h.instanceService.DeploymentMode() == "self_hosted" {
+		admin, _ := h.instanceService.IsInstanceAdmin(c.Request.Context(), user.ID.String())
+		resp.IsInstanceAdmin = &admin
+	}
+	c.JSON(http.StatusOK, resp)
 }
 

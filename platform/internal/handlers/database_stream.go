@@ -30,10 +30,18 @@ func (h *DatabaseHandler) HandleCollectionSubscribe(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
-		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-		if err != nil || !isMember {
-			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
-			return
+		if h.enforcer != nil {
+			allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "database", "read")
+			if err != nil || !allowed {
+				c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+				return
+			}
+		} else {
+			isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+			if err != nil || !isMember {
+				c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+				return
+			}
 		}
 	}
 
@@ -108,16 +116,23 @@ func (h *DatabaseHandler) HandleQuerySubscribe(c *gin.Context) {
 	if middleware.GetProjectKeyProjectID(c) != "" {
 		// Authorized by API key (key-scoped route)
 	} else {
-		// Try user auth
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
-		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-		if err != nil || !isMember {
-			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
-			return
+		if h.enforcer != nil {
+			allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "database", "read")
+			if err != nil || !allowed {
+				c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+				return
+			}
+		} else {
+			isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+			if err != nil || !isMember {
+				c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+				return
+			}
 		}
 	}
 

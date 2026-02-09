@@ -6,11 +6,13 @@ import {
   Outlet,
   useParams,
 } from "react-router-dom";
-import { AuthProvider } from "./hooks/useAuth";
+import { AuthProvider, useAuth } from "./hooks/useAuth";
+import { useInstanceStatus } from "./hooks/useInstanceStatus";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 import { Login } from "./pages/Login";
 import { SignUp } from "./pages/SignUp";
+import { Setup } from "./pages/Setup";
 import { DashboardLayout } from "./components/layout/DashboardLayout";
 import { Dashboard } from "./pages/Dashboard";
 import { ProjectOverview } from "./pages/ProjectOverview";
@@ -29,12 +31,30 @@ function RedirectProjectToOverview() {
   );
 }
 
+function RootRedirect() {
+  const { user, loading: authLoading } = useAuth();
+  const { status, loading: statusLoading } = useInstanceStatus();
+
+  if (authLoading || statusLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <span className="loading loading-spinner loading-lg text-primary" />
+      </div>
+    );
+  }
+  if (!user && status?.deployment_mode === "self_hosted" && !status?.setup_complete) {
+    return <Navigate to="/setup" replace />;
+  }
+  return <Navigate to="/dashboard" replace />;
+}
+
 function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
+            <Route path="/setup" element={<Setup />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<SignUp />} />
             <Route
@@ -113,7 +133,7 @@ function App() {
               path="/projects/:id"
               element={<RedirectProjectToOverview />}
             />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<RootRedirect />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

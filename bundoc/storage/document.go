@@ -75,6 +75,21 @@ func (d Document) SetID(id DocumentID) {
 	d["_id"] = string(id)
 }
 
+// ProjectDocument returns a new document containing only the given top-level keys that exist in doc.
+// Nested objects are copied by reference (shallow projection). If fields is nil or empty, returns nil (caller should use full doc).
+func ProjectDocument(doc Document, fields []string) Document {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(Document, len(fields))
+	for _, k := range fields {
+		if v, ok := doc[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // Clone creates a deep copy of the document
 func (d Document) Clone() Document {
 	clone := make(Document, len(d))

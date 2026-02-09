@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/handlers"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 )
+
+// serverURL is set by TestMain after starting the server on a dynamic port.
+var serverURL string
 
 // TestMain manages the lifecycle of the integration test suite
 func TestMain(m *testing.M) {
@@ -40,7 +45,7 @@ func TestMain(m *testing.M) {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Document endpoints (Copied from main.go)
+	// API endpoints (routing aligned with main.go for collections + documents)
 	mux.HandleFunc("/v1/projects/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
@@ -48,6 +53,18 @@ func TestMain(m *testing.M) {
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		// POST .../collections -> CreateCollection
+		if strings.HasSuffix(path, "/collections") && r.Method == "POST" {
+			docHandlers.HandleCreateCollection(w, r)
+			return
+		}
+		// PATCH .../collections/{name} (no /documents/ in path) -> UpdateCollection
+		if strings.Contains(path, "/collections/") && !strings.Contains(path, "/documents/") && r.Method == "PATCH" {
+			docHandlers.HandleUpdateCollection(w, r)
 			return
 		}
 
@@ -65,24 +82,26 @@ func TestMain(m *testing.M) {
 		}
 	})
 
-	// 3. Start Server
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+	// 3. Start Server on a dynamic port to avoid 8080 conflicts
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
 	}
-
+	port := listener.Addr().(*net.TCPAddr).Port
+	serverURL = fmt.Sprintf("http://localhost:%d", port)
+	server := &http.Server{Handler: mux}
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("Test Server failed: %v", err)
 		}
 	}()
 
 	// Wait for server to start
-	if !waitForServer("http://localhost:8080/health") {
+	if !waitForServer(serverURL + "/health") {
 		log.Fatalf("Server failed to start")
 	}
 
-	fmt.Println("🚀 Integration Test Server running on :8080")
+	fmt.Printf("🚀 Integration Test Server running on %s\n", serverURL)
 
 	// 4. Run Tests
 	exitCode := m.Run()

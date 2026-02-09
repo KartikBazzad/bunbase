@@ -22,6 +22,7 @@ services:
       PLATFORM_BUNDLE_PATH: /app/data/bundles
       TENANT_AUTH_URL: http://tenant-auth:8083
       PLATFORM_BUNCAST_SOCKET: /tmp/buncast.sock
+      PLATFORM_DEPLOYMENT_MODE: cloud  # Use "self_hosted" for restricted mode: one-time /api/setup, only instance admin can create projects
     volumes:
       - functions_data:/app/data
       - buncast_socket:/tmp

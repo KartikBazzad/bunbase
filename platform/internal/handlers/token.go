@@ -60,7 +60,7 @@ func (h *TokenHandler) Create(c *gin.Context) {
 		ttl = 30 * 24 * time.Hour
 	}
 
-	token, raw, err := h.tokenService.CreateToken(user.ID, req.Name, req.Scopes, ttl)
+	token, raw, err := h.tokenService.CreateToken(user.ID.String(), req.Name, req.Scopes, ttl)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -86,7 +86,7 @@ func (h *TokenHandler) List(c *gin.Context) {
 		return
 	}
 
-	tokens, err := h.tokenService.ListTokensForUser(user.ID)
+	tokens, err := h.tokenService.ListTokensForUser(user.ID.String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -109,7 +109,7 @@ func (h *TokenHandler) Delete(c *gin.Context) {
 	}
 
 	// Optional: ensure token belongs to user
-	tokens, err := h.tokenService.ListTokensForUser(user.ID)
+	tokens, err := h.tokenService.ListTokensForUser(user.ID.String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

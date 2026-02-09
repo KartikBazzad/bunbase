@@ -85,8 +85,9 @@ bunbase functions list
 
 ## App features
 
-- **Home**: Short intro and links to Documents, Functions, Settings.
+- **Home**: Short intro and links to Documents, References, Functions, Settings.
 - **Documents**: CRUD on a `tasks` collection using the SDK (`client.db.collection('tasks').list()`, `.create()`, `.update()`, `.delete()`). Create a task, edit, and delete from the list.
+- **References**: Cross-collection references demo: create users and posts (with `author_id` → users), see 409 on invalid reference, and try restrict / set_null / cascade when deleting a user.
 - **Functions**: Invoke a function by name with optional JSON body via `client.functions.invoke(name, body)`.
 - **Settings**: Set base URL, Project API key (from dashboard Project → Settings), and Project ID. Stored in `localStorage`.
 

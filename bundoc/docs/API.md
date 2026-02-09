@@ -466,6 +466,43 @@ Marks the document as deleted with a tombstone. Actual bytes are removed during 
 
 ---
 
+### Cross-Collection References
+
+Collections can declare **reference fields** that point to documents in another collection. References are enforced at write time (strict FK semantics) and support configurable delete behavior.
+
+**Schema extension:** In the collection schema (set via `SetSchema`), add `x-bundoc-ref` to a property:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "author_id": {
+      "type": "string",
+      "x-bundoc-ref": {
+        "collection": "users",
+        "field": "_id",
+        "on_delete": "set_null"
+      }
+    }
+  }
+}
+```
+
+- **`collection`** (required): Target collection name.
+- **`field`** (optional): Target field; v1 only supports `_id`.
+- **`on_delete`** (optional): Action when the referenced document is deleted. Defaults to `set_null`.
+  - **`restrict`**: Delete of the target document fails if any dependent document exists (returns conflict).
+  - **`set_null`**: Dependent document’s reference field is set to `null` (schema must allow null for that field).
+  - **`cascade`**: Dependent documents are deleted recursively (cycles are guarded).
+
+**Write behavior:** On Insert, Update, and Patch, every reference field is validated: the referenced document must exist in the target collection. If it does not, the operation fails with `ErrReferenceTargetNotFound` (HTTP 409 when used via bundoc-server).
+
+**Read behavior:** In v1 there is no automatic expansion or embedding of referenced documents; reference fields store only the target ID.
+
+**Scope:** References are within the same database (project) only.
+
+---
+
 ## Documents
 
 ### Document Type
@@ -549,8 +586,15 @@ var (
     ErrDuplicateKey       = errors.New("duplicate key")
     ErrInvalidDocument    = errors.New("invalid document")
     ErrTransactionAborted = errors.New("transaction aborted")
+
+    // Reference (FK) errors — use errors.Is(err, bundoc.Err...) for checks
+    ErrInvalidReferenceSchema   = errors.New("invalid reference schema")   // 400
+    ErrReferenceTargetNotFound  = errors.New("reference target not found")  // 409
+    ErrReferenceRestrictViolation = errors.New("reference restrict violation") // 409
 )
 ```
+
+**Reference errors (HTTP mapping when using bundoc-server):** Schema/validation and invalid reference schema return 400. Missing reference target on write and restrict violation on delete return 409.
 
 ### Error Handling Pattern
 

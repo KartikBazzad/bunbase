@@ -11,6 +11,7 @@ A lightweight, embedded document database built in Go with MVCC transactions, Wr
 ✅ **Advanced Query Engine** - SQL-like filtering with `Eq`, `Gt`, `And`, `Or` operators  
 ✅ **Distributed Consensus** - Raft-based replication for high availability  
 ✅ **B+Tree Indexing** - Persisted indexes for O(log n) lookups  
+✅ **Cross-Collection References** - Schema-defined references (`x-bundoc-ref`) with strict FK validation and on_delete policies (restrict, set_null, cascade)  
 ✅ **Robust Security** - SCRAM Auth, RBAC, TLS, and Encryption at Rest (AES-GCM)  
 ✅ **Audit Logging** - Comprehensive security event tracking
 

@@ -5,6 +5,7 @@ import { Login } from "./pages/Login";
 import { SignUp } from "./pages/SignUp";
 import { Home } from "./pages/Home";
 import { Documents } from "./pages/Documents";
+import { References } from "./pages/References";
 import { Functions } from "./pages/Functions";
 import { Settings } from "./pages/Settings";
 import { Layout } from "./components/Layout";
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="/" element={<Layout />}>
               <Route index element={<ProtectedRoute><Home /></ProtectedRoute>} />
               <Route path="documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+              <Route path="references" element={<ProtectedRoute><References /></ProtectedRoute>} />
               <Route path="functions" element={<ProtectedRoute><Functions /></ProtectedRoute>} />
               <Route path="settings" element={<Settings />} />
             </Route>

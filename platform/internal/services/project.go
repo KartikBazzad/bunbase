@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -40,6 +41,11 @@ func generateSlug(name string) string {
 // CreateProject creates a new project
 func (s *ProjectService) CreateProject(name, ownerID string) (*models.Project, error) {
 	ctx := context.Background()
+	ownerParsed, err := uuid.Parse(ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid owner id: %w", err)
+	}
+	ownerID = ownerParsed.String()
 	// Generate slug
 	baseSlug := generateSlug(name)
 	slug := baseSlug
@@ -62,7 +68,7 @@ func (s *ProjectService) CreateProject(name, ownerID string) (*models.Project, e
 	publicAPIKey := "pk_" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	now := time.Now()
 
-	_, err := s.db.Exec(ctx,
+	_, err = s.db.Exec(ctx,
 		"INSERT INTO projects (id, name, slug, owner_id, public_api_key, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
 		projectID, name, slug, ownerID, publicAPIKey, now, now,
 	)
@@ -123,15 +129,20 @@ func (s *ProjectService) GetProjectBySlug(slug string) (*models.Project, error) 
 	return &project, nil
 }
 
-// ListProjectsByUser lists all projects for a user
+// ListProjectsByUser lists all projects for a user.
 func (s *ProjectService) ListProjectsByUser(userID string) ([]*models.Project, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user id: %w", err)
+	}
+	uidStr := uid.String()
 	rows, err := s.db.Query(context.Background(),
 		`SELECT DISTINCT p.id, p.name, p.slug, p.owner_id, p.created_at, p.updated_at 
 		 FROM projects p
 		 LEFT JOIN project_members pm ON p.id = pm.project_id
 		 WHERE p.owner_id = $1 OR pm.user_id = $2
 		 ORDER BY p.created_at DESC`,
-		userID, userID,
+		uidStr, uidStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list projects: %w", err)
@@ -187,12 +198,20 @@ func (s *ProjectService) DeleteProject(id string) error {
 	return nil
 }
 
-// IsProjectMember checks if a user is a member of a project
+// IsProjectMember checks if a user is a member of a project.
 func (s *ProjectService) IsProjectMember(projectID, userID string) (bool, string, error) {
+	pid, err := uuid.Parse(projectID)
+	if err != nil {
+		return false, "", nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false, "", nil
+	}
 	var role string
-	err := s.db.QueryRow(context.Background(),
+	err = s.db.QueryRow(context.Background(),
 		"SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2",
-		projectID, userID,
+		pid.String(), uid.String(),
 	).Scan(&role)
 	if err == pgx.ErrNoRows {
 		return false, "", nil
@@ -203,14 +222,48 @@ func (s *ProjectService) IsProjectMember(projectID, userID string) (bool, string
 	return true, role, nil
 }
 
-// IsProjectOwner checks if a user owns a project
+// IsProjectOwner checks if a user owns a project.
 func (s *ProjectService) IsProjectOwner(projectID, userID string) (bool, error) {
+	pid, err := uuid.Parse(projectID)
+	if err != nil {
+		return false, nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false, nil
+	}
 	var ownerID string
-	err := s.db.QueryRow(context.Background(), "SELECT owner_id FROM projects WHERE id = $1", projectID).Scan(&ownerID)
+	err = s.db.QueryRow(context.Background(), "SELECT owner_id FROM projects WHERE id = $1", pid.String()).Scan(&ownerID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check ownership: %w", err)
 	}
-	return ownerID == userID, nil
+	ownerParsed, err := uuid.Parse(ownerID)
+	if err != nil {
+		return false, nil
+	}
+	return ownerParsed == uid, nil
+}
+
+// GetRoleInProject returns the user's role in the project (owner, admin, member) and true if they have access; empty string and false otherwise.
+func (s *ProjectService) GetRoleInProject(ctx context.Context, projectID, userID string) (role string, found bool, err error) {
+	owner, err := s.IsProjectOwner(projectID, userID)
+	if err != nil {
+		log.Printf("[authz] GetRoleInProject projectID=%s userID=%s: IsProjectOwner error: %v", projectID, userID, err)
+		return "", false, err
+	}
+	if owner {
+		return "owner", true, nil
+	}
+	member, role, err := s.IsProjectMember(projectID, userID)
+	if err != nil {
+		log.Printf("[authz] GetRoleInProject projectID=%s userID=%s: IsProjectMember error: %v", projectID, userID, err)
+		return "", false, err
+	}
+	if !member {
+		log.Printf("[authz] GetRoleInProject projectID=%s userID=%s: not owner and no project_members row", projectID, userID)
+		return "", false, nil
+	}
+	return role, true, nil
 }
 
 // GetProjectIDByPublicKey retrieves project ID by public API key

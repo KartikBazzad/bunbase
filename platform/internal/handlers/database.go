@@ -6,22 +6,25 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
 type DatabaseHandler struct {
-	bundoc             bundoc.Proxy // HTTP client or RPC client when BUNDOC_RPC_ADDR is set
-	projectService     *services.ProjectService
+	bundoc              bundoc.Proxy
+	projectService      *services.ProjectService
 	subscriptionManager *services.SubscriptionManager
+	enforcer            *authz.Enforcer
 }
 
-func NewDatabaseHandler(bundoc bundoc.Proxy, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager) *DatabaseHandler {
+func NewDatabaseHandler(bundoc bundoc.Proxy, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager, enforcer *authz.Enforcer) *DatabaseHandler {
 	return &DatabaseHandler{
-		bundoc:             bundoc,
-		projectService:     projectService,
+		bundoc:              bundoc,
+		projectService:      projectService,
 		subscriptionManager: subscriptionManager,
+		enforcer:            enforcer,
 	}
 }
 
@@ -108,23 +111,33 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 		return
 	}
 
-	// Allow if authorized by project API key (key-scoped routes set this in context)
 	if middleware.GetProjectKeyProjectID(c) != "" {
 		// Authorized by key; continue to proxy
 	} else {
-		// Otherwise require user and membership (user-scoped routes)
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return
 		}
-		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check project membership"})
-			return
-		}
-		if !isMember {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have access to this project"})
-			return
+		if h.enforcer != nil {
+			allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "database", "read")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !allowed {
+				c.JSON(http.StatusForbidden, gin.H{"error": "You do not have access to this project"})
+				return
+			}
+		} else {
+			isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check project membership"})
+				return
+			}
+			if !isMember {
+				c.JSON(http.StatusForbidden, gin.H{"error": "You do not have access to this project"})
+				return
+			}
 		}
 	}
 

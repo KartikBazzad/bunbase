@@ -101,6 +101,7 @@ Represents a logical grouping of documents (like a table).
 - Document CRUD operations
 - Index management
 - Transaction integration
+- Cross-collection reference validation (schema extension `x-bundoc-ref`) and delete-policy execution (restrict / set_null / cascade)
 
 **Key Methods:**
 
@@ -110,6 +111,8 @@ func (c *Collection) FindByID(txn *Transaction, id string) (Document, error)
 func (c *Collection) Update(txn *Transaction, id string, doc Document) error
 func (c *Collection) Delete(txn *Transaction, id string) error
 ```
+
+**Cross-Collection References:** The database maintains in-memory registries of reference rules (outbound by source collection, inbound by target collection). On write (Insert/Update/Patch), reference fields are validated against the target collection. On Delete, inbound rules are applied (restrict blocks, set_null patches dependents, cascade deletes dependents) with a visited set to prevent infinite cascade cycles.
 
 ---
 

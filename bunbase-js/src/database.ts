@@ -20,10 +20,20 @@ export class DatabaseClient<
     });
   }
 
-  async createCollection(name: string, schema?: object) {
+  async createCollection(
+    name: string,
+    schema?: object,
+    options?: { updateIfExists?: boolean; preventSchemaOverride?: boolean },
+  ) {
+    const body: Record<string, unknown> = { name };
+    if (schema !== undefined) body.schema = schema;
+    if (options?.updateIfExists !== undefined)
+      body.update_if_exists = options.updateIfExists;
+    if (options?.preventSchemaOverride !== undefined)
+      body.prevent_schema_override = options.preventSchemaOverride;
     return this.client.request(`/v1/database/collections`, {
       method: "POST",
-      body: JSON.stringify({ name, schema }),
+      body: JSON.stringify(body),
     });
   }
 
@@ -49,9 +59,23 @@ export class Collection<T = any> {
     return `/v1/database/collections/${encodeURIComponent(this.name)}`;
   }
 
-  async list(query?: Record<string, string>): Promise<{ documents: T[] }> {
-    const params = new URLSearchParams(query).toString();
-    const url = params ? `${this.basePath}?${params}` : this.basePath;
+  async list(
+    opts?: Record<string, string> | { skip?: number; limit?: number; fields?: string[] },
+  ): Promise<{ documents: T[] }> {
+    const params = new URLSearchParams();
+    if (opts != null) {
+      if ("fields" in opts && Array.isArray(opts.fields)) {
+        const o = opts as { skip?: number; limit?: number; fields?: string[] };
+        if (o.skip != null) params.set("skip", String(o.skip));
+        if (o.limit != null) params.set("limit", String(o.limit));
+        if (o.fields?.length) params.set("fields", o.fields.join(","));
+      } else {
+        for (const [k, v] of Object.entries(opts as Record<string, string>)) {
+          if (v != null && v !== "") params.set(k, String(v));
+        }
+      }
+    }
+    const url = params.toString() ? `${this.basePath}?${params}` : this.basePath;
     return this.client.request(url, { method: "GET" });
   }
 
@@ -110,7 +134,7 @@ export class Collection<T = any> {
 
   async query(q: any, opts?: QueryOptions): Promise<T[]> {
     const path = `${this.collectionPath}/documents/query`;
-    const body = {
+    const body: Record<string, unknown> = {
       collection: this.name,
       query: q,
       skip: opts?.skip,
@@ -118,6 +142,7 @@ export class Collection<T = any> {
       sortField: opts?.sortField,
       sortDesc: opts?.sortDesc,
     };
+    if (opts?.fields?.length) body.fields = opts.fields;
     const data: any = await this.client.request(path, {
       method: "POST",
       body: JSON.stringify(body),
@@ -326,6 +351,8 @@ export interface QueryOptions {
   limit?: number;
   sortField?: string;
   sortDesc?: boolean;
+  /** Top-level field names to return (projection). Only these keys are included in each document. */
+  fields?: string[];
 }
 
 export interface ChangeEvent<T = any> {

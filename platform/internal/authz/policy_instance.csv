@@ -1,0 +1,3 @@
+p, authenticated_user, create_project, allow, cloud
+p, instance_admin, create_project, allow, self_hosted
+p, instance_admin, create_project, allow, cloud

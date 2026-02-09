@@ -20,6 +20,7 @@ type Collection struct {
 	db                 *Database
 	indexes            map[string]*storage.BPlusTree // Map of field name -> B+Tree Index
 	linkedGroupIndexes []*GroupIndexLink             // List of Group Indexes this collection feeds into
+	referenceRules     []ReferenceRule               // Outbound reference rules from schema
 	mu                 sync.RWMutex                  // Protects concurrent access to indexes map
 	schemaLoader       *gojsonschema.Schema          // Compiled JSON Schema
 }
@@ -46,13 +47,30 @@ func (c *Collection) GetSchema() (string, error) {
 
 // SetSchema updates the collection's schema.
 // It compiles the schema and persists it to the metadata.
+// When PreventSchemaOverride is set and current schema is non-empty: if incoming equals current, no-op and return nil; if different, return ErrSchemaOverrideBlocked.
 func (c *Collection) SetSchema(schemaStr string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	meta, _ := c.db.metadataMgr.GetCollection(c.name)
+	if meta.PreventSchemaOverride && meta.Schema != "" {
+		equal, err := SchemaEqual(schemaStr, meta.Schema)
+		if err != nil {
+			return err
+		}
+		if equal {
+			return nil // same schema: no operation, success only
+		}
+		return ErrSchemaOverrideBlocked
+	}
 
 	if schemaStr == "" {
+		c.mu.Lock()
 		c.schemaLoader = nil
-		return c.updateMetadataSchema("")
+		c.referenceRules = nil
+		c.mu.Unlock()
+		if err := c.updateMetadataSchema(""); err != nil {
+			return err
+		}
+		c.db.setCollectionReferenceRules(c.name, nil)
+		return nil
 	}
 
 	loader := gojsonschema.NewStringLoader(schemaStr)
@@ -61,8 +79,28 @@ func (c *Collection) SetSchema(schemaStr string) error {
 		return fmt.Errorf("invalid json schema: %w", err)
 	}
 
+	referenceRules, err := parseReferenceRules(c.name, schemaStr)
+	if err != nil {
+		return err
+	}
+
+	// Ensure reference source fields are indexed so on_delete handling can use index scans.
+	for _, rule := range referenceRules {
+		if err := c.EnsureIndex(rule.SourceField); err != nil {
+			return fmt.Errorf("%w: failed to ensure index for %s: %v", ErrInvalidReferenceSchema, rule.SourceField, err)
+		}
+	}
+
+	c.mu.Lock()
 	c.schemaLoader = schema
-	return c.updateMetadataSchema(schemaStr)
+	c.referenceRules = referenceRules
+	c.mu.Unlock()
+
+	if err := c.updateMetadataSchema(schemaStr); err != nil {
+		return err
+	}
+	c.db.setCollectionReferenceRules(c.name, referenceRules)
+	return nil
 }
 
 func (c *Collection) updateMetadataSchema(schemaStr string) error {
@@ -204,6 +242,10 @@ func (c *Collection) Insert(auth *rules.AuthContext, txn *transaction.Transactio
 		// Auto-generate ID if not provided
 		id = storage.DocumentID(generateID())
 		doc.SetID(id)
+	}
+
+	if err := c.validateReferences(txn, doc); err != nil {
+		return err
 	}
 
 	// Serialize document
@@ -361,7 +403,11 @@ func (c *Collection) Update(auth *rules.AuthContext, txn *transaction.Transactio
 	}
 
 	// Validate Schema
+	doc.SetID(storage.DocumentID(id))
 	if err := c.validate(doc); err != nil {
+		return err
+	}
+	if err := c.validateReferences(txn, doc); err != nil {
 		return err
 	}
 
@@ -428,6 +474,9 @@ func (c *Collection) Patch(auth *rules.AuthContext, txn *transaction.Transaction
 
 	// Validate Schema
 	if err := c.validate(newDoc); err != nil {
+		return err
+	}
+	if err := c.validateReferences(txn, newDoc); err != nil {
 		return err
 	}
 
@@ -567,6 +616,10 @@ func (c *Collection) InsertBatch(txn *transaction.Transaction, docs []storage.Do
 			doc.SetID(id)
 		}
 
+		if err := c.validateReferences(txn, doc); err != nil {
+			return err
+		}
+
 		// Serialize document
 		data, err := doc.Serialize()
 		if err != nil {
@@ -621,6 +674,9 @@ func (c *Collection) UpdateBatch(txn *transaction.Transaction, docs []storage.Do
 		if !hasID || id == "" {
 			return fmt.Errorf("document must have an ID for update")
 		}
+		if err := c.validateReferences(txn, doc); err != nil {
+			return err
+		}
 
 		key := c.name + ":" + string(id)
 
@@ -660,55 +716,98 @@ func (c *Collection) UpdateBatch(txn *transaction.Transaction, docs []storage.Do
 
 // Delete deletes a document
 func (c *Collection) Delete(auth *rules.AuthContext, txn *transaction.Transaction, id string) error {
+	return c.deleteWithContext(auth, txn, id, &deleteContext{
+		visited: make(map[string]struct{}),
+	})
+}
+
+type deleteContext struct {
+	visited map[string]struct{}
+}
+
+func (c *Collection) deleteWithContext(auth *rules.AuthContext, txn *transaction.Transaction, id string, ctx *deleteContext) error {
+	nodeKey := c.name + ":" + id
+	if _, seen := ctx.visited[nodeKey]; seen {
+		return nil
+	}
+	ctx.visited[nodeKey] = struct{}{}
+
+	c.mu.RLock()
+	doc, err := c.findByIDLocked(txn, id)
+	c.mu.RUnlock()
+	if err != nil {
+		return nil
+	}
+
+	if err := c.evaluateRule("delete", auth, doc); err != nil {
+		return err
+	}
+
+	if err := c.db.applyOnDeletePolicies(txn, c.name, id, ctx); err != nil {
+		return err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	key := c.name + ":" + id
 
-	// 1. Fetch document to clean up secondary indexes (and Rule Check)
-	doc, err := c.findByIDLocked(txn, id)
-	if err == nil {
-		// Enforce Rules (Delete)
-		if err := c.evaluateRule("delete", auth, doc); err != nil {
-			return err
+	for field, index := range c.indexes {
+		if field == "_id" {
+			continue
 		}
-
-		for field, index := range c.indexes {
-			if field == "_id" {
-				continue
-			}
-			if val, ok := doc[field]; ok {
-				valStr := fmt.Sprintf("%v", val)
-				compKey := []byte(valStr + "\x00" + string(id))
-				_ = index.Delete(compKey)
-			}
-		}
-
-		// Clean up group indexes
-		for _, link := range c.linkedGroupIndexes {
-			if val, ok := doc[link.Field]; ok {
-				valStr := fmt.Sprintf("%v", val)
-				// Key: Value \0 Collection \0 ID
-				compKey := []byte(valStr + "\x00" + c.name + "\x00" + string(id))
-				_ = link.Index.Delete(compKey)
-			}
+		if val, ok := doc[field]; ok {
+			valStr := fmt.Sprintf("%v", val)
+			compKey := []byte(valStr + "\x00" + string(id))
+			_ = index.Delete(compKey)
 		}
 	}
 
-	// 2. Write tombstone (Primary Store Deletion)
+	for _, link := range c.linkedGroupIndexes {
+		if val, ok := doc[link.Field]; ok {
+			valStr := fmt.Sprintf("%v", val)
+			compKey := []byte(valStr + "\x00" + c.name + "\x00" + string(id))
+			_ = link.Index.Delete(compKey)
+		}
+	}
+
 	if err := c.db.txnMgr.Write(txn, key, []byte{}); err != nil {
 		return fmt.Errorf("failed to delete document: %w", err)
 	}
+	_ = c.indexes["_id"].Delete([]byte(key))
+	return nil
+}
 
-	// 3. Delete from Primary Index
-	// Note: We might want to keep it if we support "Soft Deletes" or Time Travel heavily,
-	// but standard delete should remove it to keep index clean.
-	// Primary index uses just Key.
-	if err := c.indexes["_id"].Delete([]byte(key)); err != nil {
-		// Log warning? Or ignore deeply if not found.
-		// return fmt.Errorf("failed to delete from primary index: %w", err)
+func (c *Collection) validateReferences(txn *transaction.Transaction, doc storage.Document) error {
+	if len(c.referenceRules) == 0 {
+		return nil
 	}
 
+	for _, rule := range c.referenceRules {
+		value, exists := doc[rule.SourceField]
+		if !exists || value == nil {
+			continue
+		}
+
+		targetID, err := normalizeReferenceValue(value)
+		if err != nil {
+			return fmt.Errorf("%w: %s.%s: %v", ErrReferenceTargetNotFound, c.name, rule.SourceField, err)
+		}
+		if targetID == "" {
+			continue
+		}
+
+		targetColl, ok := c.db.getCollection(rule.TargetCollection)
+		if !ok || targetColl == nil {
+			return fmt.Errorf("%w: collection %s does not exist", ErrReferenceTargetNotFound, rule.TargetCollection)
+		}
+		if rule.TargetField != "_id" {
+			return fmt.Errorf("%w: unsupported target field %s", ErrInvalidReferenceSchema, rule.TargetField)
+		}
+
+		if _, err := targetColl.FindByID(nil, txn, targetID); err != nil {
+			return fmt.Errorf("%w: %s references %s/%s", ErrReferenceTargetNotFound, c.name, rule.TargetCollection, targetID)
+		}
+	}
 	return nil
 }
 
@@ -729,8 +828,9 @@ func (c *Collection) DeleteBatch(txn *transaction.Transaction, ids []string) err
 	return nil
 }
 
-// List returns a list of documents with pagination
-func (c *Collection) List(auth *rules.AuthContext, txn *transaction.Transaction, skip, limit int) ([]storage.Document, error) {
+// List returns a list of documents with pagination.
+// Optional opts[0].Fields restricts returned documents to those top-level keys (projection).
+func (c *Collection) List(auth *rules.AuthContext, txn *transaction.Transaction, skip, limit int, opts ...QueryOptions) ([]storage.Document, error) {
 	// Rule Check (List)
 	// We check for 'list' rule. If not present, maybe 'read'?
 	// For listing, we usually require a 'list' rule that evaluates on query/request context,
@@ -763,6 +863,14 @@ func (c *Collection) List(auth *rules.AuthContext, txn *transaction.Transaction,
 		doc, err := currentIter.Value()
 		if err == nil {
 			results = append(results, doc)
+		}
+	}
+
+	if len(opts) > 0 && len(opts[0].Fields) > 0 {
+		for i, doc := range results {
+			if proj := storage.ProjectDocument(doc, opts[0].Fields); proj != nil {
+				results[i] = proj
+			}
 		}
 	}
 
@@ -1106,6 +1214,14 @@ func (c *Collection) FindQuery(auth *rules.AuthContext, txn *transaction.Transac
 		doc, err := iter.Value()
 		if err == nil {
 			results = append(results, doc)
+		}
+	}
+
+	if len(opts) > 0 && len(opts[0].Fields) > 0 {
+		for i, doc := range results {
+			if proj := storage.ProjectDocument(doc, opts[0].Fields); proj != nil {
+				results[i] = proj
+			}
 		}
 	}
 

@@ -24,6 +24,14 @@ export function Layout() {
               Documents
             </NavLink>
             <NavLink
+              to="/references"
+              className={({ isActive }) =>
+                isActive ? "text-blue-600" : "text-gray-600 hover:text-gray-900"
+              }
+            >
+              References
+            </NavLink>
+            <NavLink
               to="/functions"
               className={({ isActive }) =>
                 isActive ? "text-blue-600" : "text-gray-600 hover:text-gray-900"

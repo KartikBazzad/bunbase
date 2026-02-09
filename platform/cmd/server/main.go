@@ -16,6 +16,7 @@ import (
 	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	fnclient "github.com/kartikbazzad/bunbase/functions/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
+	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/database"
 	"github.com/kartikbazzad/bunbase/platform/internal/handlers"
@@ -29,6 +30,10 @@ type AppConfig struct {
 	Bundoc struct {
 		URL string `mapstructure:"url"`
 	} `mapstructure:"bundoc"`
+	// Deployment.Mode: "cloud" (default) or "self_hosted". When self_hosted, only instance admins can create projects and signup is disabled after setup.
+	Deployment struct {
+		Mode string `mapstructure:"mode"`
+	} `mapstructure:"deployment"`
 }
 
 func main() {
@@ -96,6 +101,11 @@ func main() {
 	if err := config.Load("PLATFORM_", &cfg); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	// Only "self_hosted" enables restricted mode; anything else (empty, typo, "cloud") is cloud mode.
+	if cfg.Deployment.Mode != "self_hosted" {
+		cfg.Deployment.Mode = "cloud"
+	}
+	log.Printf("Deployment mode: %s", cfg.Deployment.Mode)
 	// Safeguard: empty User can make drivers default to "postgres", which may not exist
 	if cfg.DB.User == "" {
 		if u := os.Getenv("PLATFORM_DB_USER"); u != "" {
@@ -138,6 +148,12 @@ func main() {
 	authService := auth.NewAuth(authClient)
 
 	projectService := services.NewProjectService(db.Pool)
+	instanceService := services.NewInstanceService(db.Pool, cfg.Deployment.Mode)
+
+	authzEnforcer, err := authz.NewEnforcer(instanceService, projectService)
+	if err != nil {
+		log.Fatalf("Failed to create authz enforcer: %v", err)
+	}
 
 	absBundlePath, err := filepath.Abs(*bundleBasePath)
 	if err != nil {
@@ -173,18 +189,20 @@ func main() {
 	projectConfigService := services.NewProjectConfigService(*gatewayURL)
 
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService, instanceService)
 	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
-	projectHandler := handlers.NewProjectHandler(projectService)
-	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService)
+	projectHandler := handlers.NewProjectHandler(projectService, instanceService, authzEnforcer)
+	setupHandler := handlers.NewSetupHandler(authService, instanceService)
+	instanceHandler := handlers.NewInstanceHandler(instanceService)
+	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService, authzEnforcer)
 	var functionsRPC *fnclient.Client
 	if rpcAddr := os.Getenv("PLATFORM_FUNCTIONS_RPC_ADDR"); rpcAddr != "" {
 		functionsRPC = fnclient.New("tcp://" + rpcAddr)
 		log.Printf("Functions: using RPC client (addr=%s)", rpcAddr)
 	}
-	functionHandler := handlers.NewFunctionHandler(functionService, projectService, projectConfigService, *functionsURL, functionsRPC)
+	functionHandler := handlers.NewFunctionHandler(functionService, projectService, projectConfigService, *functionsURL, functionsRPC, authzEnforcer)
 	tokenHandler := handlers.NewTokenHandler(tokenService)
-	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager)
+	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager, authzEnforcer)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -199,10 +217,15 @@ func main() {
 
 	// API routes
 	api := router.Group("/api")
+	// Instance (self-hosted setup and status)
+	api.POST("/setup", setupHandler.Setup)
+	api.GET("/instance/status", instanceHandler.Status)
 
 	// v1 API (Public SDK)
 	v1 := router.Group("/v1")
 	v1.Use(middleware.CORSMiddleware(*corsOrigin)) // Use configured origin for v1 as well
+	v1.POST("/setup", setupHandler.Setup)
+	v1.GET("/instance/status", instanceHandler.Status)
 
 	// v1Auth := v1.Group("/auth")
 	// v1Auth.POST("/register", tenantAuthHandler.Register)

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
@@ -12,13 +13,15 @@ import (
 type ProjectConfigHandler struct {
 	projectService       *services.ProjectService
 	projectConfigService *services.ProjectConfigService
+	enforcer             *authz.Enforcer
 }
 
 // NewProjectConfigHandler creates a new ProjectConfigHandler.
-func NewProjectConfigHandler(projectService *services.ProjectService, projectConfigService *services.ProjectConfigService) *ProjectConfigHandler {
+func NewProjectConfigHandler(projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, enforcer *authz.Enforcer) *ProjectConfigHandler {
 	return &ProjectConfigHandler{
 		projectService:       projectService,
 		projectConfigService: projectConfigService,
+		enforcer:             enforcer,
 	}
 }
 
@@ -68,14 +71,26 @@ func (h *ProjectConfigHandler) GetProjectConfig(c *gin.Context) {
 		return
 	}
 
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && project.OwnerID != user.ID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "config", "read")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && project.OwnerID != user.ID.String() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	config := h.projectConfigService.GetConfig(project)

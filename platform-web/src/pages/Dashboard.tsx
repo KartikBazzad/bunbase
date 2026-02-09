@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { api } from "../lib/api";
 import { Link } from "react-router-dom";
 import { Plus, FolderKanban } from "lucide-react";
+import { useAuth } from "../hooks/useAuth";
+import { useInstanceStatus } from "../hooks/useInstanceStatus";
 
 interface Project {
   id: string;
@@ -13,9 +15,16 @@ interface Project {
 }
 
 export function Dashboard() {
+  const { user } = useAuth();
+  const { status } = useInstanceStatus();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+
+  const canCreateProject =
+    !status ||
+    status.deployment_mode !== "self_hosted" ||
+    user?.is_instance_admin === true;
 
   useEffect(() => {
     loadProjects();
@@ -47,13 +56,19 @@ export function Dashboard() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold">Projects</h2>
-        <button
-          className="btn btn-primary"
-          onClick={() => setShowCreateModal(true)}
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create Project
-        </button>
+        {canCreateProject ? (
+          <button
+            className="btn btn-primary"
+            onClick={() => setShowCreateModal(true)}
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create Project
+          </button>
+        ) : (
+          <p className="text-sm text-base-content/70">
+            Only instance administrators can create projects.
+          </p>
+        )}
       </div>
 
       {loading ? (
@@ -67,13 +82,19 @@ export function Dashboard() {
               <FolderKanban className="w-8 h-8 text-base-content/50" />
             </div>
             <p className="text-base-content/70 mb-4">No projects yet</p>
-            <button
-              className="btn btn-primary"
-              onClick={() => setShowCreateModal(true)}
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Create Your First Project
-            </button>
+            {canCreateProject ? (
+              <button
+                className="btn btn-primary"
+                onClick={() => setShowCreateModal(true)}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Create Your First Project
+              </button>
+            ) : (
+              <p className="text-sm text-base-content/70">
+                Only instance administrators can create projects.
+              </p>
+            )}
           </div>
         </div>
       ) : (

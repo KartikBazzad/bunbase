@@ -1,9 +1,34 @@
-import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { LoginForm } from '../components/auth/LoginForm';
 import { ThemeSwitcher } from '../components/ThemeSwitcher';
 import { FolderKanban } from 'lucide-react';
+import { useInstanceStatus } from '../hooks/useInstanceStatus';
 
 export function Login() {
+  const navigate = useNavigate();
+  const { status, loading: statusLoading } = useInstanceStatus();
+
+  useEffect(() => {
+    if (statusLoading || !status) return;
+    if (status.deployment_mode === 'self_hosted' && !status.setup_complete) {
+      navigate('/setup', { replace: true });
+    }
+  }, [status, statusLoading, navigate]);
+
+  if (statusLoading || !status) {
+    return (
+      <div className="min-h-screen bg-base-200 flex items-center justify-center">
+        <span className="loading loading-spinner loading-lg text-primary" />
+      </div>
+    );
+  }
+  if (status.deployment_mode === 'self_hosted' && !status.setup_complete) {
+    return null;
+  }
+
+  const showSignUpLink = status.deployment_mode !== 'self_hosted';
+
   return (
     <div className="min-h-screen bg-base-200 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="absolute top-4 right-4">
@@ -18,12 +43,14 @@ export function Login() {
           <p className="text-base-content/70">Sign in to your account</p>
         </div>
         <LoginForm />
-        <p className="text-center mt-6 text-sm text-base-content/70">
-          Don't have an account?{' '}
-          <Link to="/signup" className="link link-primary">
-            Sign up
-          </Link>
-        </p>
+        {showSignUpLink && (
+          <p className="text-center mt-6 text-sm text-base-content/70">
+            Don't have an account?{' '}
+            <Link to="/signup" className="link link-primary">
+              Sign up
+            </Link>
+          </p>
+        )}
       </div>
     </div>
   );

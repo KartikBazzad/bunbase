@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kartikbazzad/bunbase/pkg/bunauth"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
 )
@@ -28,9 +29,12 @@ func (a *Auth) RegisterUser(email, password, name string) (*models.User, error) 
 	// Construct local user model from response (minimal)
 	// In Phase 2, platform typically blindly trusts auth service for Identity.
 	// If we need the full user object, we might need a GetUser endpoint in BunAuth.
-	// For now, return what we can.
+	id, err := uuid.Parse(resp.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user id from auth: %w", err)
+	}
 	return &models.User{
-		ID:    resp.UserID,
+		ID:    id,
 		Email: email,
 		Name:  name,
 	}, nil
@@ -44,9 +48,12 @@ func (a *Auth) LoginUser(email, password string) (*models.User, string, error) {
 
 	// We don't have user details like 'name' in Login response yet (only token/id),
 	// but the caller might need it.
-	// TODO: Update BunAuth to return User details on Login.
+	id, err := uuid.Parse(resp.UserID)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid user id from auth: %w", err)
+	}
 	return &models.User{
-		ID:    resp.UserID,
+		ID:    id,
 		Email: email,
 	}, resp.AccessToken, nil
 }
@@ -62,7 +69,11 @@ func (a *Auth) ValidateSession(token string) (*models.User, error) {
 		return nil, fmt.Errorf("invalid token")
 	}
 
-	user := &models.User{ID: resp.UserID}
+	id, err := uuid.Parse(resp.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user id from auth: %w", err)
+	}
+	user := &models.User{ID: id}
 	if resp.Email != "" {
 		user.Email = resp.Email
 	}
@@ -91,9 +102,11 @@ func (a *Auth) CleanupExpiredSessions() error {
 
 // GetUserByID is used by other services.
 // We should fetch this from BunAuth service ideally.
-// For now, let's omit or stub it.
-// Platform typically needs generic "GetOwner" check.
+// For now, parse the id and return a stub user.
 func (a *Auth) GetUserByID(id string) (*models.User, error) {
-	// TODO: Implement GET /users/:id in BunAuth
-	return &models.User{ID: id}, nil
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user id: %w", err)
+	}
+	return &models.User{ID: parsed}, nil
 }

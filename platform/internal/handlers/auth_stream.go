@@ -32,7 +32,7 @@ func (h *AuthHandler) AuthStream(c *gin.Context) {
 
 	// Initial event
 	fmt.Fprintf(c.Writer, "event: auth\n")
-	fmt.Fprintf(c.Writer, "data: {\"status\":\"ok\",\"userId\":\"%s\"}\n\n", user.ID)
+	fmt.Fprintf(c.Writer, "data: {\"status\":\"ok\",\"userId\":\"%s\"}\n\n", user.ID.String())
 	flusher.Flush()
 
 	ticker := time.NewTicker(30 * time.Second)

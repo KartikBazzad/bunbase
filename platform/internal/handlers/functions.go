@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/functions/pkg/client"
+	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/models"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
@@ -23,17 +24,19 @@ type FunctionHandler struct {
 	projectService       *services.ProjectService
 	projectConfigService *services.ProjectConfigService
 	functionsURL         string
-	functionsRPC         *client.Client // optional: when set, invoke uses TCP RPC instead of HTTP
+	functionsRPC         *client.Client
+	enforcer             *authz.Enforcer
 }
 
 // NewFunctionHandler creates a new FunctionHandler. functionsRPC is optional; when set, invoke uses it instead of HTTP.
-func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, functionsURL string, functionsRPC *client.Client) *FunctionHandler {
+func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, functionsURL string, functionsRPC *client.Client, enforcer *authz.Enforcer) *FunctionHandler {
 	return &FunctionHandler{
 		functionService:      functionService,
 		projectService:       projectService,
 		projectConfigService: projectConfigService,
 		functionsURL:         functionsURL,
 		functionsRPC:         functionsRPC,
+		enforcer:             enforcer,
 	}
 }
 
@@ -69,24 +72,35 @@ func (h *FunctionHandler) ListFunctions(c *gin.Context) {
 	}
 
 	if middleware.GetProjectKeyProjectID(c) == "" {
-		// User-scoped: require auth and membership
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return
 		}
-		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if !isMember && !isOwner {
-			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-			return
+		if h.enforcer != nil {
+			allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "function", "read")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !allowed {
+				c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
+		} else {
+			isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !isMember && !isOwner {
+				c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
 		}
 	}
 
@@ -125,20 +139,31 @@ func (h *FunctionHandler) DeployFunction(c *gin.Context) {
 
 	projectID := middleware.GetProjectID(c)
 
-	// Check if user has access to this project
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "function", "deploy")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	var req DeployFunctionRequest
@@ -179,15 +204,26 @@ func (h *FunctionHandler) DeleteFunction(c *gin.Context) {
 	projectID := middleware.GetProjectID(c)
 	functionID := c.Param("functionId")
 
-	// Check if user has access to this project
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "function", "delete")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 
 	if err := h.functionService.DeleteFunction(functionID); err != nil {
@@ -342,29 +378,39 @@ func (h *FunctionHandler) InvokeProjectFunction(c *gin.Context) {
 	functionName := c.Param("name")
 	var project *models.Project
 
-	// Allow if authorized by project API key (key-scoped); else require user and membership
 	if middleware.GetProjectKeyProjectID(c) == "" {
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return
 		}
-		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if !isMember && !isOwner {
-			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-			return
+		if h.enforcer != nil {
+			allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "function", "read")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !allowed {
+				c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
+		} else {
+			isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !isMember && !isOwner {
+				c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
 		}
 	}
 
-	// Load project for context injection (public API key, slug, etc.)
 	if h.projectService != nil {
 		var err error
 		project, err = h.projectService.GetProjectByID(projectID)
@@ -408,19 +454,31 @@ func (h *FunctionHandler) GetProjectFunctionLogs(c *gin.Context) {
 		return
 	}
 	projectID := middleware.GetProjectID(c)
-	isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !isMember && !isOwner {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-		return
+	if h.enforcer != nil {
+		allowed, err := h.enforcer.ProjectEnforce(user.ID.String(), projectID, "function", "logs")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	} else {
+		isMember, _, err := h.projectService.IsProjectMember(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		isOwner, err := h.projectService.IsProjectOwner(projectID, user.ID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !isMember && !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
 	}
 	functionIDOrName := c.Query("function_id")
 	sinceStr := c.Query("since")
@@ -453,7 +511,7 @@ func (h *FunctionHandler) GetProjectFunctionLogs(c *gin.Context) {
 	var all []logRow
 	if functionIDOrName != "" {
 		var fn *models.Function
-		fn, err = h.functionService.GetFunctionByName(projectID, functionIDOrName)
+		fn, err := h.functionService.GetFunctionByName(projectID, functionIDOrName)
 		if err != nil {
 			fn, err = h.functionService.GetFunctionByID(functionIDOrName)
 			if err != nil || fn == nil || fn.ProjectID != projectID {

@@ -74,6 +74,21 @@ export class ApiClient {
     return this.request("/auth/me");
   }
 
+  // Instance (self-hosted setup and status)
+  async getInstanceStatus(): Promise<{
+    deployment_mode: string;
+    setup_complete: boolean;
+  }> {
+    return this.request("/instance/status");
+  }
+
+  async setup(email: string, password: string, name: string) {
+    return this.request<{ id: string; email: string; name: string; created_at?: string; updated_at?: string }>("/setup", {
+      method: "POST",
+      body: JSON.stringify({ email, password, name }),
+    });
+  }
+
   // Project endpoints
   async listProjects() {
     return this.request("/projects");

@@ -17,10 +17,11 @@ type SystemMetadata struct {
 
 // CollectionMeta holds metadata for a single collection
 type CollectionMeta struct {
-	Name    string            `json:"name"`
-	Indexes map[string]uint64 `json:"indexes"` // Field -> RootPageID
-	Schema  string            `json:"schema,omitempty"`
-	Rules   map[string]string `json:"rules,omitempty"` // Operation -> Expression (e.g. "read": "true")
+	Name                   string            `json:"name"`
+	Indexes                map[string]uint64 `json:"indexes"`                     // Field -> RootPageID
+	Schema                 string            `json:"schema,omitempty"`            // JSON schema string
+	Rules                  map[string]string `json:"rules,omitempty"`            // Operation -> Expression (e.g. "read": "true")
+	PreventSchemaOverride  bool              `json:"prevent_schema_override,omitempty"` // If true, reject schema changes when incoming differs from current
 }
 
 // GroupIndexMeta holds metadata for a collection group index
@@ -128,6 +129,22 @@ func (mm *MetadataManager) UpdateCollectionSchema(name string, schema string) er
 	}
 
 	meta.Schema = schema
+	mm.metadata.Collections[name] = meta
+
+	return mm.saveLocked()
+}
+
+// UpdateCollectionPreventSchemaOverride sets the prevent_schema_override flag for a collection
+func (mm *MetadataManager) UpdateCollectionPreventSchemaOverride(name string, value bool) error {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	meta, exists := mm.metadata.Collections[name]
+	if !exists {
+		return fmt.Errorf("collection %s does not exist", name)
+	}
+
+	meta.PreventSchemaOverride = value
 	mm.metadata.Collections[name] = meta
 
 	return mm.saveLocked()
