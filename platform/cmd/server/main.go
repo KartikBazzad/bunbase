@@ -17,6 +17,7 @@ import (
 	fnclient "github.com/kartikbazzad/bunbase/functions/pkg/client"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/authz"
+	"github.com/kartikbazzad/bunbase/platform/internal/bunder"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/database"
 	"github.com/kartikbazzad/bunbase/platform/internal/handlers"
@@ -204,6 +205,24 @@ func main() {
 	tokenHandler := handlers.NewTokenHandler(tokenService)
 	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager, authzEnforcer)
 
+	// Setup Bunder KV proxy (RPC preferred, fallback to HTTP)
+	var bunderProxy bunder.Proxy
+	if rpcAddr := os.Getenv("PLATFORM_BUNDER_RPC_ADDR"); rpcAddr != "" {
+		bunderProxy = bunder.NewRPCClient(rpcAddr)
+		log.Printf("KV: Using RPC client (addr=%s)", rpcAddr)
+	} else {
+		bunderManagerURL := os.Getenv("PLATFORM_BUNDER_MANAGER_URL")
+		// Default for local development (bunder-manager exposed on host port 8089)
+		if bunderManagerURL == "" {
+			bunderManagerURL = "http://localhost:8089"
+			log.Printf("KV: Using default HTTP client (http://localhost:8089). Set PLATFORM_BUNDER_MANAGER_URL or PLATFORM_BUNDER_RPC_ADDR to override.")
+		} else {
+			log.Printf("KV: Using HTTP client (URL=%s)", bunderManagerURL)
+		}
+		bunderProxy = bunder.NewClient(bunderManagerURL)
+	}
+	kvHandler := handlers.NewKVHandler(projectService, bunderProxy)
+
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -283,6 +302,13 @@ func main() {
 	v1Key.POST("/functions/:name/invoke", functionHandler.InvokeProjectFunction)
 	v1Key.GET("/functions/:name/invoke", functionHandler.InvokeProjectFunction)
 	v1Key.GET("/functions", functionHandler.ListFunctions)
+	v1KeyKV := v1Key.Group("/kv")
+	v1KeyKV.GET("/keys", kvHandler.DeveloperProxyHandler)
+	v1KeyKV.GET("/health", kvHandler.DeveloperProxyHandler)
+	v1KeyKV.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
+	v1KeyKV.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
+	v1KeyKV.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
+	log.Printf("KV routes registered: /v1/kv/keys, /v1/kv/health, /v1/kv/kv/:key")
 	v1Key.GET("/auth/users", tenantAuthHandler.ListProjectUsers)
 	v1Key.POST("/auth/users", tenantAuthHandler.CreateProjectUser)
 	v1Key.GET("/auth/config", tenantAuthHandler.GetProjectAuthConfig)
@@ -314,6 +340,12 @@ func main() {
 	v1ProjectDBKeyOrUser.POST("/collections/:collection/documents/query/subscribe", databaseHandler.HandleQuerySubscribe)
 	v1ProjectsKeyOrUser.POST("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
 	v1ProjectsKeyOrUser.GET("/:id/functions/:name/invoke", functionHandler.InvokeProjectFunction)
+	v1ProjectKVKeyOrUser := v1ProjectsKeyOrUser.Group("/:id/kv")
+	v1ProjectKVKeyOrUser.GET("/keys", kvHandler.DeveloperProxyHandler)
+	v1ProjectKVKeyOrUser.GET("/health", kvHandler.DeveloperProxyHandler)
+	v1ProjectKVKeyOrUser.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
+	v1ProjectKVKeyOrUser.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
+	v1ProjectKVKeyOrUser.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
 
 	v1Projects := v1.Group("/projects")
 	v1Projects.Use(middleware.AuthAnyMiddleware(authService, tokenService))
@@ -388,6 +420,14 @@ func main() {
 	// Realtime subscriptions (SSE)
 	projectDB.GET("/collections/:collection/subscribe", databaseHandler.HandleCollectionSubscribe)
 	projectDB.POST("/collections/:collection/documents/query/subscribe", databaseHandler.HandleQuerySubscribe)
+
+	// KV proxy (user auth): /api/projects/:id/kv/...
+	projectKV := projectsAPI.Group("/:id/kv")
+	projectKV.GET("/keys", kvHandler.DeveloperProxyHandler)
+	projectKV.GET("/health", kvHandler.DeveloperProxyHandler)
+	projectKV.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
+	projectKV.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
+	projectKV.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
 
 	// Auth Configuration routes (protected)
 	projectAuth := projectsAPI.Group("/:id/auth")

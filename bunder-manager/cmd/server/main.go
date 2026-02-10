@@ -1,5 +1,6 @@
-// Bunder-manager is the instance manager for Bunder KV: one Bunder process per project.
-// It exposes an HTTP front that accepts /kv/{project_id}/... and proxies to the project's Bunder instance.
+// Bunder-manager is the instance manager for Bunder KV: one embedded Bunder instance per project.
+// It exposes an HTTP front that accepts /kv/{project_id}/... and routes to the project's embedded Bunder instance.
+// It also exposes an RPC server for internal use by platform.
 package main
 
 import (
@@ -13,20 +14,21 @@ import (
 
 	managerhttp "github.com/kartikbazzad/bunbase/bunder-manager/internal/http"
 	"github.com/kartikbazzad/bunbase/bunder-manager/internal/manager"
+	"github.com/kartikbazzad/bunbase/bunder-manager/internal/rpc"
 )
 
 func main() {
 	dataPath := flag.String("data", "./data", "Root data directory for project Bunder instances")
-	bunderBin := flag.String("bunder-bin", "bunder", "Path to bunder binary")
-	addr := flag.String("addr", ":8085", "HTTP listen address for the manager")
-	portBase := flag.Int("port-base", 9000, "First port in pool for Bunder instances")
-	portCount := flag.Int("port-count", 1000, "Number of ports in pool")
+	addr := flag.String("addr", ":8080", "HTTP listen address for the manager")
+	rpcAddr := flag.String("rpc-addr", "", "TCP address for internal RPC server (e.g. :9091). If empty, RPC server is disabled.")
 	flag.Parse()
 
+	// Override from environment variable if set
+	if val := os.Getenv("BUNDER_RPC_ADDR"); val != "" {
+		*rpcAddr = val
+	}
+
 	opts := manager.DefaultManagerOptions(*dataPath)
-	opts.BunderBin = *bunderBin
-	opts.PortBase = *portBase
-	opts.PortCount = *portCount
 
 	m, err := manager.NewInstanceManager(opts)
 	if err != nil {
@@ -43,11 +45,21 @@ func main() {
 	})
 
 	go func() {
-		log.Printf("Bunder manager listening on %s", *addr)
+		log.Printf("Bunder manager HTTP listening on %s", *addr)
 		if err := http.ListenAndServe(*addr, mux); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server: %v", err)
 		}
 	}()
+
+	// Optional: start internal RPC server for platform (KV proxy over TCP)
+	var rpcServer *rpc.Server
+	if *rpcAddr != "" {
+		rpcServer = rpc.NewServer(*rpcAddr, m, mux)
+		if err := rpcServer.Start(); err != nil {
+			log.Fatalf("RPC server failed: %v", err)
+		}
+		defer rpcServer.Stop()
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

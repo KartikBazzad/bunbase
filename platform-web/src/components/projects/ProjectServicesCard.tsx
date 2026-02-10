@@ -34,7 +34,9 @@ export function ProjectServicesCard({ config }: ProjectServicesCardProps) {
         <div className="card-body">
           <h3 className="font-semibold mb-2">KV (Bunder)</h3>
           <p className="text-sm text-base-content/70 mb-2">
-            Project-scoped key-value store. Use to path below for HTTP API.
+            Project-scoped key-value store. Use the path below for the HTTP API. Send{" "}
+            <code className="text-xs bg-base-300 px-1 rounded">X-Bunbase-Client-Key</code>{" "}
+            with your project API key.
           </p>
           <CopyableValue label="Path" value={config.kv.path} />
         </div>

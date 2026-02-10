@@ -8,7 +8,7 @@ http:
 
   routers:
     platform:
-      rule: "PathPrefix(`/api`) || Path(`/health`)"
+      rule: "PathPrefix(`/api`) || PathPrefix(`/kv`) || Path(`/health`)"
       service: platform
       entryPoints:
         - web

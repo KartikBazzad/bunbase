@@ -1,6 +1,7 @@
 import { AuthClient } from "./auth";
 import { DatabaseClient } from "./database";
 import { FunctionsClient } from "./functions";
+import { KVClient } from "./kv";
 
 export class BunBaseClient<
   SchemaRegistry extends Record<string, any> = Record<string, any>,
@@ -8,6 +9,7 @@ export class BunBaseClient<
   public auth: AuthClient;
   public db: DatabaseClient<SchemaRegistry>;
   public functions: FunctionsClient;
+  public kv: KVClient;
 
   constructor(
     public url: string,
@@ -18,6 +20,7 @@ export class BunBaseClient<
     this.auth = new AuthClient(this);
     this.db = new DatabaseClient(this);
     this.functions = new FunctionsClient(this);
+    this.kv = new KVClient(this);
   }
 
   /** Fetch current project and config (project is inferred from API key). */

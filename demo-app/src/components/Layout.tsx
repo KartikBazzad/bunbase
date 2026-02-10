@@ -40,6 +40,14 @@ export function Layout() {
               Functions
             </NavLink>
             <NavLink
+              to="/kv"
+              className={({ isActive }) =>
+                isActive ? "text-blue-600" : "text-gray-600 hover:text-gray-900"
+              }
+            >
+              KV
+            </NavLink>
+            <NavLink
               to="/settings"
               className={({ isActive }) =>
                 isActive ? "text-blue-600" : "text-gray-600 hover:text-gray-900"

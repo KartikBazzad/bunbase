@@ -70,7 +70,7 @@ func (s *ProjectConfigService) GetConfig(project *models.Project) *ProjectConfig
 		ProjectID:   project.ID,
 		ProjectSlug: project.Slug,
 		KV: KVConfig{
-			Path: fmt.Sprintf("%s/kv/%s", base, project.ID),
+			Path: fmt.Sprintf("%s/kv", base),
 		},
 		Bundoc: BundocConfig{
 			DocumentsPath: fmt.Sprintf("%s/v1/projects/%s/databases/(default)/documents", base, project.ID),

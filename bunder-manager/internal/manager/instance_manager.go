@@ -3,31 +3,29 @@ package manager
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/kartikbazzad/bunbase/bunder/pkg/store"
 )
 
-// BunderInstance represents a running Bunder process for a project.
+// BunderInstance represents an embedded Bunder KV store instance for a project.
 type BunderInstance struct {
 	ProjectID  string
-	Port       int
-	BaseURL    string
-	Cmd        *exec.Cmd
-	refCount   int32
-	lastAccess int64
-	createdAt  time.Time
+	Store       store.Store
+	refCount    int32
+	lastAccess  int64
+	createdAt   time.Time
+	initDone    chan struct{} // Signals when instance is initialized
+	initErr     error         // Initialization error, if any
 }
 
-// InstanceManager manages Bunder processes per project (hot/cold pool).
+// InstanceManager manages embedded Bunder KV store instances per project (hot/cold pool).
 type InstanceManager struct {
 	hot           sync.Map // projectID (string) → *BunderInstance
 	dataPath      string
-	bunderBin     string
-	portPool      *portPool
 	maxHot        int
 	idleTTL       time.Duration
 	evictInterval time.Duration
@@ -39,9 +37,6 @@ type InstanceManager struct {
 // ManagerOptions configures the instance manager.
 type ManagerOptions struct {
 	DataPath      string
-	BunderBin     string // Path to bunder binary (default: "bunder" in PATH)
-	PortBase      int    // First port in pool (default 9000)
-	PortCount     int    // Number of ports (default 1000)
 	MaxHot        int
 	IdleTTL       time.Duration
 	EvictInterval time.Duration
@@ -51,9 +46,6 @@ type ManagerOptions struct {
 func DefaultManagerOptions(dataPath string) *ManagerOptions {
 	return &ManagerOptions{
 		DataPath:      dataPath,
-		BunderBin:     "bunder",
-		PortBase:      9000,
-		PortCount:     1000,
 		MaxHot:        100,
 		IdleTTL:       10 * time.Minute,
 		EvictInterval: 1 * time.Minute,
@@ -65,14 +57,9 @@ func NewInstanceManager(opts *ManagerOptions) (*InstanceManager, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("options cannot be nil")
 	}
-	pool, err := newPortPool(opts.PortBase, opts.PortCount)
-	if err != nil {
-		return nil, err
-	}
+
 	m := &InstanceManager{
 		dataPath:      opts.DataPath,
-		bunderBin:     opts.BunderBin,
-		portPool:      pool,
 		maxHot:        opts.MaxHot,
 		idleTTL:       opts.IdleTTL,
 		evictInterval: opts.EvictInterval,
@@ -83,81 +70,91 @@ func NewInstanceManager(opts *ManagerOptions) (*InstanceManager, error) {
 	return m, nil
 }
 
-// Acquire returns the base URL for the project's Bunder instance and a release callback.
-// Spawns a new Bunder process if needed.
-func (m *InstanceManager) Acquire(projectID string) (baseURL string, release func(), err error) {
+// Acquire returns the Store for the project's Bunder instance and a release callback.
+// Loads a new instance from disk if needed.
+func (m *InstanceManager) Acquire(projectID string) (store.Store, func(), error) {
 	if m.closed.Load() {
-		return "", nil, fmt.Errorf("instance manager is closed")
+		return nil, nil, fmt.Errorf("instance manager is closed")
 	}
 
 	// Fast path: already hot
 	if val, ok := m.hot.Load(projectID); ok {
 		inst := val.(*BunderInstance)
+
+		// Wait for initialization to complete
+		<-inst.initDone
+		if inst.initErr != nil {
+			return nil, nil, inst.initErr
+		}
+
 		atomic.AddInt32(&inst.refCount, 1)
 		atomic.StoreInt64(&inst.lastAccess, time.Now().UnixNano())
-		release := func() { atomic.AddInt32(&inst.refCount, -1) }
-		return inst.BaseURL, release, nil
+
+		release := func() {
+			atomic.AddInt32(&inst.refCount, -1)
+		}
+
+		return inst.Store, release, nil
 	}
 
-	// Cold path: spawn new process
-	var inst *BunderInstance
-	inst, err = m.spawn(projectID)
+	// Cold path: load from disk
+	instance, err := m.loadInstance(projectID)
 	if err != nil {
-		return "", nil, err
+		return nil, nil, err
 	}
-	atomic.AddInt32(&inst.refCount, 1)
-	release = func() { atomic.AddInt32(&inst.refCount, -1) }
-	return inst.BaseURL, release, nil
+
+	atomic.AddInt32(&instance.refCount, 1)
+	release := func() {
+		atomic.AddInt32(&instance.refCount, -1)
+	}
+
+	return instance.Store, release, nil
 }
 
-// spawn starts a new Bunder process for the project and stores it in the hot map.
-func (m *InstanceManager) spawn(projectID string) (*BunderInstance, error) {
-	port, err := m.portPool.Acquire()
-	if err != nil {
-		return nil, fmt.Errorf("no free port: %w", err)
+// loadInstance loads a Bunder instance from disk (cold start).
+func (m *InstanceManager) loadInstance(projectID string) (*BunderInstance, error) {
+	// Try to load or store atomically
+	newInstance := &BunderInstance{
+		ProjectID:  projectID,
+		createdAt:  time.Now(),
+		lastAccess: time.Now().UnixNano(),
+		initDone:   make(chan struct{}),
 	}
+
+	val, loaded := m.hot.LoadOrStore(projectID, newInstance)
+	instance := val.(*BunderInstance)
+
+	if loaded {
+		// Another goroutine beat us, wait for their initialization
+		<-instance.initDone
+		if instance.initErr != nil {
+			return nil, instance.initErr
+		}
+		return instance, nil
+	}
+
+	// We won the race, actually initialize the KV store
 	dataDir := filepath.Join(m.dataPath, "projects", projectID)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		m.portPool.Release(port)
-		return nil, fmt.Errorf("create data dir: %w", err)
+		instance.initErr = fmt.Errorf("create data dir: %w", err)
+		m.hot.Delete(projectID)
+		close(instance.initDone)
+		return nil, instance.initErr
 	}
 
-	// Bunder requires both TCP (RESP) and HTTP. Use port for HTTP, port+10000 for TCP to avoid collision.
-	tcpPort := port + 10000
-	cmd := exec.Command(m.bunderBin,
-		"-data", dataDir,
-		"-http", fmt.Sprintf(":%d", port),
-		"-addr", fmt.Sprintf(":%d", tcpPort),
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		m.portPool.Release(port)
-		return nil, fmt.Errorf("start bunder: %w", err)
+	kvStore, err := store.Open(store.DefaultOptions(dataDir))
+	if err != nil {
+		instance.initErr = fmt.Errorf("failed to open KV store: %w", err)
+		m.hot.Delete(projectID)
+		close(instance.initDone)
+		return nil, instance.initErr
 	}
 
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	inst := &BunderInstance{
-		ProjectID:  projectID,
-		Port:       port,
-		BaseURL:    baseURL,
-		Cmd:        cmd,
-		refCount:   0,
-		lastAccess: time.Now().UnixNano(),
-		createdAt:  time.Now(),
-	}
+	// Update instance with initialized resources
+	instance.Store = kvStore
+	close(instance.initDone)
 
-	val, loaded := m.hot.LoadOrStore(projectID, inst)
-	if loaded {
-		// Another goroutine won; kill our process and use theirs
-		terminateProcess(cmd)
-		m.portPool.Release(port)
-		return val.(*BunderInstance), nil
-	}
-
-	// Give Bunder a moment to bind
-	time.Sleep(100 * time.Millisecond)
-	return inst, nil
+	return instance, nil
 }
 
 func (m *InstanceManager) evictionLoop() {
@@ -201,13 +198,12 @@ func (m *InstanceManager) evictInstance(projectID string) {
 		m.hot.Store(projectID, inst)
 		return
 	}
-	if inst.Cmd != nil && inst.Cmd.Process != nil {
-		terminateProcess(inst.Cmd)
+	if inst.Store != nil {
+		inst.Store.Close()
 	}
-	m.portPool.Release(inst.Port)
 }
 
-// Close shuts down the manager and all Bunder processes.
+// Close shuts down the manager and all Bunder instances.
 func (m *InstanceManager) Close() error {
 	if !m.closed.CompareAndSwap(false, true) {
 		return nil
@@ -216,75 +212,10 @@ func (m *InstanceManager) Close() error {
 	m.wg.Wait()
 	m.hot.Range(func(key, value interface{}) bool {
 		inst := value.(*BunderInstance)
-		if inst.Cmd != nil && inst.Cmd.Process != nil {
-			terminateProcess(inst.Cmd)
+		if inst.Store != nil {
+			inst.Store.Close()
 		}
-		m.portPool.Release(inst.Port)
 		return true
 	})
 	return nil
-}
-
-// terminateProcess attempts to gracefully shut down the process with SIGTERM,
-// waiting up to 5 seconds before resorting to SIGKILL.
-func terminateProcess(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-
-	// Try SIGTERM first
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		// If process is already gone, or other error, just try kill to be safe or ignore
-		cmd.Process.Kill()
-		cmd.Wait() // release resources
-		return
-	}
-
-	// Wait for process to exit
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		// Use SIGKILL if still running
-		cmd.Process.Kill()
-		<-done
-	case <-done:
-		// Process exited gracefully
-	}
-}
-
-// portPool manages a pool of ports for Bunder instances.
-type portPool struct {
-	ports chan int
-}
-
-func newPortPool(base, count int) (*portPool, error) {
-	if count <= 0 {
-		return nil, fmt.Errorf("port count must be positive")
-	}
-	ch := make(chan int, count)
-	for i := 0; i < count; i++ {
-		ch <- base + i
-	}
-	return &portPool{ports: ch}, nil
-}
-
-func (p *portPool) Acquire() (int, error) {
-	select {
-	case port := <-p.ports:
-		return port, nil
-	default:
-		return 0, fmt.Errorf("port pool exhausted")
-	}
-}
-
-func (p *portPool) Release(port int) {
-	select {
-	case p.ports <- port:
-	default:
-		// pool full, ignore
-	}
 }

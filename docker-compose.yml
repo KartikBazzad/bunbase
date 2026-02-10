@@ -17,6 +17,8 @@ services:
       PLATFORM_AUTH_URL: http://bun-auth:8081
       PLATFORM_BUNDOC_URL: http://bundoc-data:8080
       PLATFORM_BUNDOC_RPC_ADDR: bundoc-data:9091
+      PLATFORM_BUNDER_MANAGER_URL: http://bunder-manager:8080
+      PLATFORM_BUNDER_RPC_ADDR: bunder-manager:9091
       PLATFORM_FUNCTIONS_URL: http://functions:8080
       PLATFORM_FUNCTIONS_RPC_ADDR: functions:9090
       PLATFORM_BUNDLE_PATH: /app/data/bundles
@@ -37,6 +39,8 @@ services:
         condition: service_started
       buncast:
         condition: service_started
+      bunder-manager:
+        condition: service_healthy
     networks:
       - bunbase-net
     ports:
@@ -308,6 +312,27 @@ services:
       timeout: 3s
       retries: 5
 
+  bunder-manager:
+    build:
+      context: .
+      dockerfile: bunder-manager/Dockerfile
+    container_name: bunbase-bunder-manager
+    restart: always
+    environment:
+      BUNDER_RPC_ADDR: :9091
+    volumes:
+      - bunder_manager_data:/data
+    networks:
+      - bunbase-net
+    ports:
+      - "8089:8080" # Exposed for local development (platform running outside Docker)
+      - "9094:9091" # RPC server port (host 9094 -> container 9091)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   loki:
     image: grafana/loki:2.9.2
     container_name: bunbase-loki
@@ -374,6 +399,7 @@ volumes:
   postgres_data:
   minio_data:
   bunder_sys_data:
+  bunder_manager_data:
   prometheus_data:
   grafana_data:
   loki_data:
