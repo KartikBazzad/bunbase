@@ -35,6 +35,19 @@ type SubscriptionEvent struct {
 	DocID    string                 `json:"docId,omitempty"`
 }
 
+// KVChangeEvent is the payload for KV set/delete (from bunder-manager via Buncast topic kv.{projectID}).
+type KVChangeEvent struct {
+	Op    string  `json:"op"`    // "set" or "delete"
+	Key   string  `json:"key"`
+	Value *string `json:"value,omitempty"` // base64 for set; nil for delete
+}
+
+// kvEventWithProjectID is used internally to dispatch KV events.
+type kvEventWithProjectID struct {
+	projectID string
+	ev        KVChangeEvent
+}
+
 // QueryPredicate is a simple function that decides if a document matches a query.
 type QueryPredicate func(doc map[string]interface{}) bool
 
@@ -49,14 +62,17 @@ type Subscription struct {
 
 // SubscriptionManager manages active subscriptions and Buncast fan-out.
 type SubscriptionManager struct {
-	mu            sync.RWMutex
-	subs          map[string][]*Subscription // key: projectID|collection
-	activeTopics  map[string]bool            // track which Buncast topics we're subscribed to
-	buncast       *client.Client
-	socketPath    string                      // stored for creating new clients
-	subscribeCtx  context.Context
-	cancel        context.CancelFunc
-	eventChan     chan DocumentChangeEvent
+	mu              sync.RWMutex
+	subs            map[string][]*Subscription // key: projectID|collection
+	activeTopics    map[string]bool           // track which Buncast topics we're subscribed to
+	kvSubs          map[string][]chan<- KVChangeEvent // projectID -> channels
+	kvActiveTopics  map[string]bool            // track kv.{projectID} subscriptions
+	buncast         *client.Client
+	socketPath      string
+	subscribeCtx   context.Context
+	cancel          context.CancelFunc
+	eventChan       chan DocumentChangeEvent
+	kvEventChan     chan kvEventWithProjectID
 }
 
 // NewSubscriptionManager creates a manager. If buncastClient is nil, the manager is a no-op.
@@ -69,16 +85,20 @@ func NewSubscriptionManager(buncastClient *client.Client) *SubscriptionManager {
 		socketPath = "" // Will be set via SetSocketPath if needed
 	}
 	mgr := &SubscriptionManager{
-		subs:         make(map[string][]*Subscription),
-		activeTopics: make(map[string]bool),
-		buncast:      buncastClient,
-		socketPath:   socketPath,
-		subscribeCtx: ctx,
-		cancel:       cancel,
-		eventChan:    make(chan DocumentChangeEvent, 100),
+		subs:           make(map[string][]*Subscription),
+		activeTopics:   make(map[string]bool),
+		kvSubs:         make(map[string][]chan<- KVChangeEvent),
+		kvActiveTopics: make(map[string]bool),
+		buncast:        buncastClient,
+		socketPath:     socketPath,
+		subscribeCtx:   ctx,
+		cancel:         cancel,
+		eventChan:      make(chan DocumentChangeEvent, 100),
+		kvEventChan:    make(chan kvEventWithProjectID, 100),
 	}
 	if buncastClient != nil {
 		go mgr.run()
+		go mgr.runKV()
 	}
 	return mgr
 }
@@ -270,3 +290,113 @@ func (m *SubscriptionManager) dispatch(ev DocumentChangeEvent) {
 	}
 }
 
+// runKV processes KV events and dispatches to KV subscribers.
+func (m *SubscriptionManager) runKV() {
+	for {
+		select {
+		case <-m.subscribeCtx.Done():
+			return
+		case item := <-m.kvEventChan:
+			m.dispatchKV(item.projectID, item.ev)
+		}
+	}
+}
+
+// ensureKVTopicSubscription subscribes to Buncast topic kv.{projectID} if not already subscribed.
+func (m *SubscriptionManager) ensureKVTopicSubscription(projectID string) {
+	if m.buncast == nil || m.socketPath == "" {
+		return
+	}
+	topic := "kv." + projectID
+	m.mu.Lock()
+	if m.kvActiveTopics[topic] {
+		m.mu.Unlock()
+		return
+	}
+	m.kvActiveTopics[topic] = true
+	socketPath := m.socketPath
+	m.mu.Unlock()
+
+	subClient := client.New(socketPath)
+	go func() {
+		defer func() {
+			_ = subClient.Close()
+			m.mu.Lock()
+			delete(m.kvActiveTopics, topic)
+			m.mu.Unlock()
+		}()
+		if err := subClient.Connect(); err != nil {
+			log.Printf("[SubscriptionManager] KV topic %s: connect failed: %v", topic, err)
+			return
+		}
+		subscribeErr := subClient.Subscribe(topic, func(msg *client.Message) error {
+			var ev KVChangeEvent
+			if err := json.Unmarshal(msg.Payload, &ev); err != nil {
+				return nil
+			}
+			select {
+			case m.kvEventChan <- kvEventWithProjectID{projectID: projectID, ev: ev}:
+			case <-m.subscribeCtx.Done():
+				return fmt.Errorf("subscription manager stopped")
+			default:
+			}
+			return nil
+		})
+		if subscribeErr != nil {
+			log.Printf("[SubscriptionManager] KV topic %s: subscribe error: %v", topic, subscribeErr)
+		}
+	}()
+}
+
+// SubscribeKV subscribes to KV change events for a project. Returns event channel and cancel.
+func (m *SubscriptionManager) SubscribeKV(ctx context.Context, projectID string) (<-chan KVChangeEvent, context.CancelFunc) {
+	out := make(chan KVChangeEvent, 16)
+	subCtx, cancel := context.WithCancel(ctx)
+
+	m.mu.Lock()
+	m.kvSubs[projectID] = append(m.kvSubs[projectID], out)
+	m.mu.Unlock()
+
+	m.ensureKVTopicSubscription(projectID)
+
+	go func() {
+		<-subCtx.Done()
+		m.removeKVSubscription(projectID, out)
+		close(out)
+	}()
+
+	return out, cancel
+}
+
+func (m *SubscriptionManager) removeKVSubscription(projectID string, ch chan<- KVChangeEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	list := m.kvSubs[projectID]
+	if len(list) == 0 {
+		return
+	}
+	out := list[:0]
+	for _, c := range list {
+		if c != ch {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		delete(m.kvSubs, projectID)
+	} else {
+		m.kvSubs[projectID] = out
+	}
+}
+
+func (m *SubscriptionManager) dispatchKV(projectID string, ev KVChangeEvent) {
+	m.mu.RLock()
+	subs := append([]chan<- KVChangeEvent(nil), m.kvSubs[projectID]...)
+	m.mu.RUnlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}

@@ -5,17 +5,20 @@ import (
 	"strings"
 
 	"github.com/kartikbazzad/bunbase/bunder-manager/internal/manager"
+	"github.com/kartikbazzad/bunbase/bunder-manager/internal/pubsub"
 )
 
 // ProxyHandler is an HTTP handler that routes /kv/{project_id}/... to the project's embedded Bunder instance.
 type ProxyHandler struct {
-	manager *manager.InstanceManager
+	manager   *manager.InstanceManager
+	publisher *pubsub.Publisher
 }
 
-// NewProxyHandler creates a new ProxyHandler.
-func NewProxyHandler(m *manager.InstanceManager) *ProxyHandler {
+// NewProxyHandler creates a new ProxyHandler. publisher may be nil (no realtime publish).
+func NewProxyHandler(m *manager.InstanceManager, publisher *pubsub.Publisher) *ProxyHandler {
 	return &ProxyHandler{
-		manager: m,
+		manager:   m,
+		publisher: publisher,
 	}
 }
 
@@ -44,8 +47,20 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
+	// So kv_handler can publish and read projectID
+	r.Header.Set("X-Project-ID", projectID)
+
+	var publishFunc PublishFunc
+	if h.publisher != nil {
+		pub := h.publisher
+		pid := projectID
+		publishFunc = func(_, op, key string, value []byte) {
+			pub.PublishKV(pid, op, key, value)
+		}
+	}
+
 	// Create HTTP handler wrapper for the Bunder store
-	kvHandler := NewKVHandler(kvStore)
+	kvHandler := NewKVHandler(kvStore, publishFunc)
 
 	// Rewrite the request path: remove /kv/{project_id} prefix
 	// Original: /kv/{project_id}/kv/{key} -> /kv/{key}

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,15 +15,17 @@ import (
 
 // KVHandler proxies authenticated KV requests to bunder-manager (one Bunder instance per project).
 type KVHandler struct {
-	projectService *services.ProjectService
-	proxy          bunder.Proxy
+	projectService       *services.ProjectService
+	proxy                 bunder.Proxy
+	subscriptionManager   *services.SubscriptionManager
 }
 
-// NewKVHandler creates a KVHandler with a Proxy (HTTP or RPC).
-func NewKVHandler(projectService *services.ProjectService, proxy bunder.Proxy) *KVHandler {
+// NewKVHandler creates a KVHandler with a Proxy (HTTP or RPC). subscriptionManager may be nil (no SSE subscribe).
+func NewKVHandler(projectService *services.ProjectService, proxy bunder.Proxy, subscriptionManager *services.SubscriptionManager) *KVHandler {
 	return &KVHandler{
-		projectService: projectService,
-		proxy:          proxy,
+		projectService:     projectService,
+		proxy:              proxy,
+		subscriptionManager: subscriptionManager,
 	}
 }
 
@@ -108,3 +112,60 @@ func (h *KVHandler) DeveloperProxyHandler(c *gin.Context) {
 	c.Data(status, "", respBody)
 }
 
+// HandleKVSubscribe streams KV change events over SSE (key-scoped or user-scoped).
+func (h *KVHandler) HandleKVSubscribe(c *gin.Context) {
+	projectID := middleware.GetProjectID(c)
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Project ID is required"})
+		return
+	}
+
+	if h.subscriptionManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KV realtime subscriptions not available"})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
+		return
+	}
+
+	events, cancel := h.subscriptionManager.SubscribeKV(c.Request.Context(), projectID)
+	defer cancel()
+
+	if _, err := c.Writer.Write([]byte("event: connected\n")); err != nil {
+		return
+	}
+	if _, err := c.Writer.Write([]byte(fmt.Sprintf("data: {\"projectId\":\"%s\"}\n\n", projectID))); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			if _, err := c.Writer.Write([]byte("event: change\n")); err != nil {
+				return
+			}
+			if _, err := c.Writer.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}

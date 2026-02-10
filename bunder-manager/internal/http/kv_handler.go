@@ -9,14 +9,18 @@ import (
 	"github.com/kartikbazzad/bunbase/bunder/pkg/store"
 )
 
+// PublishFunc is called after a successful Set or Delete. For delete, value is nil.
+type PublishFunc func(projectID, op, key string, value []byte)
+
 // KVHandler provides HTTP endpoints for a Bunder Store instance.
 type KVHandler struct {
-	store store.Store
+	store       store.Store
+	publishFunc PublishFunc
 }
 
-// NewKVHandler creates a new KVHandler.
-func NewKVHandler(s store.Store) *KVHandler {
-	return &KVHandler{store: s}
+// NewKVHandler creates a new KVHandler. publishFunc may be nil (no realtime publish).
+func NewKVHandler(s store.Store, publishFunc PublishFunc) *KVHandler {
+	return &KVHandler{store: s, publishFunc: publishFunc}
 }
 
 // ServeHTTP serves GET/PUT/DELETE /kv/:key, GET /keys, GET /health.
@@ -69,6 +73,12 @@ func (h *KVHandler) serveKV(w http.ResponseWriter, r *http.Request, key string) 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if h.publishFunc != nil {
+			projectID := r.Header.Get("X-Project-ID")
+			if projectID != "" {
+				h.publishFunc(projectID, "set", key, body)
+			}
+		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodDelete:
 		ok, err := h.store.Delete(keyB)
@@ -79,6 +89,12 @@ func (h *KVHandler) serveKV(w http.ResponseWriter, r *http.Request, key string) 
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
+		}
+		if h.publishFunc != nil {
+			projectID := r.Header.Get("X-Project-ID")
+			if projectID != "" {
+				h.publishFunc(projectID, "delete", key, nil)
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 	default:

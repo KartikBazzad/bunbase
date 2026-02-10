@@ -320,8 +320,10 @@ services:
     restart: always
     environment:
       BUNDER_RPC_ADDR: :9091
+      BUNDER_BUNCAST_SOCKET: /tmp/buncast.sock
     volumes:
       - bunder_manager_data:/data
+      - buncast_socket:/tmp
     networks:
       - bunbase-net
     ports:

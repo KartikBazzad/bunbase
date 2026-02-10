@@ -107,4 +107,42 @@ export class KVClient {
   async health(): Promise<{ status: string }> {
     return this.client.request("/v1/kv/health");
   }
+
+  /**
+   * Subscribe to realtime KV change events (set/delete). Returns an unsubscribe function.
+   * Uses SSE; API key is passed via query param since EventSource does not support custom headers.
+   */
+  subscribe(
+    callback: (event: { op: "set" | "delete"; key: string; value?: string }) => void,
+  ): () => void {
+    const url = `${this.client.url}/v1/kv/subscribe?key=${encodeURIComponent(this.client.apiKey)}`;
+    const eventSource = new EventSource(url);
+
+    eventSource.addEventListener("change", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data as string) as {
+          op: string;
+          key: string;
+          value?: string;
+        };
+        if (data.op === "set" || data.op === "delete") {
+          callback({
+            op: data.op as "set" | "delete",
+            key: data.key,
+            value: data.value,
+          });
+        }
+      } catch {
+        // ignore parse errors
+      }
+    });
+
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }
 }

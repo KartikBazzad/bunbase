@@ -40,6 +40,21 @@ export function KV() {
     if (client) listKeys();
   }, [client, listKeys]);
 
+  // Realtime: subscribe to KV changes so list updates when another tab or client changes keys
+  useEffect(() => {
+    if (!client) return;
+    const unsubscribe = client.kv.subscribe((event) => {
+      if (event.op === "set") {
+        setKeys((prev) =>
+          prev.includes(event.key) ? prev : [...prev, event.key].sort(),
+        );
+      } else if (event.op === "delete") {
+        setKeys((prev) => prev.filter((k) => k !== event.key));
+      }
+    });
+    return unsubscribe;
+  }, [client]);
+
   async function handleGet(key: string) {
     if (!client) return;
     setError(null);
@@ -96,7 +111,7 @@ export function KV() {
       <div className="mb-4">
         <h1 className="text-xl font-semibold">KV (Bunder)</h1>
         <p className="mt-1 text-sm text-gray-600">
-          Project-scoped key-value store. Get, set, delete keys. Uses the BunBase SDK.
+          Project-scoped key-value store. Get, set, delete keys. Updates in realtime across tabs.
         </p>
       </div>
 

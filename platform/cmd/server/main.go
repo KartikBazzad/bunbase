@@ -221,7 +221,7 @@ func main() {
 		}
 		bunderProxy = bunder.NewClient(bunderManagerURL)
 	}
-	kvHandler := handlers.NewKVHandler(projectService, bunderProxy)
+	kvHandler := handlers.NewKVHandler(projectService, bunderProxy, subscriptionManager)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -305,10 +305,11 @@ func main() {
 	v1KeyKV := v1Key.Group("/kv")
 	v1KeyKV.GET("/keys", kvHandler.DeveloperProxyHandler)
 	v1KeyKV.GET("/health", kvHandler.DeveloperProxyHandler)
+	v1KeyKV.GET("/subscribe", kvHandler.HandleKVSubscribe)
 	v1KeyKV.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
 	v1KeyKV.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
 	v1KeyKV.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
-	log.Printf("KV routes registered: /v1/kv/keys, /v1/kv/health, /v1/kv/kv/:key")
+	log.Printf("KV routes registered: /v1/kv/keys, /v1/kv/health, /v1/kv/subscribe, /v1/kv/kv/:key")
 	v1Key.GET("/auth/users", tenantAuthHandler.ListProjectUsers)
 	v1Key.POST("/auth/users", tenantAuthHandler.CreateProjectUser)
 	v1Key.GET("/auth/config", tenantAuthHandler.GetProjectAuthConfig)
@@ -343,6 +344,7 @@ func main() {
 	v1ProjectKVKeyOrUser := v1ProjectsKeyOrUser.Group("/:id/kv")
 	v1ProjectKVKeyOrUser.GET("/keys", kvHandler.DeveloperProxyHandler)
 	v1ProjectKVKeyOrUser.GET("/health", kvHandler.DeveloperProxyHandler)
+	v1ProjectKVKeyOrUser.GET("/subscribe", kvHandler.HandleKVSubscribe)
 	v1ProjectKVKeyOrUser.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
 	v1ProjectKVKeyOrUser.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
 	v1ProjectKVKeyOrUser.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
@@ -425,6 +427,7 @@ func main() {
 	projectKV := projectsAPI.Group("/:id/kv")
 	projectKV.GET("/keys", kvHandler.DeveloperProxyHandler)
 	projectKV.GET("/health", kvHandler.DeveloperProxyHandler)
+	projectKV.GET("/subscribe", kvHandler.HandleKVSubscribe)
 	projectKV.GET("/kv/:key", kvHandler.DeveloperProxyHandler)
 	projectKV.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
 	projectKV.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)

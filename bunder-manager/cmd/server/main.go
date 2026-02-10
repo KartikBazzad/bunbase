@@ -14,6 +14,7 @@ import (
 
 	managerhttp "github.com/kartikbazzad/bunbase/bunder-manager/internal/http"
 	"github.com/kartikbazzad/bunbase/bunder-manager/internal/manager"
+	"github.com/kartikbazzad/bunbase/bunder-manager/internal/pubsub"
 	"github.com/kartikbazzad/bunbase/bunder-manager/internal/rpc"
 )
 
@@ -36,7 +37,14 @@ func main() {
 	}
 	defer m.Close()
 
-	proxy := managerhttp.NewProxyHandler(m)
+	buncastSocket := os.Getenv("BUNDER_BUNCAST_SOCKET")
+	var publisher *pubsub.Publisher
+	if buncastSocket != "" {
+		publisher = pubsub.NewPublisher(buncastSocket)
+		log.Printf("KV realtime: publishing to Buncast at %s", buncastSocket)
+	}
+
+	proxy := managerhttp.NewProxyHandler(m, publisher)
 	mux := http.NewServeMux()
 	mux.Handle("/kv/", proxy)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
