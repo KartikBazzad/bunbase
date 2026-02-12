@@ -18,7 +18,7 @@
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^0.34.0"
+    "vitest": "^4.0.18"
   },
   "dependencies": {
     "cross-fetch": "^4.0.0"
