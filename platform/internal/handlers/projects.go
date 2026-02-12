@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
@@ -15,11 +16,12 @@ type ProjectHandler struct {
 	projectService  *services.ProjectService
 	instanceService *services.InstanceService
 	enforcer        *authz.Enforcer
+	limitService    *services.LimitService
 }
 
 // NewProjectHandler creates a new ProjectHandler.
-func NewProjectHandler(projectService *services.ProjectService, instanceService *services.InstanceService, enforcer *authz.Enforcer) *ProjectHandler {
-	return &ProjectHandler{projectService: projectService, instanceService: instanceService, enforcer: enforcer}
+func NewProjectHandler(projectService *services.ProjectService, instanceService *services.InstanceService, enforcer *authz.Enforcer, limitService *services.LimitService) *ProjectHandler {
+	return &ProjectHandler{projectService: projectService, instanceService: instanceService, enforcer: enforcer, limitService: limitService}
 }
 
 // CreateProjectRequest represents a project creation request
@@ -77,6 +79,17 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
+	}
+
+	if h.limitService != nil {
+		if err := h.limitService.CheckProjectLimit(c.Request.Context(), user.ID.String()); err != nil {
+			if errors.Is(err, services.ErrProjectLimitReached) {
+				c.JSON(http.StatusForbidden, gin.H{"error": h.limitService.LimitMessage(err)})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	project, err := h.projectService.CreateProject(req.Name, user.ID.String())

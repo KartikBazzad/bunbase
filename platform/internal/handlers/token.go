@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -12,11 +13,12 @@ import (
 // TokenHandler handles API token management endpoints.
 type TokenHandler struct {
 	tokenService *services.TokenService
+	limitService *services.LimitService
 }
 
 // NewTokenHandler creates a new TokenHandler.
-func NewTokenHandler(tokenService *services.TokenService) *TokenHandler {
-	return &TokenHandler{tokenService: tokenService}
+func NewTokenHandler(tokenService *services.TokenService, limitService *services.LimitService) *TokenHandler {
+	return &TokenHandler{tokenService: tokenService, limitService: limitService}
 }
 
 // CreateTokenRequest represents a request to create a new API token.
@@ -52,6 +54,17 @@ func (h *TokenHandler) Create(c *gin.Context) {
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
+	}
+
+	if h.limitService != nil {
+		if err := h.limitService.CheckAPITokenLimit(c.Request.Context(), user.ID.String()); err != nil {
+			if errors.Is(err, services.ErrAPITokenLimitReached) {
+				c.JSON(http.StatusForbidden, gin.H{"error": h.limitService.LimitMessage(err)})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	ttl := req.TTL

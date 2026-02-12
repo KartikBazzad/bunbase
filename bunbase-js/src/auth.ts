@@ -15,7 +15,27 @@ export class AuthClient {
       method: "POST",
       body: JSON.stringify(options),
     });
-    // TODO: Store session token if client-side session management is added
+    // Cookie is automatically set by server response
     return response;
+  }
+
+  /**
+   * Get the current user profile from the session cookie.
+   * Returns user data if authenticated, null otherwise.
+   */
+  async getProfile(): Promise<{
+    id: string;
+    user_id?: string;
+    email: string;
+    project_id: string;
+  } | null> {
+    try {
+      const response = await this.client.request("/v1/auth/session", {
+        method: "GET",
+      });
+      return response.user || null;
+    } catch {
+      return null;
+    }
   }
 }

@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
+	"github.com/kartikbazzad/bunbase/platform/internal/config"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
@@ -13,11 +15,12 @@ import (
 type AuthHandler struct {
 	auth            *auth.Auth
 	instanceService *services.InstanceService
+	sessionService  *services.SessionService
 }
 
 // NewAuthHandler creates a new AuthHandler. instanceService may be nil (cloud-only); when set, Register is gated for self-hosted.
-func NewAuthHandler(authService *auth.Auth, instanceService *services.InstanceService) *AuthHandler {
-	return &AuthHandler{auth: authService, instanceService: instanceService}
+func NewAuthHandler(authService *auth.Auth, instanceService *services.InstanceService, sessionService *services.SessionService) *AuthHandler {
+	return &AuthHandler{auth: authService, instanceService: instanceService, sessionService: sessionService}
 }
 
 // RegisterRequest represents a registration request
@@ -71,8 +74,17 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Create session (user already created, but we need to create session)
-	_, sessionToken, err := h.auth.LoginUser(req.Email, req.Password)
+	// Login to get JWT token from bun-auth
+	_, jwtToken, err := h.auth.LoginUser(req.Email, req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+		return
+	}
+
+	// Create session using SessionService (stores JWT, returns session token)
+	userID := &user.ID
+	expiresAt := time.Now().Add(30 * 24 * time.Hour) // 30 days
+	sessionToken, err := h.sessionService.CreateSession(c.Request.Context(), jwtToken, services.SessionTypePlatform, userID, nil, expiresAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
 		return
@@ -86,7 +98,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		MaxAge:   30 * 24 * 60 * 60, // 30 days
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false, // Set to true in production with HTTPS
+		Secure:   config.GetCookieSecure(),
 	})
 
 	c.JSON(http.StatusOK, user.ToResponse())
@@ -106,10 +118,19 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Login user
-	user, sessionToken, err := h.auth.LoginUser(req.Email, req.Password)
+	// Login user to get JWT token from bun-auth
+	user, jwtToken, err := h.auth.LoginUser(req.Email, req.Password)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+		return
+	}
+
+	// Create session using SessionService (stores JWT, returns session token)
+	userID := &user.ID
+	expiresAt := time.Now().Add(30 * 24 * time.Hour) // 30 days
+	sessionToken, err := h.sessionService.CreateSession(c.Request.Context(), jwtToken, services.SessionTypePlatform, userID, nil, expiresAt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
 		return
 	}
 
@@ -121,7 +142,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		MaxAge:   30 * 24 * 60 * 60, // 30 days
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false, // Set to true in production with HTTPS
+		Secure:   config.GetCookieSecure(),
 	})
 
 	c.JSON(http.StatusOK, user.ToResponse())
@@ -129,9 +150,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 // Logout handles user logout
 func (h *AuthHandler) Logout(c *gin.Context) {
-	token := middleware.GetSessionTokenFromContext(c)
-	if token != "" {
-		h.auth.LogoutUser(token)
+	sessionToken := middleware.GetSessionTokenFromContext(c)
+	if sessionToken != "" {
+		// Delete session from SessionService
+		_ = h.sessionService.DeleteSession(c.Request.Context(), sessionToken)
 	}
 
 	// Clear cookie

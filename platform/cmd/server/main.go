@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,7 @@ import (
 	"github.com/kartikbazzad/bunbase/platform/internal/handlers"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
+	"github.com/kartikbazzad/bunbase/platform/internal/storage"
 )
 
 type AppConfig struct {
@@ -35,6 +37,21 @@ type AppConfig struct {
 	Deployment struct {
 		Mode string `mapstructure:"mode"`
 	} `mapstructure:"deployment"`
+	// Limits: per-user resource limits in cloud mode (0 = unlimited). Loaded from PLATFORM_LIMITS_* env after Load().
+	Limits struct {
+		MaxProjectsPerUser    int
+		MaxFunctionsPerProject int
+		MaxAPITokensPerUser   int
+	}
+}
+
+func envInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
 }
 
 func main() {
@@ -107,6 +124,10 @@ func main() {
 		cfg.Deployment.Mode = "cloud"
 	}
 	log.Printf("Deployment mode: %s", cfg.Deployment.Mode)
+	// Per-user limits (cloud mode only); 0 = unlimited
+	cfg.Limits.MaxProjectsPerUser = envInt("PLATFORM_LIMITS_MAX_PROJECTS_PER_USER", 0)
+	cfg.Limits.MaxFunctionsPerProject = envInt("PLATFORM_LIMITS_MAX_FUNCTIONS_PER_PROJECT", 0)
+	cfg.Limits.MaxAPITokensPerUser = envInt("PLATFORM_LIMITS_MAX_API_TOKENS_PER_USER", 0)
 	// Safeguard: empty User can make drivers default to "postgres", which may not exist
 	if cfg.DB.User == "" {
 		if u := os.Getenv("PLATFORM_DB_USER"); u != "" {
@@ -150,6 +171,11 @@ func main() {
 
 	projectService := services.NewProjectService(db.Pool)
 	instanceService := services.NewInstanceService(db.Pool, cfg.Deployment.Mode)
+	limitService := services.NewLimitService(db.Pool, cfg.Deployment.Mode, services.LimitsConfig{
+		MaxProjectsPerUser:    cfg.Limits.MaxProjectsPerUser,
+		MaxFunctionsPerProject: cfg.Limits.MaxFunctionsPerProject,
+		MaxAPITokensPerUser:   cfg.Limits.MaxAPITokensPerUser,
+	})
 
 	authzEnforcer, err := authz.NewEnforcer(instanceService, projectService)
 	if err != nil {
@@ -189,11 +215,14 @@ func main() {
 	tokenService := services.NewTokenService(db.Pool)
 	projectConfigService := services.NewProjectConfigService(*gatewayURL)
 
+	// Initialize session service for unified session management
+	sessionService := services.NewSessionService(db.Pool, authClient, tenantAuthClient)
+
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(authService, instanceService)
-	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService)
-	projectHandler := handlers.NewProjectHandler(projectService, instanceService, authzEnforcer)
-	setupHandler := handlers.NewSetupHandler(authService, instanceService)
+	authHandler := handlers.NewAuthHandler(authService, instanceService, sessionService)
+	tenantAuthHandler := handlers.NewTenantAuthHandler(tenantAuthClient, projectService, sessionService)
+	projectHandler := handlers.NewProjectHandler(projectService, instanceService, authzEnforcer, limitService)
+	setupHandler := handlers.NewSetupHandler(authService, instanceService, sessionService)
 	instanceHandler := handlers.NewInstanceHandler(instanceService)
 	projectConfigHandler := handlers.NewProjectConfigHandler(projectService, projectConfigService, authzEnforcer)
 	var functionsRPC *fnclient.Client
@@ -201,9 +230,9 @@ func main() {
 		functionsRPC = fnclient.New("tcp://" + rpcAddr)
 		log.Printf("Functions: using RPC client (addr=%s)", rpcAddr)
 	}
-	functionHandler := handlers.NewFunctionHandler(functionService, projectService, projectConfigService, *functionsURL, functionsRPC, authzEnforcer)
-	tokenHandler := handlers.NewTokenHandler(tokenService)
-	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager, authzEnforcer)
+	functionHandler := handlers.NewFunctionHandler(functionService, projectService, projectConfigService, *functionsURL, functionsRPC, authzEnforcer, limitService)
+	tokenHandler := handlers.NewTokenHandler(tokenService, limitService)
+	databaseHandler := handlers.NewDatabaseHandler(bundocProxy, projectService, subscriptionManager, authzEnforcer, tenantAuthClient)
 
 	// Setup Bunder KV proxy (RPC preferred, fallback to HTTP)
 	var bunderProxy bunder.Proxy
@@ -222,6 +251,32 @@ func main() {
 		bunderProxy = bunder.NewClient(bunderManagerURL)
 	}
 	kvHandler := handlers.NewKVHandler(projectService, bunderProxy, subscriptionManager)
+
+	// Storage (MinIO): one bucket per project
+	var storageClient *storage.Client
+	if endpoint := os.Getenv("PLATFORM_MINIO_ENDPOINT"); endpoint != "" {
+		cfg := storage.Config{
+			Endpoint:        endpoint,
+			AccessKeyID:     os.Getenv("PLATFORM_MINIO_ACCESS_KEY"),
+			SecretAccessKey: os.Getenv("PLATFORM_MINIO_SECRET_KEY"),
+			UseSSL:          false,
+		}
+		if cfg.AccessKeyID == "" {
+			cfg.AccessKeyID = "bunadmin"
+		}
+		if cfg.SecretAccessKey == "" {
+			cfg.SecretAccessKey = "bunpassword"
+		}
+		var err error
+		storageClient, err = storage.NewClient(cfg)
+		if err != nil {
+			log.Printf("Storage (MinIO): failed to create client: %v", err)
+			storageClient = nil
+		} else {
+			log.Printf("Storage: MinIO enabled (endpoint=%s)", endpoint)
+		}
+	}
+	storageHandler := handlers.NewStorageHandler(storageClient)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -256,12 +311,13 @@ func main() {
 
 	// Auth routes
 	authRoutes := api.Group("/auth")
-	// Public auth endpoints
+	// Public auth endpoints with rate limiting
+	authRoutes.Use(middleware.AuthRateLimitMiddleware())
 	authRoutes.POST("/register", authHandler.Register)
 	authRoutes.POST("/login", authHandler.Login)
 	// Protected auth endpoints (require session cookie)
 	authProtected := authRoutes.Group("")
-	authProtected.Use(middleware.AuthMiddleware(authService))
+	authProtected.Use(middleware.AuthMiddleware(sessionService))
 	authProtected.POST("/logout", authHandler.Logout)
 	authProtected.GET("/me", authHandler.Me)
 	authProtected.GET("/stream", authHandler.AuthStream) // Added Stream
@@ -269,9 +325,11 @@ func main() {
 	// Alias v1 auth routes to standard auth handlers for Web Console consistency if using v1 prefix
 	// The Web Console uses /v1 in its API client now, so we should expose the standard auth handlers there too.
 	v1AuthStandard := v1.Group("/auth")
+	v1AuthStandard.Use(middleware.AuthRateLimitMiddleware())
 	v1AuthStandard.POST("/register", authHandler.Register)
 	v1AuthStandard.POST("/login", authHandler.Login)
-	v1AuthStandard.Use(middleware.AuthMiddleware(authService))
+	v1AuthStandard.GET("/session", tenantAuthHandler.ProjectUserSession) // Bearer tenant JWT → project user (no platform auth)
+	v1AuthStandard.Use(middleware.AuthMiddleware(sessionService))
 	v1AuthStandard.POST("/logout", authHandler.Logout)
 	v1AuthStandard.GET("/me", authHandler.Me)
 	v1AuthStandard.GET("/stream", authHandler.AuthStream)
@@ -310,15 +368,26 @@ func main() {
 	v1KeyKV.PUT("/kv/:key", kvHandler.DeveloperProxyHandler)
 	v1KeyKV.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
 	log.Printf("KV routes registered: /v1/kv/keys, /v1/kv/health, /v1/kv/subscribe, /v1/kv/kv/:key")
+	// Tenant auth endpoints with rate limiting
+	tenantAuthRoutes := v1Key.Group("/auth/project")
+	tenantAuthRoutes.Use(middleware.AuthRateLimitMiddleware())
+	tenantAuthRoutes.POST("/register", tenantAuthHandler.RegisterProjectUser)
+	tenantAuthRoutes.POST("/login", tenantAuthHandler.LoginProjectUser)
+	tenantAuthRoutes.POST("/logout", tenantAuthHandler.LogoutProjectUser)
 	v1Key.GET("/auth/users", tenantAuthHandler.ListProjectUsers)
 	v1Key.POST("/auth/users", tenantAuthHandler.CreateProjectUser)
 	v1Key.GET("/auth/config", tenantAuthHandler.GetProjectAuthConfig)
 	v1Key.PUT("/auth/config", tenantAuthHandler.UpdateProjectAuthConfig)
+	// Storage (one bucket per project)
+	v1Key.GET("/storage", storageHandler.List)
+	v1Key.GET("/storage/*path", storageHandler.Get)
+	v1Key.PUT("/storage/*path", storageHandler.Put)
+	v1Key.DELETE("/storage/*path", storageHandler.Delete)
 
 	// Also alias Project routes to /v1/projects for Web Console.
 	// Routes that accept project API key (database, function invoke) use ProjectKeyOrUserAuthMiddleware and are registered first.
 	v1ProjectsKeyOrUser := v1.Group("/projects")
-	v1ProjectsKeyOrUser.Use(middleware.ProjectKeyOrUserAuthMiddleware(authService, tokenService, projectService))
+	v1ProjectsKeyOrUser.Use(middleware.ProjectKeyOrUserAuthMiddleware(sessionService, tokenService, authService, projectService))
 	v1ProjectDBKeyOrUser := v1ProjectsKeyOrUser.Group("/:id/database")
 	v1ProjectDBKeyOrUser.GET("/collections", databaseHandler.DeveloperProxyHandler)
 	v1ProjectDBKeyOrUser.POST("/collections", databaseHandler.DeveloperProxyHandler)
@@ -350,7 +419,7 @@ func main() {
 	v1ProjectKVKeyOrUser.DELETE("/kv/:key", kvHandler.DeveloperProxyHandler)
 
 	v1Projects := v1.Group("/projects")
-	v1Projects.Use(middleware.AuthAnyMiddleware(authService, tokenService))
+	v1Projects.Use(middleware.AuthAnyMiddleware(sessionService, tokenService, authService))
 	v1Projects.GET("", projectHandler.ListProjects)
 	v1Projects.POST("", projectHandler.CreateProject)
 	v1Projects.GET("/:id/config", projectConfigHandler.GetProjectConfig)
@@ -372,9 +441,16 @@ func main() {
 	v1ProjectAuth.GET("/config", tenantAuthHandler.GetProjectAuthConfig)
 	v1ProjectAuth.PUT("/config", tenantAuthHandler.UpdateProjectAuthConfig)
 
+	// Storage (v1 - for Web Console; project-scoped by :id)
+	v1ProjectStorage := v1Projects.Group("/:id/storage")
+	v1ProjectStorage.GET("", storageHandler.List)
+	v1ProjectStorage.GET("/*path", storageHandler.Get)
+	v1ProjectStorage.PUT("/*path", storageHandler.Put)
+	v1ProjectStorage.DELETE("/*path", storageHandler.Delete)
+
 	// Project routes (protected; accept cookie or token auth)
 	projectsAPI := api.Group("/projects")
-	projectsAPI.Use(middleware.AuthAnyMiddleware(authService, tokenService))
+	projectsAPI.Use(middleware.AuthAnyMiddleware(sessionService, tokenService, authService))
 	projectsAPI.GET("", projectHandler.ListProjects)
 	projectsAPI.POST("", projectHandler.CreateProject)
 	projectsAPI.GET("/:id/config", projectConfigHandler.GetProjectConfig)
@@ -439,9 +515,16 @@ func main() {
 	projectAuth.GET("/config", tenantAuthHandler.GetProjectAuthConfig)
 	projectAuth.PUT("/config", tenantAuthHandler.UpdateProjectAuthConfig)
 
+	// Storage (protected; project-scoped)
+	projectStorage := projectsAPI.Group("/:id/storage")
+	projectStorage.GET("", storageHandler.List)
+	projectStorage.GET("/*path", storageHandler.Get)
+	projectStorage.PUT("/*path", storageHandler.Put)
+	projectStorage.DELETE("/*path", storageHandler.Delete)
+
 	// Token management routes (cookie-authenticated)
 	tokenAPI := api.Group("/auth/tokens")
-	tokenAPI.Use(middleware.AuthMiddleware(authService))
+	tokenAPI.Use(middleware.AuthMiddleware(sessionService))
 	tokenAPI.GET("", tokenHandler.List)
 	tokenAPI.POST("", tokenHandler.Create)
 	tokenAPI.DELETE("/:id", tokenHandler.Delete)

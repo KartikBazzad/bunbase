@@ -17,7 +17,7 @@ import (
 // - X-Bunbase-Client-Key header (user API token, for SDK / demo app), or
 // - session_token cookie (for browser sessions).
 // If none yields a valid user, it aborts with 401.
-func AuthAnyMiddleware(authService *auth.Auth, tokenService *services.TokenService) gin.HandlerFunc {
+func AuthAnyMiddleware(sessionService *services.SessionService, tokenService *services.TokenService, authService *auth.Auth) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1) Try API token from Authorization header
 		if user, ok := authenticateWithAPIToken(c, authService, tokenService); ok {
@@ -35,14 +35,15 @@ func AuthAnyMiddleware(authService *auth.Auth, tokenService *services.TokenServi
 			}
 		}
 
-		// 3) Fall back to cookie-based session auth
-		token := GetSessionTokenFromContext(c)
-		if token == "" {
+		// 3) Fall back to cookie-based session auth (uses SessionService for unified session management)
+		sessionToken := GetSessionTokenFromContext(c)
+		if sessionToken == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
 
-		user, err := authService.ValidateSession(token)
+		// Validate session via SessionService (routes to appropriate auth service)
+		user, err := sessionService.ValidateSession(c.Request.Context(), sessionToken)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
@@ -121,8 +122,9 @@ const projectKeyProjectIDContextKey = "project_key_project_id"
 // or project API key (X-Bunbase-Client-Key as project key when key's project matches route :id).
 // Use for /v1/projects/:id/... routes so SDK can use a single project API key.
 func ProjectKeyOrUserAuthMiddleware(
-	authService *auth.Auth,
+	sessionService *services.SessionService,
 	tokenService *services.TokenService,
+	authService *auth.Auth,
 	projectService *services.ProjectService,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -139,9 +141,9 @@ func ProjectKeyOrUserAuthMiddleware(
 				return
 			}
 		}
-		token := GetSessionTokenFromContext(c)
-		if token != "" {
-			if user, err := authService.ValidateSession(token); err == nil {
+		sessionToken := GetSessionTokenFromContext(c)
+		if sessionToken != "" {
+			if user, err := sessionService.ValidateSession(c.Request.Context(), sessionToken); err == nil {
 				c.Set(userContextName, user)
 				c.Next()
 				return

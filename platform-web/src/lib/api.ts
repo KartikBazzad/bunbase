@@ -83,7 +83,13 @@ export class ApiClient {
   }
 
   async setup(email: string, password: string, name: string) {
-    return this.request<{ id: string; email: string; name: string; created_at?: string; updated_at?: string }>("/setup", {
+    return this.request<{
+      id: string;
+      email: string;
+      name: string;
+      created_at?: string;
+      updated_at?: string;
+    }>("/setup", {
       method: "POST",
       body: JSON.stringify({ email, password, name }),
     });
@@ -119,10 +125,10 @@ export class ApiClient {
   }
 
   async regenerateProjectApiKey(projectId: string) {
-    return this.request<{ project: { public_api_key?: string | null }; api_key: string }>(
-      `/projects/${projectId}/regenerate-api-key`,
-      { method: "POST" },
-    );
+    return this.request<{
+      project: { public_api_key?: string | null };
+      api_key: string;
+    }>(`/projects/${projectId}/regenerate-api-key`, { method: "POST" });
   }
 
   async getProjectConfig(projectId: string) {
@@ -169,7 +175,10 @@ export class ApiClient {
 
   async updateProjectAuthConfig(
     projectId: string,
-    config: { providers?: Record<string, unknown>; rate_limit?: Record<string, unknown> },
+    config: {
+      providers?: Record<string, unknown>;
+      rate_limit?: Record<string, unknown>;
+    },
   ) {
     return this.request(`/projects/${projectId}/auth/config`, {
       method: "PUT",
@@ -393,6 +402,79 @@ export class ApiClient {
         }),
       },
     );
+  }
+
+  // Storage (project-scoped file storage; one bucket per project)
+  async listStorageObjects(
+    projectId: string,
+    prefix?: string,
+  ): Promise<{
+    objects: Array<{ key: string; size: number; last_modified?: string }>;
+  }> {
+    const q = prefix?.trim()
+      ? `?prefix=${encodeURIComponent(prefix.trim())}`
+      : "";
+    return this.request(`/projects/${projectId}/storage${q}`);
+  }
+
+  private storagePath(key: string): string {
+    return key.split("/").map(encodeURIComponent).join("/");
+  }
+
+  async putStorageObject(
+    projectId: string,
+    key: string,
+    body: Blob | ArrayBuffer | Uint8Array,
+    contentType?: string,
+  ): Promise<{ key: string }> {
+    const path = this.storagePath(key);
+    const url = `${this.baseURL}/projects/${projectId}/storage/${path}`;
+    const headers: Record<string, string> = {};
+    if (contentType) headers["Content-Type"] = contentType;
+    const response = await fetch(url, {
+      method: "PUT",
+      credentials: "include",
+      headers,
+      body: body as BodyInit,
+    });
+    if (!response.ok) {
+      const err = await response
+        .json()
+        .catch(() => ({ error: response.statusText }));
+      throw new Error((err as ApiError).error || "Upload failed");
+    }
+    return response.json();
+  }
+
+  async getStorageObjectBlob(projectId: string, key: string): Promise<Blob> {
+    const path = this.storagePath(key);
+    const url = `${this.baseURL}/projects/${projectId}/storage/${path}`;
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const err = await response
+        .json()
+        .catch(() => ({ error: response.statusText }));
+      throw new Error((err as ApiError).error || "Download failed");
+    }
+    return response.blob();
+  }
+
+  async deleteStorageObject(projectId: string, key: string): Promise<void> {
+    const path = this.storagePath(key);
+    const url = `${this.baseURL}/projects/${projectId}/storage/${path}`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const err = await response
+        .json()
+        .catch(() => ({ error: response.statusText }));
+      throw new Error((err as ApiError).error || "Delete failed");
+    }
   }
 }
 

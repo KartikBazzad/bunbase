@@ -2,6 +2,7 @@ import { AuthClient } from "./auth";
 import { DatabaseClient } from "./database";
 import { FunctionsClient } from "./functions";
 import { KVClient } from "./kv";
+import { StorageClient } from "./storage";
 
 export class BunBaseClient<
   SchemaRegistry extends Record<string, any> = Record<string, any>,
@@ -10,6 +11,7 @@ export class BunBaseClient<
   public db: DatabaseClient<SchemaRegistry>;
   public functions: FunctionsClient;
   public kv: KVClient;
+  public storage: StorageClient;
 
   constructor(
     public url: string,
@@ -21,6 +23,7 @@ export class BunBaseClient<
     this.db = new DatabaseClient(this);
     this.functions = new FunctionsClient(this);
     this.kv = new KVClient(this);
+    this.storage = new StorageClient(this);
   }
 
   /** Fetch current project and config (project is inferred from API key). */
@@ -36,13 +39,10 @@ export class BunBaseClient<
     headers.set("X-Bunbase-Client-Key", this.apiKey);
     headers.set("Content-Type", "application/json");
 
-    // If we have a user session, maybe pass it?
-    // middleware.GetSessionTokenFromContext...
-    // For now stick to Client Key.
-
     const response = await fetch(`${this.url}${path}`, {
       ...options,
       headers,
+      credentials: "include", // Send cookies with requests for cookie-based authentication
     });
 
     if (!response.ok) {

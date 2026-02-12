@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kartikbazzad/bunbase/platform/internal/auth"
 	"github.com/kartikbazzad/bunbase/platform/internal/authz"
 	"github.com/kartikbazzad/bunbase/platform/internal/bundoc"
 	"github.com/kartikbazzad/bunbase/platform/internal/middleware"
@@ -17,14 +20,16 @@ type DatabaseHandler struct {
 	projectService      *services.ProjectService
 	subscriptionManager *services.SubscriptionManager
 	enforcer            *authz.Enforcer
+	tenantClient        *auth.TenantClient
 }
 
-func NewDatabaseHandler(bundoc bundoc.Proxy, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager, enforcer *authz.Enforcer) *DatabaseHandler {
+func NewDatabaseHandler(bundoc bundoc.Proxy, projectService *services.ProjectService, subscriptionManager *services.SubscriptionManager, enforcer *authz.Enforcer, tenantClient *auth.TenantClient) *DatabaseHandler {
 	return &DatabaseHandler{
 		bundoc:              bundoc,
 		projectService:      projectService,
 		subscriptionManager: subscriptionManager,
 		enforcer:            enforcer,
+		tenantClient:        tenantClient,
 	}
 }
 
@@ -46,14 +51,64 @@ func (h *DatabaseHandler) getProjectID(c *gin.Context) (string, error) {
 	return h.projectService.GetProjectIDByPublicKey(key)
 }
 
+// getTenantUserFromCookie extracts tenant user information from the tenant_session_token cookie.
+// Returns user ID and claims if cookie is valid, nil otherwise.
+func (h *DatabaseHandler) getTenantUserFromCookie(c *gin.Context, projectID string) (string, map[string]interface{}) {
+	if h.tenantClient == nil {
+		return "", nil
+	}
+
+	token, err := c.Cookie("tenant_session_token")
+	if err != nil || token == "" {
+		return "", nil
+	}
+
+	verifyRes, err := h.tenantClient.Verify(token)
+	if err != nil || !verifyRes.Valid {
+		log.Printf("Failed to verify tenant session token: %v", err)
+		return "", nil
+	}
+
+	// Verify project ID matches
+	claimsProjectID, _ := verifyRes.Claims["project_id"].(string)
+	if claimsProjectID != projectID {
+		log.Printf("Tenant session project_id mismatch: expected %s, got %s", projectID, claimsProjectID)
+		return "", nil
+	}
+
+	// Extract user ID from sub claim
+	userID, _ := verifyRes.Claims["sub"].(string)
+	if userID == "" {
+		return "", nil
+	}
+
+	return userID, verifyRes.Claims
+}
+
+// formatBundocAuthHeader formats tenant user info for bundoc's X-Bundoc-Auth header.
+// Format: "uid:claims_json"
+func (h *DatabaseHandler) formatBundocAuthHeader(uid string, claims map[string]interface{}) string {
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		log.Printf("Failed to marshal claims: %v", err)
+		return uid + ":{}"
+	}
+	return uid + ":" + string(claimsJSON)
+}
+
 // ProxyHandler handles database operations for project API key (SDK / external clients).
 // Uses /databases/{projectID}/documents/{collection}/{docID} — do not change; bundoc and API-key DB depend on this shape.
+// Validates API key, extracts tenant cookie if present, and forwards to bundoc for rule evaluation.
+// Prevents admin access - never forwards X-Bunbase-Client-Key to bundoc.
 func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 	projectID, err := h.getProjectID(c)
 	if err != nil || projectID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing Public API Key"})
 		return
 	}
+
+	// Extract tenant session cookie if present (optional - bundoc will evaluate rules)
+	tenantUID, tenantClaims := h.getTenantUserFromCookie(c, projectID)
 
 	// Read Body
 	var body []byte
@@ -92,7 +147,16 @@ func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 		upstreamPath += "?" + c.Request.URL.RawQuery
 	}
 
-	status, respBody, err := h.bundoc.ProxyRequest(c.Request.Method, projectID, upstreamPath, body)
+	// Format auth header with tenant user info if cookie is present
+	// If no cookie, bundoc will receive unauthenticated context and evaluate rules accordingly
+	headers := make(map[string]string)
+	if tenantUID != "" && tenantClaims != nil {
+		authHeader := h.formatBundocAuthHeader(tenantUID, tenantClaims)
+		headers["X-Bundoc-Auth"] = authHeader
+	}
+	// Note: X-Bunbase-Client-Key is NOT forwarded to bundoc (prevents admin access)
+
+	status, respBody, err := h.bundoc.ProxyRequest(c.Request.Method, projectID, upstreamPath, body, headers)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
@@ -104,6 +168,8 @@ func (h *DatabaseHandler) ProxyHandler(c *gin.Context) {
 
 // DeveloperProxyHandler handles database operations (key-scoped /v1/database/... or user-scoped /projects/:id/database/...).
 // Uses bundoc.BundocDBPath. Project ID comes from context (key-scoped) or route param (user-scoped).
+// Validates API key, extracts tenant cookie if present, and forwards to bundoc for rule evaluation.
+// Prevents admin access - never forwards X-Bunbase-Client-Key to bundoc.
 func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 	projectID := middleware.GetProjectID(c)
 	if projectID == "" {
@@ -111,9 +177,14 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 		return
 	}
 
-	if middleware.GetProjectKeyProjectID(c) != "" {
-		// Authorized by key; continue to proxy
-	} else {
+	// Differentiate between admin requests (platform web console) and SDK requests
+	isAdminRequest := middleware.GetProjectKeyProjectID(c) == ""
+	
+	var headers map[string]string
+	
+	if isAdminRequest {
+		// Admin request: Platform web console with session_token cookie
+		// Verify platform user authentication and project access
 		user, ok := middleware.RequireAuth(c)
 		if !ok {
 			return
@@ -139,6 +210,21 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 				return
 			}
 		}
+		
+		// Set admin header for bundoc (admin access)
+		headers = make(map[string]string)
+		headers["X-Bundoc-Admin"] = "true"
+	} else {
+		// SDK request: API key authenticated, extract tenant cookie if present
+		tenantUID, tenantClaims := h.getTenantUserFromCookie(c, projectID)
+		
+		headers = make(map[string]string)
+		if tenantUID != "" && tenantClaims != nil {
+			// Pass tenant user context to bundoc
+			authHeader := h.formatBundocAuthHeader(tenantUID, tenantClaims)
+			headers["X-Bundoc-Auth"] = authHeader
+		}
+		// Note: X-Bunbase-Client-Key is NOT forwarded to bundoc (prevents SDK admin access)
 	}
 
 	// 4. Construct Upstream Path (suffix only - ProxyRequest prepends /v1/projects/{projectID})
@@ -188,8 +274,10 @@ func (h *DatabaseHandler) DeveloperProxyHandler(c *gin.Context) {
 		body, _ = io.ReadAll(c.Request.Body)
 	}
 
+	// Headers are already set above based on request type (admin vs SDK)
+
 	// 5. Proxy Request
-	status, respBody, err := h.bundoc.ProxyRequest(c.Request.Method, projectID, upstreamPath, body)
+	status, respBody, err := h.bundoc.ProxyRequest(c.Request.Method, projectID, upstreamPath, body, headers)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return

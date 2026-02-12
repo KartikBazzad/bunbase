@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/kartikbazzad/bunbase/bun-auth/internal/api"
@@ -70,8 +71,10 @@ func main() {
 	}
 
 	// 3. Connect to Database
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
-		cfg.DB.User, cfg.DB.Password, cfg.DB.Host, cfg.DB.Port, cfg.DB.Name)
+	// URL-encode password to handle special characters (/, +, =, etc.)
+	encodedPassword := url.QueryEscape(cfg.DB.Password)
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		cfg.DB.User, encodedPassword, cfg.DB.Host, cfg.DB.Port, cfg.DB.Name)
 
 	database, err := db.New(dsn)
 	if err != nil {

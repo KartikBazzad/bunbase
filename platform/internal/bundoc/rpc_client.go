@@ -18,6 +18,8 @@ func NewRPCClient(addr string) *rpcClientProxy {
 }
 
 // ProxyRequest implements Proxy by delegating to bundocrpc.Client.
-func (r *rpcClientProxy) ProxyRequest(method, projectID, path string, body []byte) (int, []byte, error) {
+// Note: RPC transport doesn't currently support headers, so headers are ignored.
+func (r *rpcClientProxy) ProxyRequest(method, projectID, path string, body []byte, headers map[string]string) (int, []byte, error) {
+	// RPC transport doesn't support headers yet - can be added later if needed
 	return r.Client.ProxyRequest(method, projectID, path, body)
 }

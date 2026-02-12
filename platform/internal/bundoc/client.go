@@ -11,7 +11,7 @@ import (
 
 // Proxy is the interface for document proxy (HTTP or RPC). DatabaseHandler uses this so it can use either transport.
 type Proxy interface {
-	ProxyRequest(method, projectID, path string, body []byte) (int, []byte, error)
+	ProxyRequest(method, projectID, path string, body []byte, headers map[string]string) (int, []byte, error)
 }
 
 type Client struct {
@@ -34,7 +34,8 @@ func NewClient(baseURL string) *Client {
 // ProxyRequest forwards a request to the Bundoc backend.
 // path must be the suffix only (e.g. BundocDBPath + "/collections/users/documents").
 // See paths.go and docs/api-paths.md for the canonical shape.
-func (c *Client) ProxyRequest(method, projectID, path string, body []byte) (int, []byte, error) {
+// headers is an optional map of headers to include in the request.
+func (c *Client) ProxyRequest(method, projectID, path string, body []byte, headers map[string]string) (int, []byte, error) {
 	// URL = BaseURL + "/v1/projects/" + projectID + path
 
 	// Normalize path (ensure leading slash)
@@ -50,6 +51,11 @@ func (c *Client) ProxyRequest(method, projectID, path string, body []byte) (int,
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+
+	// Set additional headers if provided
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {

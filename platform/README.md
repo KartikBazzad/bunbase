@@ -42,6 +42,9 @@ go build -o platform-server ./cmd/server
 - `PLATFORM_PORT` - API server port (default: `3001`)
 - `PLATFORM_DEPLOYMENT_MODE` - `cloud` (default) or `self_hosted`. When `self_hosted`, only instance admins can create projects and signup is disabled after one-time setup.
 - `PLATFORM_SECRET` - Session secret key (not used yet, for future JWT)
+- `PLATFORM_LIMITS_MAX_PROJECTS_PER_USER` - Max projects per user in cloud mode (0 = unlimited)
+- `PLATFORM_LIMITS_MAX_FUNCTIONS_PER_PROJECT` - Max functions per project in cloud mode (0 = unlimited)
+- `PLATFORM_LIMITS_MAX_API_TOKENS_PER_USER` - Max API tokens per user in cloud mode (0 = unlimited)
 - `FUNCTIONS_SOCKET` - Functions service socket path (default: `/tmp/functions.sock`)
 - `BUNDLE_BASE_PATH` - Base path for function bundles (default: `../functions/data/bundles`)
 - `CORS_ORIGIN` - Allowed CORS origin (default: `http://localhost:5173`)

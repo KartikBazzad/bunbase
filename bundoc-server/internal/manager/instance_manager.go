@@ -2,6 +2,7 @@ package manager
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,6 +72,11 @@ func NewInstanceManager(opts *ManagerOptions) (*InstanceManager, error) {
 	go m.evictionLoop()
 
 	return m, nil
+}
+
+// ProjectDataPath returns the filesystem path for the project's database directory.
+func (m *InstanceManager) ProjectDataPath(projectID string) string {
+	return filepath.Join(m.dataPath, projectID)
 }
 
 // Acquire gets a database instance for the project (lock-free hot path)

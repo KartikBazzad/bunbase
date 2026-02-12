@@ -53,6 +53,29 @@ cd platform && go build -o bunbase ./cmd/cli
 
 If the dashboard is at http://localhost, the API is at http://localhost/api (same host). For CLI, use the platform port directly, e.g. `--api-url http://localhost:3001`.
 
+## Resource limits
+
+In cloud mode you can cap per-user resources via environment variables. Set these on the platform service; `0` or unset means unlimited.
+
+| Variable | Description |
+| -------- | ----------- |
+| `PLATFORM_LIMITS_MAX_PROJECTS_PER_USER` | Max projects a user can own (e.g. `5`) |
+| `PLATFORM_LIMITS_MAX_FUNCTIONS_PER_PROJECT` | Max functions per project (e.g. `20`) |
+| `PLATFORM_LIMITS_MAX_API_TOKENS_PER_USER` | Max API tokens per user (e.g. `10`) |
+
+When a limit is reached, the API returns `403 Forbidden` with a message such as "Project limit reached (max N per user). Delete a project or contact support."
+
+### Bundoc (database) limits
+
+The **bundoc-server** (document database) supports its own limits for DoS protection. Set these on the bundoc service; `0` or unset = unlimited.
+
+| Variable | Description |
+| -------- | ----------- |
+| `BUNDOC_LIMITS_MAX_CONNECTIONS_PER_PROJECT` | Max concurrent requests per project (429 when exceeded) |
+| `BUNDOC_LIMITS_MAX_EXECUTION_MS` | Max request duration in ms (write timeout) |
+| `BUNDOC_LIMITS_MAX_SCAN_DOCS` | Cap on list/query result limit per request |
+| `BUNDOC_LIMITS_MAX_DATABASE_SIZE_BYTES` | Max on-disk database size per project in bytes (507 when exceeded on create/update) |
+
 ## Cloud vs self‑hosted
 
 - **Cloud** (this guide): `PLATFORM_DEPLOYMENT_MODE` is unset or `cloud`. Sign up is open; any user can create projects.

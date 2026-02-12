@@ -7,11 +7,13 @@ http:
         replacement: "/_/invoke/$${1}"
 
   routers:
+    # Path-based: API and health (highest priority so /api always goes to platform)
     platform:
       rule: "PathPrefix(`/api`) || PathPrefix(`/kv`) || Path(`/health`)"
       service: platform
       entryPoints:
         - web
+      priority: 200
 
     # Custom domain routing for functions:
     # - {slug}.bunbase.com/function-name
@@ -32,11 +34,13 @@ http:
       entryPoints:
         - web
 
-    web:
-      rule: "PathPrefix(`/`)"
+    # Console app at console.localhost (host-based)
+    console:
+      rule: "Host(`console.localhost`)"
       service: web
       entryPoints:
         - web
+      priority: 100
 
   services:
     platform:

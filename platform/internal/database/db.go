@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	// Initial Migration
@@ -29,8 +30,10 @@ type Config struct {
 
 // NewDB creates a new database connection and runs migrations
 func NewDB(cfg Config) (*DB, error) {
+	// URL-encode password to handle special characters (/, +, =, etc.)
+	encodedPassword := url.QueryEscape(cfg.Password)
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name)
+		cfg.User, encodedPassword, cfg.Host, cfg.Port, cfg.Name)
 
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

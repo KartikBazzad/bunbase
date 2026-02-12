@@ -4,6 +4,7 @@ export * from "./auth";
 export * from "./database";
 export * from "./functions";
 export * from "./kv";
+export * from "./storage";
 export * from "./client";
 
 export function createClient(url: string, apiKey: string, projectId?: string) {

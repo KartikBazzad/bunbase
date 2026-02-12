@@ -9,17 +9,48 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/handlers"
+	"github.com/kartikbazzad/bunbase/bundoc-server/internal/limits"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/rpc"
 	serverPkg "github.com/kartikbazzad/bunbase/bundoc-server/internal/server"
 	"github.com/kartikbazzad/bunbase/bundoc/raft"
 )
+
+func envInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
+func envInt64(key string, defaultVal int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
+// extractProjectID returns the project ID from path /v1/projects/{projectID}/...
+func extractProjectID(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if p == "projects" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
 
 type BundocFSM struct {
 	Mgr *manager.InstanceManager
@@ -71,8 +102,26 @@ func main() {
 		log.Printf("Realtime: Buncast client disabled (no -buncast-socket)")
 	}
 
+	// Resource limits (cloud mode / DoS protection); 0 = unlimited
+	limitsConfig := limits.Config{
+		MaxConnectionsPerProject: envInt("BUNDOC_LIMITS_MAX_CONNECTIONS_PER_PROJECT", 0),
+		MaxExecutionTimeMs:       envInt("BUNDOC_LIMITS_MAX_EXECUTION_MS", 0),
+		MaxScanDocs:              envInt("BUNDOC_LIMITS_MAX_SCAN_DOCS", 0),
+		MaxDatabaseSizeBytes:     envInt64("BUNDOC_LIMITS_MAX_DATABASE_SIZE_BYTES", 0),
+	}
+	concurrencyLimiter := limits.NewConcurrencyLimiter(limitsConfig.MaxConnectionsPerProject)
+	if limitsConfig.MaxConnectionsPerProject > 0 {
+		log.Printf("Bundoc limits: max_connections_per_project=%d", limitsConfig.MaxConnectionsPerProject)
+	}
+	if limitsConfig.MaxScanDocs > 0 {
+		log.Printf("Bundoc limits: max_scan_docs=%d", limitsConfig.MaxScanDocs)
+	}
+	if limitsConfig.MaxDatabaseSizeBytes > 0 {
+		log.Printf("Bundoc limits: max_database_size_bytes=%d", limitsConfig.MaxDatabaseSizeBytes)
+	}
+
 	// Create handlers
-	docHandlers := handlers.NewDocumentHandlers(mgr, buncastClient)
+	docHandlers := handlers.NewDocumentHandlers(mgr, buncastClient, &limitsConfig)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -102,6 +151,18 @@ func main() {
 		if !strings.Contains(r.URL.Path, "/projects/") {
 			http.Error(w, "invalid path: must contain /projects/", http.StatusBadRequest)
 			return
+		}
+
+		// Per-project connection limit (cloud mode / DoS protection)
+		projectID := extractProjectID(r.URL.Path)
+		if projectID != "" && !concurrencyLimiter.TryAcquire(projectID) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":"too many concurrent requests for this project"}`))
+			return
+		}
+		if projectID != "" {
+			defer concurrencyLimiter.Release(projectID)
 		}
 
 		// Routing logic based on suffix
@@ -241,12 +302,17 @@ func main() {
 		}
 	})
 
-	// Create server
+	// Create server (execution limit = write timeout when set)
+	writeTimeout := 15 * time.Second
+	if limitsConfig.MaxExecutionTimeMs > 0 {
+		writeTimeout = time.Duration(limitsConfig.MaxExecutionTimeMs) * time.Millisecond
+		log.Printf("Bundoc limits: max_execution_time_ms=%d", limitsConfig.MaxExecutionTimeMs)
+	}
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *httpPort),
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/kartikbazzad/bunbase/pkg/config"
 	"github.com/kartikbazzad/bunbase/pkg/logger"
 	"github.com/kartikbazzad/bunbase/tenant-auth/internal/api"
+	tenantconfig "github.com/kartikbazzad/bunbase/tenant-auth/internal/config"
 	"github.com/kartikbazzad/bunbase/tenant-auth/internal/db"
 	"github.com/kartikbazzad/bunbase/tenant-auth/internal/kms"
 )
@@ -43,12 +44,17 @@ func main() {
 	if os.Getenv("TENANTAUTH_BUNDOC_URL") == "" {
 		os.Setenv("TENANTAUTH_BUNDOC_URL", "http://bundoc-auth:8080")
 	}
-	if os.Getenv("TENANTAUTH_JWT_SECRET") == "" {
-		os.Setenv("TENANTAUTH_JWT_SECRET", "tenant-dev-secret-key")
-	}
 	if os.Getenv("TENANTAUTH_BUNKMS_URL") == "" {
 		os.Setenv("TENANTAUTH_BUNKMS_URL", "")
 	}
+
+	// Validate JWT secret (required, >= 32 bytes)
+	jwtSecret, err := tenantconfig.ValidateJWTSecret()
+	if err != nil {
+		log.Error("JWT secret validation failed", "error", err)
+		os.Exit(1)
+	}
+	os.Setenv("TENANTAUTH_JWT_SECRET", jwtSecret)
 
 	if err := config.Load("TENANTAUTH_", &cfg); err != nil {
 		log.Error("Failed to load config", "error", err)

@@ -14,7 +14,7 @@ export function Login() {
     setErr("");
     try {
       await login(email, password);
-      navigate("/settings", { replace: true });
+      navigate("/", { replace: true });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Login failed");
     }
@@ -41,12 +41,23 @@ export function Login() {
           required
         />
         {err && <p className="text-sm text-red-600">{err}</p>}
-        <button type="submit" className="rounded bg-blue-600 px-3 py-2 text-white">
+        <button
+          type="submit"
+          className="rounded bg-blue-600 px-3 py-2 text-white"
+        >
           Log in
         </button>
       </form>
       <p className="mt-4 text-sm text-gray-600">
-        No account? <Link to="/signup" className="text-blue-600">Sign up</Link>. Then set your Project API key and project in <Link to="/settings" className="text-blue-600">Settings</Link>.
+        No account?{" "}
+        <Link to="/signup" className="text-blue-600">
+          Sign up
+        </Link>
+        . Then set your Project API key and project in{" "}
+        <Link to="/settings" className="text-blue-600">
+          Settings
+        </Link>
+        .
       </p>
     </div>
   );

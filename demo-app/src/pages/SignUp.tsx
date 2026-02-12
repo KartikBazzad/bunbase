@@ -15,7 +15,7 @@ export function SignUp() {
     setErr("");
     try {
       await signUp(email, password, name);
-      navigate("/settings", { replace: true });
+      navigate("/", { replace: true });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Sign up failed");
     }
@@ -50,12 +50,19 @@ export function SignUp() {
           required
         />
         {err && <p className="text-sm text-red-600">{err}</p>}
-        <button type="submit" className="rounded bg-blue-600 px-3 py-2 text-white">
+        <button
+          type="submit"
+          className="rounded bg-blue-600 px-3 py-2 text-white"
+        >
           Sign up
         </button>
       </form>
       <p className="mt-4 text-sm text-gray-600">
-        Already have an account? <Link to="/login" className="text-blue-600">Log in</Link>.
+        Already have an account?{" "}
+        <Link to="/login" className="text-blue-600">
+          Log in
+        </Link>
+        .
       </p>
     </div>
   );

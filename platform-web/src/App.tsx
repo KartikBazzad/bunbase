@@ -21,6 +21,7 @@ import { Functions } from "./pages/Functions";
 import { FunctionLogs } from "./pages/FunctionLogs";
 import { Settings } from "./pages/Settings";
 import { Authentication } from "./pages/Authentication";
+import { Storage } from "./pages/Storage";
 import { NotFound } from "./pages/NotFound";
 import "./App.css";
 
@@ -42,7 +43,11 @@ function RootRedirect() {
       </div>
     );
   }
-  if (!user && status?.deployment_mode === "self_hosted" && !status?.setup_complete) {
+  if (
+    !user &&
+    status?.deployment_mode === "self_hosted" &&
+    !status?.setup_complete
+  ) {
     return <Navigate to="/setup" replace />;
   }
   return <Navigate to="/dashboard" replace />;
@@ -125,6 +130,16 @@ function App() {
                 <ProtectedRoute>
                   <DashboardLayout>
                     <Authentication />
+                  </DashboardLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:id/storage"
+              element={
+                <ProtectedRoute>
+                  <DashboardLayout>
+                    <Storage />
                   </DashboardLayout>
                 </ProtectedRoute>
               }

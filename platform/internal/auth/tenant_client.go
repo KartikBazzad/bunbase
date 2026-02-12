@@ -83,6 +83,38 @@ func (c *TenantClient) Login(projectID, email, password string) (*LoginResponse,
 	return &res, nil
 }
 
+// VerifyResponse is the response from tenant-auth POST /verify
+type VerifyResponse struct {
+	Valid  bool                   `json:"valid"`
+	Claims map[string]interface{} `json:"claims"`
+}
+
+// Verify validates a tenant JWT and returns the verify response (claims).
+func (c *TenantClient) Verify(token string) (*VerifyResponse, error) {
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/verify", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("invalid token: status %d", resp.StatusCode)
+	}
+
+	var res VerifyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 type AuthConfig struct {
 	ID        string                 `json:"_id,omitempty"`
 	Providers map[string]interface{} `json:"providers"`

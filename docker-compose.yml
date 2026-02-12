@@ -11,7 +11,7 @@ services:
       PLATFORM_DB_HOST: postgres
       PLATFORM_DB_PORT: 5432
       PLATFORM_DB_USER: bunadmin
-      PLATFORM_DB_PASSWORD: bunpassword
+      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD:-bunpassword}
       PLATFORM_DB_NAME: bunbase_system
       PLATFORM_DB_MIGRATIONSPATH: /app/migrations
       PLATFORM_AUTH_URL: http://bun-auth:8081
@@ -24,7 +24,10 @@ services:
       PLATFORM_BUNDLE_PATH: /app/data/bundles
       TENANT_AUTH_URL: http://tenant-auth:8083
       PLATFORM_BUNCAST_SOCKET: /tmp/buncast.sock
-      PLATFORM_DEPLOYMENT_MODE: cloud  # Use "self_hosted" for restricted mode: one-time /api/setup, only instance admin can create projects
+      PLATFORM_DEPLOYMENT_MODE: cloud # Use "self_hosted" for restricted mode: one-time /api/setup, only instance admin can create projects
+      PLATFORM_MINIO_ENDPOINT: minio:9000
+      PLATFORM_MINIO_ACCESS_KEY: ${PLATFORM_MINIO_ACCESS_KEY:-bunadmin}
+      PLATFORM_MINIO_SECRET_KEY: ${PLATFORM_MINIO_SECRET_KEY:-bunpassword}
     volumes:
       - functions_data:/app/data
       - buncast_socket:/tmp
@@ -41,6 +44,8 @@ services:
         condition: service_started
       bunder-manager:
         condition: service_healthy
+      minio:
+        condition: service_started
     networks:
       - bunbase-net
     ports:
@@ -70,6 +75,22 @@ services:
       timeout: 3s
       retries: 5
 
+  marketing-web:
+    build:
+      context: marketing-web
+      dockerfile: Dockerfile
+    container_name: bunbase-marketing
+    restart: always
+    ports:
+      - "3002:80"
+    networks:
+      - bunbase-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   bun-auth:
     build:
       context: .
@@ -81,7 +102,7 @@ services:
       BUNAUTH_DB_HOST: postgres
       BUNAUTH_DB_PORT: 5432
       BUNAUTH_DB_USER: bunadmin
-      BUNAUTH_DB_PASSWORD: bunpassword
+      BUNAUTH_DB_PASSWORD: ${BUNAUTH_DB_PASSWORD:-bunpassword}
       BUNAUTH_DB_NAME: bunbase_system
     depends_on:
       postgres:
@@ -104,7 +125,7 @@ services:
     restart: always
     environment:
       TENANTAUTH_PORT: 8083
-      TENANTAUTH_JWT_SECRET: tenant-dev-secret-key
+      TENANTAUTH_JWT_SECRET: ${TENANTAUTH_JWT_SECRET:-tenant-dev-secret-key}
       TENANTAUTH_BUNDOC_URL: http://bundoc-auth:8080
       TENANTAUTH_BUNDOC_RPC_ADDR: bundoc-auth:9091
       TENANTAUTH_BUNKMS_URL: http://bunkms:8080
@@ -135,7 +156,7 @@ services:
       BUNKMS_ADDR: ":8080"
       BUNKMS_RPC_ADDR: ":9092"
       # 32-byte key (base64): "0123456789abcdef0123456789abcdef"
-      BUNKMS_MASTER_KEY: "base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+      BUNKMS_MASTER_KEY: ${BUNKMS_MASTER_KEY:-base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
       BUNKMS_DATA_PATH: /data
       BUNKMS_AUDIT_LOG: /data/audit.log
     volumes:
@@ -238,7 +259,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: bunadmin
-      POSTGRES_PASSWORD: bunpassword
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bunpassword}
       POSTGRES_DB: bunbase_system
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -258,8 +279,8 @@ services:
     restart: always
     command: server --console-address ":9001" /data
     environment:
-      MINIO_ROOT_USER: bunadmin
-      MINIO_ROOT_PASSWORD: bunpassword
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-bunadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bunpassword}
     volumes:
       - minio_data:/data
     networks:
@@ -364,7 +385,7 @@ services:
     container_name: bunbase-grafana
     restart: always
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=bunpassword
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-bunpassword}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
@@ -382,6 +403,7 @@ services:
     restart: always
     command:
       - "--api.insecure=true"
+      - "--providers.docker=false"
       - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"

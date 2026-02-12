@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartikbazzad/bunbase/buncast/pkg/client"
 	"github.com/kartikbazzad/bunbase/bundoc"
+	"github.com/kartikbazzad/bunbase/bundoc-server/internal/limits"
 	"github.com/kartikbazzad/bunbase/bundoc-server/internal/manager"
 	"github.com/kartikbazzad/bunbase/bundoc/mvcc"
 	"github.com/kartikbazzad/bunbase/bundoc/rules"
@@ -23,14 +24,42 @@ import (
 type DocumentHandlers struct {
 	manager       *manager.InstanceManager
 	buncastClient *client.Client
+	limits        *limits.Config
 }
 
-// NewDocumentHandlers creates document handlers
-func NewDocumentHandlers(mgr *manager.InstanceManager, buncastClient *client.Client) *DocumentHandlers {
+// NewDocumentHandlers creates document handlers. limits may be nil (no caps).
+func NewDocumentHandlers(mgr *manager.InstanceManager, buncastClient *client.Client, limitsCfg *limits.Config) *DocumentHandlers {
 	return &DocumentHandlers{
 		manager:       mgr,
 		buncastClient: buncastClient,
+		limits:        limitsCfg,
 	}
+}
+
+// capLimit returns the effective limit (capped by MaxScanDocs when set).
+func (h *DocumentHandlers) capLimit(limit int) int {
+	if h.limits != nil && h.limits.MaxScanDocs > 0 && (limit <= 0 || limit > h.limits.MaxScanDocs) {
+		return h.limits.MaxScanDocs
+	}
+	return limit
+}
+
+// checkDatabaseSizeLimit returns true if the project is under the database size limit (or limits disabled).
+// On limit exceeded it writes 507 and returns false.
+func (h *DocumentHandlers) checkDatabaseSizeLimit(w http.ResponseWriter, projectID string) bool {
+	if h.limits == nil || h.limits.MaxDatabaseSizeBytes <= 0 {
+		return true
+	}
+	projectPath := h.manager.ProjectDataPath(projectID)
+	size, err := limits.DirSize(projectPath)
+	if err != nil {
+		return true // allow write if we can't measure (e.g. dir not created yet)
+	}
+	if size >= h.limits.MaxDatabaseSizeBytes {
+		h.writeError(w, http.StatusInsufficientStorage, "database size limit reached for this project")
+		return false
+	}
+	return true
 }
 
 // DocumentChangeEvent is published to Buncast for each document mutation.
@@ -77,13 +106,13 @@ func (h *DocumentHandlers) publishChange(projectID, collection, docID, op string
 
 // Helper to extract AuthContext
 func (h *DocumentHandlers) getAuthContext(r *http.Request) *rules.AuthContext {
-	// 1. Check Admin Key (Server SDK / Console)
-	clientKey := r.Header.Get("X-Bunbase-Client-Key")
-	if clientKey != "" {
+	// 1. Check Admin Header (Platform web console - admin access)
+	// Platform sets this header for authenticated platform users (not SDK requests)
+	if r.Header.Get("X-Bundoc-Admin") == "true" {
 		return &rules.AuthContext{IsAdmin: true}
 	}
 
-	// 2. Check User Token
+	// 2. Check User Token (Tenant user from SDK)
 	authHeader := r.Header.Get("X-Bundoc-Auth")
 	if authHeader != "" {
 		parts := strings.SplitN(authHeader, ":", 2)
@@ -151,6 +180,10 @@ func (h *DocumentHandlers) HandleCreateDocument(w http.ResponseWriter, r *http.R
 	var doc storage.Document
 	if err := json.Unmarshal(body, &doc); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if !h.checkDatabaseSizeLimit(w, projectID) {
 		return
 	}
 
@@ -305,6 +338,7 @@ func (h *DocumentHandlers) HandleGetDocument(w http.ResponseWriter, r *http.Requ
 				limit = n
 			}
 		}
+		limit = h.capLimit(limit)
 
 		fields := parseFieldsParam(r.URL.Query().Get("fields"))
 		var listOpts []bundoc.QueryOptions
@@ -345,6 +379,10 @@ func (h *DocumentHandlers) HandleUpdateDocument(w http.ResponseWriter, r *http.R
 	projectID, pathSuffix := h.parseProjectAndPathSuffix(r.URL.Path)
 	if projectID == "" || pathSuffix == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	if !h.checkDatabaseSizeLimit(w, projectID) {
 		return
 	}
 
@@ -550,7 +588,7 @@ func (h *DocumentHandlers) HandleQueryDocuments(w http.ResponseWriter, r *http.R
 
 	opts := bundoc.QueryOptions{
 		Skip:      req.Skip,
-		Limit:     req.Limit,
+		Limit:     h.capLimit(req.Limit),
 		SortField: req.SortField,
 		SortDesc:  req.SortDesc,
 		Fields:    req.Fields,
@@ -604,6 +642,7 @@ func (h *DocumentHandlers) HandleListDocuments(w http.ResponseWriter, r *http.Re
 			limit = n
 		}
 	}
+	limit = h.capLimit(limit)
 
 	fields := parseFieldsParam(r.URL.Query().Get("fields"))
 	var listOpts []bundoc.QueryOptions

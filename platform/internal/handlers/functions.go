@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,10 +27,11 @@ type FunctionHandler struct {
 	functionsURL         string
 	functionsRPC         *client.Client
 	enforcer             *authz.Enforcer
+	limitService         *services.LimitService
 }
 
 // NewFunctionHandler creates a new FunctionHandler. functionsRPC is optional; when set, invoke uses it instead of HTTP.
-func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, functionsURL string, functionsRPC *client.Client, enforcer *authz.Enforcer) *FunctionHandler {
+func NewFunctionHandler(functionService *services.FunctionService, projectService *services.ProjectService, projectConfigService *services.ProjectConfigService, functionsURL string, functionsRPC *client.Client, enforcer *authz.Enforcer, limitService *services.LimitService) *FunctionHandler {
 	return &FunctionHandler{
 		functionService:      functionService,
 		projectService:       projectService,
@@ -37,6 +39,7 @@ func NewFunctionHandler(functionService *services.FunctionService, projectServic
 		functionsURL:         functionsURL,
 		functionsRPC:         functionsRPC,
 		enforcer:             enforcer,
+		limitService:         limitService,
 	}
 }
 
@@ -162,6 +165,17 @@ func (h *FunctionHandler) DeployFunction(c *gin.Context) {
 		}
 		if !isMember && !isOwner {
 			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+	}
+
+	if h.limitService != nil {
+		if err := h.limitService.CheckFunctionLimit(c.Request.Context(), projectID); err != nil {
+			if errors.Is(err, services.ErrFunctionLimitReached) {
+				c.JSON(http.StatusForbidden, gin.H{"error": h.limitService.LimitMessage(err)})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 	}

@@ -18,10 +18,14 @@ export default defineConfig({
       "/v1": {
         target: "http://localhost:3001",
         changeOrigin: true,
+        cookieDomainRewrite: "localhost",
+        secure: false,
       },
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: true,
+        cookieDomainRewrite: "localhost",
+        secure: false,
       },
     },
   },

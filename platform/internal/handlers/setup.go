@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kartikbazzad/bunbase/platform/internal/auth"
+	"github.com/kartikbazzad/bunbase/platform/internal/config"
 	"github.com/kartikbazzad/bunbase/platform/internal/services"
 )
 
@@ -12,11 +14,12 @@ import (
 type SetupHandler struct {
 	auth            *auth.Auth
 	instanceService *services.InstanceService
+	sessionService  *services.SessionService
 }
 
 // NewSetupHandler creates a new SetupHandler.
-func NewSetupHandler(authService *auth.Auth, instanceService *services.InstanceService) *SetupHandler {
-	return &SetupHandler{auth: authService, instanceService: instanceService}
+func NewSetupHandler(authService *auth.Auth, instanceService *services.InstanceService, sessionService *services.SessionService) *SetupHandler {
+	return &SetupHandler{auth: authService, instanceService: instanceService, sessionService: sessionService}
 }
 
 // SetupRequest is the body for POST /api/setup (same as register).
@@ -68,9 +71,19 @@ func (h *SetupHandler) Setup(c *gin.Context) {
 		return
 	}
 
-	_, sessionToken, err := h.auth.LoginUser(req.Email, req.Password)
+	// Login to get JWT token from bun-auth
+	_, jwtToken, err := h.auth.LoginUser(req.Email, req.Password)
 	if err != nil {
 		c.JSON(http.StatusOK, user.ToResponse())
+		return
+	}
+
+	// Create session using SessionService (stores JWT, returns session token)
+	userID := &user.ID
+	expiresAt := time.Now().Add(30 * 24 * time.Hour) // 30 days
+	sessionToken, err := h.sessionService.CreateSession(c.Request.Context(), jwtToken, services.SessionTypePlatform, userID, nil, expiresAt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
 		return
 	}
 
@@ -81,7 +94,7 @@ func (h *SetupHandler) Setup(c *gin.Context) {
 		MaxAge:   30 * 24 * 60 * 60,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false,
+		Secure:   config.GetCookieSecure(),
 	})
 
 	c.JSON(http.StatusCreated, user.ToResponse())

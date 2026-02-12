@@ -11,6 +11,7 @@ import {
   Settings,
   Key,
   LogOut,
+  HardDrive,
 } from "lucide-react";
 
 const linkBase =
@@ -31,8 +32,8 @@ export function Sidebar() {
 
   const projectBase = location.pathname.startsWith("/projects/")
     ? location.pathname.replace(
-        /\/(overview|database|functions|settings|authentication).*$/,
-        ""
+        /\/(overview|database|functions|settings|authentication|storage).*$/,
+        "",
       )
     : "";
 
@@ -118,6 +119,21 @@ export function Sidebar() {
                   <Zap className="w-5 h-5 shrink-0" />
                   <span className="text-sm font-medium is-drawer-close:hidden">
                     Functions
+                  </span>
+                </Link>
+              </PortalTooltip>
+              <PortalTooltip label="Storage">
+                <Link
+                  to={`${projectBase}/storage`}
+                  className={`${linkBase} ${
+                    location.pathname.includes("/storage")
+                      ? "bg-primary text-primary-content"
+                      : "hover:bg-base-200 text-base-content/70"
+                  }`}
+                >
+                  <HardDrive className="w-5 h-5 shrink-0" />
+                  <span className="text-sm font-medium is-drawer-close:hidden">
+                    Storage
                   </span>
                 </Link>
               </PortalTooltip>
